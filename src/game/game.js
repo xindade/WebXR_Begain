@@ -1,0 +1,220 @@
+import * as THREE from 'three';
+import { Player } from './player.js';
+import { BalloonManager } from './balloons.js';
+import { BulletManager } from './bullets.js';
+import { WaveManager } from './waves.js';
+import { CardDraft } from './cards.js';
+import { LEVELS } from '../content/levels.js';
+import { BALLOON, BUDDHA, SHIP } from '../core/constants.js';
+
+const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关' };
+
+export class Game {
+  constructor(world, hud) {
+    this.world = world;
+    this.hud = hud;
+
+    this.rig = new THREE.Group();
+    world.scene.add(this.rig);
+    world.camera.position.set(...SHIP.POS);
+    this.rig.add(world.camera);
+
+    this.audio = null; // 由 main 注入
+    this.input = null; // 由 main 注入
+
+    this.player = new Player(world.scene, this.rig);
+    this.balloons = new BalloonManager(world.scene);
+    this.bullets = new BulletManager(world.scene);
+    this.waves = new WaveManager(world.scene, this.balloons, () => this.rig.getWorldPosition(new THREE.Vector3()));
+    this.cards = new CardDraft(world.scene);
+
+    this.state = 'menu';
+    this.levelIndex = 0;
+    this.score = 0;
+    this._buddhaFx = null;
+    this._cardState = null;
+
+    this._tmp = new THREE.Vector3();
+    this._fwd = new THREE.Vector3();
+  }
+
+  setSystems(audio, input, wristUI = null) { this.audio = audio; this.input = input; this.wristUI = wristUI; }
+
+  start() {
+    this.player.reset();
+    this.balloons.clear();
+    this.bullets.clear();
+    this.score = 0;
+    this.levelIndex = 0;
+    this.hud.hideStart();
+    this.hud.clearMessage();
+    this.hud.setScore(0);
+    this.hud.setHp(this.player.hp, this.player.maxHp);
+    this.audio?.unlock();
+    this.audio?.startBGM();
+    this.wristUI?.log('游戏开始');
+    this._loadLevel(0);
+    this.state = 'playing';
+  }
+
+  _loadLevel(i) {
+    const lv = LEVELS[i];
+    this.waves.startLevel(lv);
+    this.world.setSkyMood(lv.mood);
+    this.hud.setLevel(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
+    this.wristUI?.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
+  }
+
+  _playerPos() { return this.rig.getWorldPosition(this._tmp); }
+
+  update(dt) {
+    dt = Math.min(dt, 0.05);
+    this.world.update(dt);
+    this.wristUI?.update(dt, this, this.input); // 手腕面板（VR 下显示，桌面忽略）
+    this._updateBuddhaFx(dt);
+
+    if (this.state === 'playing') this._updatePlaying(dt);
+    else if (this.state === 'card') this._updateCard(dt);
+  }
+
+  _updatePlaying(dt) {
+    this.input.update(dt);
+    this.player.update(dt);
+    this.bullets.update(dt);
+    this.balloons.update(dt, this._playerPos(), this.world.camera);
+    this.waves.update(dt);
+
+    for (const shot of this.input.shots) this.player.fire(shot, this.bullets, this.audio);
+
+    if (this.input.consumeBuddha() && this.player.canBuddha()) {
+      if (this.player.triggerBuddha()) this._doBuddha();
+    }
+
+    this._collide();
+
+    this.hud.setScore(this.score);
+    this.hud.setHp(this.player.hp, this.player.maxHp);
+
+    if (!this.player.alive) { this._gameOver(); return; }
+    if (this.waves.cleared) this._enterCard();
+  }
+
+  _collide() {
+    const pp = this._playerPos();
+    // 子弹 vs 气球
+    for (const b of [...this.bullets.active]) {
+      for (const balloon of [...this.balloons.list]) {
+        if (b.mesh.position.distanceTo(balloon.mesh.position) < balloon.radius + 0.12) {
+          const killed = balloon.takeDamage(b.dmg);
+          this.bullets.release(b);
+          this.audio?.playPop();
+          if (killed) this._onKilled(balloon);
+          break;
+        }
+      }
+    }
+    // 气球 vs 飞船
+    for (const balloon of [...this.balloons.list]) {
+      const d = balloon.mesh.position.distanceTo(pp);
+      if (d < SHIP.COLLISION_RADIUS + balloon.radius) {
+        const dead = this.player.takeDamage(balloon.isBoss ? 40 : BALLOON.DAMAGE);
+        this.balloons.remove(balloon);
+        if (dead) { this._gameOver(); return; }
+      }
+    }
+  }
+
+  _onKilled(balloon) {
+    this.score += balloon.score;
+    if (balloon.behavior === 'heal') {
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + 20);
+    }
+    // 爆炸范围伤害
+    if (this.player.explosion > 0) {
+      for (const other of [...this.balloons.list]) {
+        if (other === balloon) continue;
+        if (other.mesh.position.distanceTo(balloon.mesh.position) < this.player.explosion) {
+          if (other.takeDamage(this.player.atk * 0.5)) this._onKilled(other);
+        }
+      }
+    }
+    this.balloons.remove(balloon);
+  }
+
+  _doBuddha() {
+    const pp = this._playerPos();
+    this.wristUI?.log('如来神掌！');
+    // 伤害范围内所有气球
+    for (const b of [...this.balloons.list]) {
+      if (b.mesh.position.distanceTo(pp) < BUDDHA.KILL_RADIUS) {
+        if (b.takeDamage(BUDDHA.DAMAGE)) this._onKilled(b);
+      }
+    }
+    // 视觉：金色巨掌从天而降
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 16, 12),
+      new THREE.MeshStandardMaterial({ color: 0xffd43b, emissive: 0xffa500, emissiveIntensity: 0.6, transparent: true, opacity: 0.85 })
+    );
+    mesh.scale.setScalar(BUDDHA.FALL_START_SCALE);
+    mesh.position.copy(pp).add(new THREE.Vector3(0, 20, 0));
+    this.world.scene.add(mesh);
+    this._buddhaFx = { mesh, t: 0 };
+  }
+
+  _updateBuddhaFx(dt) {
+    if (!this._buddhaFx) return;
+    this._buddhaFx.t += dt;
+    const k = Math.min(1, this._buddhaFx.t / BUDDHA.FALL_DURATION);
+    const s = THREE.MathUtils.lerp(BUDDHA.FALL_START_SCALE, BUDDHA.FALL_END_SCALE, k);
+    this._buddhaFx.mesh.scale.setScalar(s);
+    this._buddhaFx.mesh.position.y = THREE.MathUtils.lerp(20, 0, k) + this._playerPos().y;
+    if (k >= 1) {
+      this.world.scene.remove(this._buddhaFx.mesh);
+      this._buddhaFx = null;
+    }
+  }
+
+  _enterCard() {
+    this.state = 'card';
+    this.input.consumeConfirm(); // 丢弃游玩阶段误触的确认，避免一进抽卡就自动选中
+    this.wristUI?.log('波次清空，选择强化');
+    const pp = this._playerPos();
+    this.world.camera.getWorldDirection(this._fwd);
+    this._fwd.negate(); // 相机/手柄前向为 -Z，getWorldDirection 返回 +Z，需取反，否则卡牌会生成在身后
+    this._cardState = { player: this.player, score: this.score };
+    this.hud.message('选择强化', '准星指向卡牌后按确认（点击/扳机）', '#ffd43b');
+    this.cards.open(pp, this._fwd.clone(), this._cardState, () => this._onCardDone());
+  }
+
+  _updateCard(dt) {
+    this.input.updateLook(); // 允许玩家转动视角瞄准卡牌
+    this.cards.update(dt, this.input.getAimRay());
+    if (this.input.consumeConfirm()) this.cards.confirm();
+  }
+
+  _onCardDone() {
+    this.score = this._cardState.score;
+    this.hud.setScore(this.score);
+    this.hud.clearMessage();
+    this.levelIndex++;
+    if (!this.player.buddhaUnlocked) this.player.buddhaUnlocked = true; // 首波后解锁大招
+    this.wristUI?.log('强化完成 → 进入下一关');
+    if (this.levelIndex >= LEVELS.length) {
+      this.state = 'over';
+      this.hud.message('通关！', '按「开始游戏」重新挑战', '#2ecc71');
+      this.hud.startBtn.style.display = 'block';
+      return;
+    }
+    this._loadLevel(this.levelIndex);
+    this.state = 'playing';
+  }
+
+  _gameOver() {
+    this.state = 'over';
+    this.wristUI?.log('飞船坠落，游戏结束');
+    this.balloons.clear();
+    this.bullets.clear();
+    this.hud.message('飞船坠落', `得分 ${this.score} · 按「开始游戏」重来`, '#e74c3c');
+    this.hud.startBtn.style.display = 'block';
+  }
+}
