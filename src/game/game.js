@@ -38,7 +38,15 @@ export class Game {
     this._fwd = new THREE.Vector3();
   }
 
-  setSystems(audio, input, wristUI = null) { this.audio = audio; this.input = input; this.wristUI = wristUI; }
+  setSystems(audio, input, wristUI = null, pageLog = null) {
+    this.audio = audio; this.input = input; this.wristUI = wristUI; this.pageLog = pageLog;
+  }
+
+  // 游戏内日志：同时送往左手腕面板（VR 可见）和页面日志（预览可见、最高优先）
+  log(msg) {
+    this.wristUI?.log(msg);
+    this.pageLog?.log(msg);
+  }
 
   start() {
     this.player.reset();
@@ -52,7 +60,7 @@ export class Game {
     this.hud.setHp(this.player.hp, this.player.maxHp);
     this.audio?.unlock();
     this.audio?.startBGM();
-    this.wristUI?.log('游戏开始');
+    this.log('游戏开始');
     this._loadLevel(0);
     this.state = 'playing';
   }
@@ -62,7 +70,7 @@ export class Game {
     this.waves.startLevel(lv);
     this.world.setSkyMood(lv.mood);
     this.hud.setLevel(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
-    this.wristUI?.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
+    this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
   }
 
   _playerPos() { return this.rig.getWorldPosition(this._tmp); }
@@ -143,7 +151,7 @@ export class Game {
 
   _doBuddha() {
     const pp = this._playerPos();
-    this.wristUI?.log('如来神掌！');
+    this.log('如来神掌！');
     // 伤害范围内所有气球
     for (const b of [...this.balloons.list]) {
       if (b.mesh.position.distanceTo(pp) < BUDDHA.KILL_RADIUS) {
@@ -177,7 +185,7 @@ export class Game {
   _enterCard() {
     this.state = 'card';
     this.input.consumeConfirm(); // 丢弃游玩阶段误触的确认，避免一进抽卡就自动选中
-    this.wristUI?.log('波次清空，选择强化');
+    this.log('波次清空，选择强化');
     const pp = this._playerPos();
     this.world.camera.getWorldDirection(this._fwd);
     this._fwd.negate(); // 相机/手柄前向为 -Z，getWorldDirection 返回 +Z，需取反，否则卡牌会生成在身后
@@ -198,7 +206,7 @@ export class Game {
     this.hud.clearMessage();
     this.levelIndex++;
     if (!this.player.buddhaUnlocked) this.player.buddhaUnlocked = true; // 首波后解锁大招
-    this.wristUI?.log('强化完成 → 进入下一关');
+    this.log('强化完成 → 进入下一关');
     if (this.levelIndex >= LEVELS.length) {
       this.state = 'over';
       this.hud.message('通关！', '按「开始游戏」重新挑战', '#2ecc71');
@@ -211,7 +219,7 @@ export class Game {
 
   _gameOver() {
     this.state = 'over';
-    this.wristUI?.log('飞船坠落，游戏结束');
+    this.log('飞船坠落，游戏结束');
     this.balloons.clear();
     this.bullets.clear();
     this.hud.message('飞船坠落', `得分 ${this.score} · 按「开始游戏」重来`, '#e74c3c');

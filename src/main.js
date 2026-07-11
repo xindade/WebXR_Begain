@@ -6,6 +6,8 @@ import { InputManager } from './vr/input.js';
 import { WristUI } from './vr/wrist-ui.js';
 import { Game } from './game/game.js';
 
+window.__pageLog?.info('[main] 模块开始执行（imports 已解析）');
+
 const canvas = document.getElementById('app');
 const world = new World(canvas);
 const hud = new HUD();
@@ -16,10 +18,12 @@ const game = new Game(world, hud);
 // 输入层拿到真实 rig
 const input = new InputManager(world, game.rig);
 const wristUI = new WristUI(); // 手腕面板：右手战斗信息 / 左手日志
-game.setSystems(audio, input, wristUI);
+// 页面日志（最高优先，由 index.html 的经典脚本注入；three 失败时仍可用）
+const pageLog = window.__pageLog || null;
+game.setSystems(audio, input, wristUI, pageLog);
 
 // VR 进入即开局
-world.xr.addEventListener('sessionstart', () => { if (game.state === 'menu') game.start(); });
+world.xr.addEventListener('sessionstart', () => { pageLog?.resumeScroll(); if (game.state === 'menu') game.start(); });
 // 桌面：开始按钮
 hud.onStart(() => game.start());
 
@@ -66,8 +70,9 @@ async function enterVR() {
   }
 }
 
-// 会话结束：恢复按钮
+// 会话结束：恢复按钮；并「暂停日志滚动」防止报错信息丢失
 world.xr.addEventListener('sessionend', () => {
+  pageLog?.pauseScroll();
   enterVRBtn.disabled = false;
   enterVRBtn.style.display = 'block';
   enterVRBtn.textContent = '🎈 进入 VR';
