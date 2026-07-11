@@ -68,6 +68,19 @@ export const CARD = {
   REFRESH_OFFSET_Y: -0.25,
 };
 
+// 第三关「激光气球」参数（供 laser.js 引用，便于平衡）
+export const LASER = {
+  SPAWN_DELAY: 10,   // 进入关卡后多久开始发射动画 (s)
+  LAUNCH_DUR: 2,     // 发射动画时长 (s)
+  ROW1_DELAY: 1,     // 发射到位后多久第一排动画 (s)
+  ROW2_DELAY: 3,     // 第一排后多久第二排 (s)
+  ROW3_DELAY: 3,     // 第二排后多久第三排 (s)
+  GOAL_Z: -3.5,      // 玩家 z 到达此值即过关（底边）
+  BEAM_LETHAL_R: 0.15, // 激光光束致命半径（含辉光余量）(m)
+  PLAYER_R: 0.4,     // 玩家在激光关的碰撞半径 (m)
+  BALLOON_R: 0.4,    // 激光气球实体致命半径 (m)
+};
+
 // 稀有度配置：权重、颜色、倍率
 export const RARITY = {
   white:  { name: '普通', weight: 60, color: '#dfe6e9', mult: 1 },

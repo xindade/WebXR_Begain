@@ -5,7 +5,7 @@
 export const LEVELS = [
   { n: 1,  kind: 'normal', mood: 'dusk' },
   { n: 2,  kind: 'crisis', mood: 'night' },
-  { n: 3,  kind: 'bonus',  mood: 'day' },
+  { n: 3,  kind: 'laser',  mood: 'day' },
   { n: 4,  kind: 'normal', mood: 'dusk' },
   { n: 5,  kind: 'crisis', mood: 'night' },
   { n: 6,  kind: 'boss',   mood: 'day', boss: 'face' },
@@ -27,3 +27,4 @@ export const LEVELS = [
 export function isCrisis(lv) { return lv.kind === 'crisis'; }
 export function isBoss(lv) { return lv.kind === 'boss'; }
 export function isBonus(lv) { return lv.kind === 'bonus'; }
+export function isLaser(lv) { return lv.kind === 'laser'; }

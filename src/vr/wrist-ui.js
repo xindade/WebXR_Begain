@@ -84,12 +84,19 @@ export class WristUI {
     c.font = 'bold 40px sans-serif';
     c.fillText('🎮 战斗信息', 28, 56);
 
-    const lines = [
-      `关卡    : ${game.levelIndex + 1}`,
-      `剩余敌人: ${game.waves.remaining}`,
-      `船血    : ${game.player.hp} / ${game.player.maxHp}`,
-      `分数    : ${game.score}`,
-    ];
+    const lines = game.laserMode
+      ? [
+          `关卡    : ${game.levelIndex + 1} (激光)`,
+          `激光气球: ${game.laser ? game.laser.groups.length : 0}`,
+          `船血    : ${game.player.hp} / ${game.player.maxHp}`,
+          `目标    : 到达底边过关`,
+        ]
+      : [
+          `关卡    : ${game.levelIndex + 1}`,
+          `剩余敌人: ${game.waves.remaining}`,
+          `船血    : ${game.player.hp} / ${game.player.maxHp}`,
+          `分数    : ${game.score}`,
+        ];
     c.fillStyle = '#ffffff';
     c.font = '34px sans-serif';
     lines.forEach((t, i) => c.fillText(t, 28, 120 + i * 52));

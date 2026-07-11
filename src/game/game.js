@@ -4,10 +4,11 @@ import { BalloonManager } from './balloons.js';
 import { BulletManager } from './bullets.js';
 import { WaveManager } from './waves.js';
 import { CardDraft } from './cards.js';
-import { LEVELS } from '../content/levels.js';
-import { BALLOON, BUDDHA, SHIP } from '../core/constants.js';
+import { LaserLevel } from './laser.js';
+import { LEVELS, isLaser } from '../content/levels.js';
+import { BALLOON, BUDDHA, SHIP, LASER } from '../core/constants.js';
 
-const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关' };
+const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关' };
 
 export class Game {
   constructor(world, hud) {
@@ -30,6 +31,8 @@ export class Game {
 
     this.state = 'menu';
     this.levelIndex = 0;
+    this.laser = null;       // 激光关实例（仅第3关）
+    this.laserMode = false;  // 当前是否处于激光关
     this.score = 0;
     this._buddhaFx = null;
     this._cardState = null;
@@ -67,10 +70,20 @@ export class Game {
 
   _loadLevel(i) {
     const lv = LEVELS[i];
-    this.waves.startLevel(lv);
+    // 离开上一关时清理激光关实例
+    if (this.laser) { this.laser.dispose(); this.laser = null; }
     this.world.setSkyMood(lv.mood);
     this.hud.setLevel(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
-    this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
+    if (isLaser(lv)) {
+      this.laserMode = true;
+      this.laser = new LaserLevel(this.world.scene);
+      this.laser.start();
+      this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}：躲避激光，到达底边过关`);
+    } else {
+      this.laserMode = false;
+      this.waves.startLevel(lv);
+      this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
+    }
   }
 
   _playerPos() { return this.rig.getWorldPosition(this._tmp); }
@@ -89,14 +102,33 @@ export class Game {
     this.input.update(dt);
     this.player.update(dt);
     this.bullets.update(dt);
-    this.balloons.update(dt, this._playerPos(), this.world.camera);
-    this.waves.update(dt);
+    const pp = this._playerPos();
 
     for (const shot of this.input.shots) this.player.fire(shot, this.bullets, this.audio);
 
     if (this.input.consumeBuddha() && this.player.canBuddha()) {
       if (this.player.triggerBuddha()) this._doBuddha();
     }
+
+    // ====== 激光关：无普通敌人，仅激光气球 ======
+    if (this.laserMode) {
+      this.laser.update(dt, pp);
+      const hit = this.laser.hitTest(pp, LASER.PLAYER_R);
+      if (hit) { this._dieInLaserLevel(); return; }
+      if (this.laser.reachedGoal(pp)) {
+        this.laser.dispose();
+        this.laser = null;
+        this._enterCard();
+        return;
+      }
+      this.hud.setScore(this.score);
+      this.hud.setHp(this.player.hp, this.player.maxHp);
+      return;
+    }
+
+    // ====== 普通关 ======
+    this.balloons.update(dt, pp, this.world.camera);
+    this.waves.update(dt);
 
     this._collide();
 
@@ -105,6 +137,14 @@ export class Game {
 
     if (!this.player.alive) { this._gameOver(); return; }
     if (this.waves.cleared) this._enterCard();
+  }
+
+  // 激光关死亡：不触发全局 GameOver，本关从头重开、激光重新初始化
+  _dieInLaserLevel() {
+    this.log('被激光击中，本关重开');
+    this.rig.position.set(0, 0, 0);
+    this.player.hp = this.player.maxHp;
+    if (this.laser) this.laser.reset();
   }
 
   _collide() {
