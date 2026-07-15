@@ -70,8 +70,10 @@ export const CARD = {
 
 // 第三关「激光气球」参数（供 laser.js 引用，便于平衡）
 export const LASER = {
-  SPAWN_DELAY: 10,   // 进入关卡后多久开始发射动画 (s)
-  LAUNCH_DUR: 2,     // 发射动画时长 (s)
+  SPAWN_DELAY: 10,   // 生成期总时长(s)：气球前7s一对对出现 + 激光后3s一对对淡入（NPC交待窗口）
+  BALLOON_SPAWN: 7,  // 生成期内：气球逐对出现时长(s)，4对均分
+  LASER_SPAWN: 3,    // 生成期内：激光束逐对淡入时长(s)，4对均分
+  LAUNCH_DUR: 6,     // 驱赶动画时长(s)：气球从起始端移到另一端（原2s，降到1/3速度）
   ROW1_DELAY: 1,     // 发射到位后多久第一排动画 (s)
   ROW2_DELAY: 3,     // 第一排后多久第二排 (s)
   ROW3_DELAY: 3,     // 第二排后多久第三排 (s)

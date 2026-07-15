@@ -64,7 +64,7 @@ export class Game {
     this.audio?.unlock();
     this.audio?.startBGM();
     this.log('游戏开始');
-    this._loadLevel(0);
+    this._loadLevel(this.levelIndex);
     this.state = 'playing';
   }
 
@@ -76,7 +76,7 @@ export class Game {
     this.hud.setLevel(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
     if (isLaser(lv)) {
       this.laserMode = true;
-      this.laser = new LaserLevel(this.world.scene);
+      this.laser = new LaserLevel(this.world.scene, (m) => this.log(m));
       this.laser.start();
       this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}：躲避激光，到达底边过关`);
     } else {

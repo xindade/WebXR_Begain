@@ -32,18 +32,11 @@ export class HUD {
     this.startBtn.style.cssText = 'pointer-events:auto;position:absolute;top:55%;left:50%;transform:translate(-50%,-50%);padding:14px 34px;font-size:20px;border:none;border-radius:12px;background:#ff7675;color:#fff;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.4);';
     this.root.appendChild(this.startBtn);
     this.startBtn.onclick = () => this._onStart && this._onStart(0);
-
-    // 测试用：直接跳到第三关（激光气球躲避关）
-    this.testBtn = document.createElement('button');
-    this.testBtn.textContent = '🎯 第三关（激光）测试';
-    this.testBtn.style.cssText = 'pointer-events:auto;position:absolute;top:calc(55% + 50px);left:50%;transform:translateX(-50%);padding:10px 22px;font-size:15px;border:none;border-radius:10px;background:#e17055;color:#fff;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.4);';
-    this.root.appendChild(this.testBtn);
-    this.testBtn.onclick = () => this._onStart && this._onStart(2);
   }
 
   onStart(cb) { this._onStart = cb; }
-  hideStart() { this.startBtn.style.display = 'none'; this.testBtn.style.display = 'none'; }
-  showStart() { this.startBtn.style.display = 'block'; this.testBtn.style.display = 'block'; }
+  hideStart() { this.startBtn.style.display = 'none'; }
+  showStart() { this.startBtn.style.display = 'block'; }
 
   setLevel(text) { this._level = text; this._renderTop(); }
   setScore(s) { this._score = s; this._renderTop(); }

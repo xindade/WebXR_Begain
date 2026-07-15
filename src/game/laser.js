@@ -6,9 +6,12 @@ import { LASER } from '../core/constants.js';
 // 移植自 F:\desk\Pico\功能验证\激光气球关卡.html
 // - 双锥体（八面体）气球 + 核心/辉光/光晕三层激光束
 // - 8 个气球（左列 posX / 右列 negX），按参考文档坐标生成
-// - 自动时间线：10s 发射 → +1s 第一排 → +3s 第二排 → +3s 第三排
-// - 玩家碰到气球实体或激光光束即死亡 → 本关重开
-// - 玩家到达底边 (z <= LASER.GOAL_Z) 即过关
+// 三阶段时间线：
+//   1) 生成期(0~10s)：气球前7s一对对冒出，激光后3s一对对淡入（NPC空占位交待窗口）
+//   2) 驱赶期(10s后)：气球从 z=-4.5 缓慢移到 z=2.5（速度 1/3），玩家自由移动
+//   3) 搭关卡期：r1/r2/r3 把气球排成激光阵，玩家穿越到达底边过关
+// - 玩家碰到气球实体或激光光束即死亡（生成期不致命）→ 本关重开
+// - 玩家到达底边 (z <= LASER.GOAL_Z) 且在关卡搭建完成后即过关
 // ============================================================
 
 // ---- 模块级共享几何（不随 reset 销毁）----
@@ -121,11 +124,16 @@ function createGroup(dir, color) {
 }
 
 export class LaserLevel {
-  constructor(scene) {
+  constructor(scene, log = () => {}) {
     this.scene = scene;
+    this.log = log;
     this.groups = [];
+    this.npc = null;
     this.elapsed = 0;
     this.launch = { done: true, t: 0 };
+    this.lethal = false;        // 生成期结束后才致命
+    this.courseReady = false;   // 激光阵搭建完成后才允许过关
+    this._announcedDrive = false;
     this.r1 = { active: false, phase: 0, t: 0, y0: 0, y1: 0, y1t: 0 };
     this.r2 = { active: false, phase: 0, t: 0, z2: undefined, z3: undefined, x3: undefined };
     this.r3 = { active: false, phase: 0, t: 0, z4: undefined, x4: undefined, z5: undefined, z6: undefined, x6: undefined, z7: undefined };
@@ -134,6 +142,9 @@ export class LaserLevel {
   start() {
     this.elapsed = 0;
     this.launch = { done: false, t: 0 };
+    this.lethal = false;
+    this.courseReady = false;
+    this._announcedDrive = false;
     this.r1 = { active: false, phase: 0, t: 0, y0: 0, y1: 0, y1t: 0 };
     this.r2 = { active: false, phase: 0, t: 0, z2: undefined, z3: undefined, x3: undefined };
     this.r3 = { active: false, phase: 0, t: 0, z4: undefined, x4: undefined, z5: undefined, z6: undefined, x6: undefined, z7: undefined };
@@ -142,6 +153,22 @@ export class LaserLevel {
     this.ROW2_AT = this.ROW1_AT + LASER.ROW2_DELAY;
     this.ROW3_AT = this.ROW2_AT + LASER.ROW3_DELAY;
 
+    // 生成期：气球/激光逐对出现的时刻表（一对 = 左右同高 2 个）
+    this.balloonReveal = [];
+    this.laserReveal = [];
+    const nPairs = STACK.length;
+    for (let k = 0; k < nPairs; k++) {
+      this.balloonReveal.push({ at: (k * LASER.BALLOON_SPAWN) / nPairs, dur: 0.5 });
+      this.laserReveal.push({ at: LASER.BALLOON_SPAWN + (k * LASER.LASER_SPAWN) / nPairs, dur: 0.5 });
+    }
+
+    // NPC 空占位（目前无模型/对话，预留交待窗口）
+    if (!this.npc) {
+      this.npc = new THREE.Group();
+      this.npc.position.set(0, 1.4, -1.5);
+      this.scene.add(this.npc);
+    }
+
     this.groups = [];
     for (let si = 0; si < STACK.length; si++) {
       const g1 = createGroup('posX', balloonColors[si]);
@@ -149,6 +176,10 @@ export class LaserLevel {
       g1.userData.baseY = STACK[si];
       g1.userData.startZ = pos1.z;
       g1.userData.targetZ = targetZ;
+      g1.visible = false;            // 生成期逐对显形
+      g1.scale.setScalar(0);
+      g1.userData.beamReveal = 0;    // 激光逐对淡入
+      g1.userData.revealed = false;
       this.scene.add(g1);
       this.groups.push(g1);
 
@@ -157,9 +188,15 @@ export class LaserLevel {
       g6.userData.baseY = STACK[si];
       g6.userData.startZ = pos6.z;
       g6.userData.targetZ = targetZ;
+      g6.visible = false;
+      g6.scale.setScalar(0);
+      g6.userData.beamReveal = 0;
+      g6.userData.revealed = false;
       this.scene.add(g6);
       this.groups.push(g6);
     }
+
+    this.log('NPC 交待中…（10秒）激光气球就位');
   }
 
   reset() {
@@ -168,6 +205,10 @@ export class LaserLevel {
   }
 
   dispose() {
+    if (this.npc) {
+      this.scene.remove(this.npc);
+      this.npc = null;
+    }
     for (const g of this.groups) {
       this.scene.remove(g);
       g.traverse((o) => {
@@ -186,8 +227,19 @@ export class LaserLevel {
     this.elapsed += dt;
     const t = this.elapsed;
 
-    // ====== 发射（全部气球 Z 轴前后移动）======
-    if (!this.launch.done) {
+    // ====== 阶段1 生成期：气球一对对冒出 + 激光一对对淡入 ======
+    if (t < LASER.SPAWN_DELAY) {
+      this._updateSpawn(t);
+    } else {
+      this._ensureAllRevealed();
+      if (!this._announcedDrive) {
+        this._announcedDrive = true;
+        this.log('气球就位，开始驱赶！');
+      }
+    }
+
+    // ====== 阶段2 驱赶期：生成期结束后才缓慢移到另一端（速度 1/3）======
+    if (t >= LASER.SPAWN_DELAY && !this.launch.done) {
       this.launch.t += dt;
       const p = Math.min(this.launch.t / LASER.LAUNCH_DUR, 1);
       const ep = easeInOut(p);
@@ -197,10 +249,10 @@ export class LaserLevel {
       if (p >= 1) this.launch.done = true;
     }
 
-    // ====== 触发三排动画（等到发射到位后）======
-    if (this.elapsed >= this.ROW1_AT) this._activateR1();
-    if (this.elapsed >= this.ROW2_AT) this._activateR2();
-    if (this.elapsed >= this.ROW3_AT) this._activateR3();
+    // ====== 阶段3 搭关卡期：r1/r2/r3 排成激光阵 ======
+    if (t >= this.ROW1_AT) this._activateR1();
+    if (t >= this.ROW2_AT) this._activateR2();
+    if (t >= this.ROW3_AT) this._activateR3();
     this._updateR1(dt);
     this._updateR2(dt);
     this._updateR3(dt);
@@ -217,9 +269,47 @@ export class LaserLevel {
       if (!skip) g.position.y = d.baseY + FLOAT_AMP * Math.sin(t * FLOAT_FREQ + i * 0.5);
       d.balloonMesh.rotation.y = t * SPIN_SPEED + i;
       d.balloonMesh.rotation.z = TILT_AMP * Math.sin(t * 0.3 + i * 0.5);
-      d.coreMat.opacity = 0.65 + 0.35 * (0.5 + 0.5 * Math.sin(t * CORE_FREQ + i));
-      d.glowMat.opacity = 0.15 + 0.25 * (0.5 + 0.5 * Math.sin(t * GLOW_FREQ + i));
-      d.haloMat.opacity = 0.03 + 0.09 * (0.5 + 0.5 * Math.sin(t * HALO_FREQ + i));
+      const br = d.beamReveal ?? 1;   // 生成期内=0（激光不可见）
+      d.coreMat.opacity = br * (0.65 + 0.35 * (0.5 + 0.5 * Math.sin(t * CORE_FREQ + i)));
+      d.glowMat.opacity = br * (0.15 + 0.25 * (0.5 + 0.5 * Math.sin(t * GLOW_FREQ + i)));
+      d.haloMat.opacity = br * (0.03 + 0.09 * (0.5 + 0.5 * Math.sin(t * HALO_FREQ + i)));
+    }
+
+    // ====== 致命 / 过关门控 ======
+    this.lethal = t >= LASER.SPAWN_DELAY;        // 生成期不致命
+    this.courseReady = t >= this.ROW3_AT;        // 激光阵搭建完成后才允许过关
+  }
+
+  // 生成期：逐对把气球缩放显形、激光淡入
+  _updateSpawn(t) {
+    const nPairs = this.balloonReveal.length;
+    for (let k = 0; k < nPairs; k++) {
+      const br = this.balloonReveal[k];
+      const bp = Math.min(Math.max((t - br.at) / br.dur, 0), 1);
+      const lr = this.laserReveal[k];
+      const lp = Math.min(Math.max((t - lr.at) / lr.dur, 0), 1);
+      const gL = this.groups[2 * k];
+      const gR = this.groups[2 * k + 1];
+      const ep = easeInOut(bp);
+      for (const g of [gL, gR]) {
+        if (bp > 0) {
+          g.visible = true;
+          const s = GROUP_SCALE * ep;
+          g.scale.set(s, s, s);
+          g.userData.revealed = bp >= 1;
+        }
+        g.userData.beamReveal = easeInOut(lp);
+      }
+    }
+  }
+
+  // 生成期结束后，确保全部气球/激光就位
+  _ensureAllRevealed() {
+    for (const g of this.groups) {
+      g.visible = true;
+      g.scale.set(GROUP_SCALE, GROUP_SCALE, GROUP_SCALE);
+      g.userData.beamReveal = 1;
+      g.userData.revealed = true;
     }
   }
 
@@ -321,6 +411,7 @@ export class LaserLevel {
 
   // ---------- 命中检测：气球实体 + 激光光束 ----------
   hitTest(playerPos, playerRadius) {
+    if (!this.lethal) return null; // 生成期不致命
     const pr = playerRadius ?? LASER.PLAYER_R;
     const _a = new THREE.Vector3();
     const _b = new THREE.Vector3();
@@ -337,8 +428,8 @@ export class LaserLevel {
     return null;
   }
 
-  // ---------- 过关判定：到达底边 ----------
+  // ---------- 过关判定：激光阵搭建完成后到达底边 ----------
   reachedGoal(playerPos) {
-    return playerPos.z <= LASER.GOAL_Z;
+    return this.courseReady && playerPos.z <= LASER.GOAL_Z;
   }
 }
