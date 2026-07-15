@@ -51,12 +51,12 @@ export class Game {
     this.pageLog?.log(msg);
   }
 
-  start() {
+  start(atIndex = 0) {
     this.player.reset();
     this.balloons.clear();
     this.bullets.clear();
     this.score = 0;
-    this.levelIndex = 0;
+    this.levelIndex = atIndex;
     this.hud.hideStart();
     this.hud.clearMessage();
     this.hud.setScore(0);
@@ -250,7 +250,7 @@ export class Game {
     if (this.levelIndex >= LEVELS.length) {
       this.state = 'over';
       this.hud.message('通关！', '按「开始游戏」重新挑战', '#2ecc71');
-      this.hud.startBtn.style.display = 'block';
+      this.hud.showStart();
       return;
     }
     this._loadLevel(this.levelIndex);
@@ -263,6 +263,6 @@ export class Game {
     this.balloons.clear();
     this.bullets.clear();
     this.hud.message('飞船坠落', `得分 ${this.score} · 按「开始游戏」重来`, '#e74c3c');
-    this.hud.startBtn.style.display = 'block';
+    this.hud.showStart();
   }
 }

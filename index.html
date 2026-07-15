@@ -20,8 +20,15 @@
       cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.4);
     }
     #enter-vr-btn:disabled { opacity: .6; cursor: default; }
+    #enter-vr-laser-btn {
+      position: fixed; bottom: 104px; left: 50%; transform: translateX(-50%);
+      z-index: 20; padding: 10px 22px; font-size: 15px; font-family: sans-serif;
+      border: none; border-radius: 10px; background: #e17055; color: #fff;
+      cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.4);
+    }
+    #enter-vr-laser-btn:disabled { opacity: .6; cursor: default; }
     #status-msg {
-      position: fixed; bottom: 100px; left: 0; right: 0; text-align: center;
+      position: fixed; bottom: 150px; left: 0; right: 0; text-align: center;
       color: #ffd43b; font-family: sans-serif; font-size: 14px; z-index: 20;
       text-shadow: 0 1px 3px #000; display: none;
     }
@@ -63,6 +70,7 @@
   <canvas id="app"></canvas>
   <div id="status-msg"></div>
   <button id="enter-vr-btn">🎈 进入 VR</button>
+  <button id="enter-vr-laser-btn">🎯 进入 VR · 第三关（激光）</button>
   <div id="hint">桌面：WASD 移动 · 鼠标看 · 左键射击 · F 放大招 · 点击画面锁定鼠标 | 头显：摇杆移动 · 扳机射击 · 握柄放大招 · A/B 退出</div>
   <!-- 最高优先级页面日志：经典脚本优先加载，不依赖 three，可捕获黑屏类致命错误 -->
   <script src="./src/ui/pagelog.js"></script>
