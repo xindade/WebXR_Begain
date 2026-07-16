@@ -5,8 +5,9 @@ import { BulletManager } from './bullets.js';
 import { WaveManager } from './waves.js';
 import { CardDraft } from './cards.js';
 import { LaserLevel } from './laser.js';
+import { GlassGrid } from './glassGrid.js';
 import { LEVELS, isLaser } from '../content/levels.js';
-import { BALLOON, BUDDHA, SHIP, LASER } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, LASER, GRID } from '../core/constants.js';
 
 const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关' };
 
@@ -33,6 +34,8 @@ export class Game {
     this.levelIndex = 0;
     this.laser = null;       // 激光关实例（仅第3关）
     this.laserMode = false;  // 当前是否处于激光关
+    this.grid = null;        // 第九关玻璃走格子实例（仅第9关）
+    this.gridPhase = false;  // 是否处于走格子阶段
     this.score = 0;
     this._buddhaFx = null;
     this._cardState = null;
@@ -57,6 +60,10 @@ export class Game {
     this.bullets.clear();
     this.score = 0;
     this.levelIndex = atIndex;
+    this.gridPhase = false;
+    this._lastCell = 0;
+    this._failing = false;
+    this._failTimer = 0;
     this.hud.hideStart();
     this.hud.clearMessage();
     this.hud.setScore(0);
@@ -70,15 +77,26 @@ export class Game {
 
   _loadLevel(i) {
     const lv = LEVELS[i];
-    // 离开上一关时清理激光关实例
+    // 离开上一关时清理激光关实例与玻璃网格
     if (this.laser) { this.laser.dispose(); this.laser = null; }
+    if (this.grid) { this.grid.dispose(); this.grid = null; }
+    this.gridPhase = false;
+    this._lastCell = 0;
     this.world.setSkyMood(lv.mood);
     this.hud.setLevel(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
     if (isLaser(lv)) {
       this.laserMode = true;
-      this.laser = new LaserLevel(this.world.scene, (m) => this.log(m));
+      // 透传 laserMode：'drive' 为第九关（生成→驱赶→保持原地→走格子），'full' 为第三关（搭阵）
+      this.laser = new LaserLevel(this.world.scene, (m) => this.log(m), lv.laserMode || 'full');
       this.laser.start();
-      this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}：躲避激光，到达底边过关`);
+      if (lv.laserMode === 'drive') {
+        // 第九关：在游玩区铺设玻璃走格子（编号 1–32）
+        this.grid = new GlassGrid(this.world.scene);
+        this.grid.setCorrect(GRID.CORRECT, GRID.WIN_CELL); // 正确格集合 + 通关格(cell 3)
+        this.log(`第 ${lv.n} 关 · 激光驱赶：等待→驱赶→保持原地10秒→走格子`);
+      } else {
+        this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}：躲避激光，到达底边过关`);
+      }
     } else {
       this.laserMode = false;
       this.waves.startLevel(lv);
@@ -113,12 +131,60 @@ export class Game {
     // ====== 激光关：无普通敌人，仅激光气球 ======
     if (this.laserMode) {
       this.laser.update(dt, pp);
+
+      // 保持原地期（驱赶到位后、激光未消散前）：正确格持续闪烁发光
+      const holdPhase = this.laser.launch.done && !this.laser.gridActive && !this.laser.fading;
+      if (this.grid && !this.gridPhase) this.grid.update(dt, holdPhase);
+
+      // ---- 走格子阶段（仅第九关 drive 模式）----
+      if (this.gridPhase) {
+        if (this._failing) {
+          this._failTimer -= dt;
+          const k = Math.min(1, 1 - Math.max(0, this._failTimer) / 0.6);
+          this.rig.position.y = -10 * k * k;   // 踩错掉落 10 米（重力加速感）
+          if (this._failTimer <= 0) { this._dieInLaserLevel(); return; }
+        }
+        const idx = this.grid ? this.grid.cellAt(pp) : 0;
+        if (idx && idx !== this._lastCell) {
+          this._lastCell = idx;
+          const r = this.grid.onEnter(idx);
+          if (r === 'wrong') {
+            this.grid.breakCell(idx);          // 踩错：破碎动画
+            this._failing = true;
+            this._failTimer = 0.6;             // 0.6s 后本关重开
+            this.log('踩到错误格子，玻璃破碎！本关重开');
+            return;
+          }
+          if (r === 'win') {
+            this.laser.dispose(); this.laser = null;
+            if (this.grid) { this.grid.dispose(); this.grid = null; }
+            this.gridPhase = false;
+            this._enterCard();
+            return;
+          }
+        }
+        if (this.grid) this.grid.update(dt, false); // 走格子阶段：激光已消散，发光关闭
+        this.hud.setScore(this.score);
+        this.hud.setHp(this.player.hp, this.player.maxHp);
+        return;
+      }
+
+      // ---- 激光阶段（生成 / 驱赶 / 保持原地）----
       const hit = this.laser.hitTest(pp, LASER.PLAYER_R);
       if (hit) { this._dieInLaserLevel(); return; }
       if (this.laser.reachedGoal(pp)) {
-        this.laser.dispose();
-        this.laser = null;
-        this._enterCard();
+        if (this.laser.mode === 'drive') {
+          // 保持期结束 → 激光消散，转入走格子阶段
+          this.gridPhase = true;
+          this._lastCell = 0;
+          this._failing = false;
+          this.laser.enterGridPhase();
+          this.log('激光消散，开始走格子：踩正确格子，踩错会破碎');
+        } else {
+          this.laser.dispose();
+          this.laser = null;
+          this._enterCard();
+        }
         return;
       }
       this.hud.setScore(this.score);
@@ -141,10 +207,15 @@ export class Game {
 
   // 激光关死亡：不触发全局 GameOver，本关从头重开、激光重新初始化
   _dieInLaserLevel() {
-    this.log('被激光击中，本关重开');
+    this.log('失败，本关重开');
     this.rig.position.set(0, 0, 0);
     this.player.hp = this.player.maxHp;
     if (this.laser) this.laser.reset();
+    if (this.grid) this.grid.reset();   // 玻璃网格（含破碎格）一并重建
+    this.gridPhase = false;
+    this._lastCell = 0;
+    this._failing = false;
+    this._failTimer = 0;
   }
 
   _collide() {

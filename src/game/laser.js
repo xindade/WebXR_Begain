@@ -124,9 +124,10 @@ function createGroup(dir, color) {
 }
 
 export class LaserLevel {
-  constructor(scene, log = () => {}) {
+  constructor(scene, log = () => {}, mode = 'full') {
     this.scene = scene;
     this.log = log;
+    this.mode = mode;          // 'full' = 第三关（生成→驱赶→搭阵）；'drive' = 第九关（生成→驱赶→保持原地→走格子）
     this.groups = [];
     this.npc = null;
     this.elapsed = 0;
@@ -134,6 +135,9 @@ export class LaserLevel {
     this.lethal = false;        // 生成期结束后才致命
     this.courseReady = false;   // 激光阵搭建完成后才允许过关
     this._announcedDrive = false;
+    this.fading = false;        // 进入走格子阶段后激光气球淡出
+    this.fadeT = 0;
+    this.gridActive = false;    // 走格子阶段：停止致命，仅淡出
     this.r1 = { active: false, phase: 0, t: 0, y0: 0, y1: 0, y1t: 0 };
     this.r2 = { active: false, phase: 0, t: 0, z2: undefined, z3: undefined, x3: undefined };
     this.r3 = { active: false, phase: 0, t: 0, z4: undefined, x4: undefined, z5: undefined, z6: undefined, x6: undefined, z7: undefined };
@@ -145,13 +149,22 @@ export class LaserLevel {
     this.lethal = false;
     this.courseReady = false;
     this._announcedDrive = false;
+    this.fading = false;
+    this.fadeT = 0;
+    this.gridActive = false;
     this.r1 = { active: false, phase: 0, t: 0, y0: 0, y1: 0, y1t: 0 };
     this.r2 = { active: false, phase: 0, t: 0, z2: undefined, z3: undefined, x3: undefined };
     this.r3 = { active: false, phase: 0, t: 0, z4: undefined, x4: undefined, z5: undefined, z6: undefined, x6: undefined, z7: undefined };
 
-    this.ROW1_AT = LASER.SPAWN_DELAY + LASER.LAUNCH_DUR + LASER.ROW1_DELAY;
-    this.ROW2_AT = this.ROW1_AT + LASER.ROW2_DELAY;
-    this.ROW3_AT = this.ROW2_AT + LASER.ROW3_DELAY;
+    // 时间门控：full 模式算搭阵三排时刻；drive 模式算「保持原地结束」时刻
+    if (this.mode === 'full') {
+      this.ROW1_AT = LASER.SPAWN_DELAY + LASER.LAUNCH_DUR + LASER.ROW1_DELAY;
+      this.ROW2_AT = this.ROW1_AT + LASER.ROW2_DELAY;
+      this.ROW3_AT = this.ROW2_AT + LASER.ROW3_DELAY;
+    } else {
+      // 生成(0-10) + 驱赶(10-16) + 保持原地(16-26) → 26s 后转入走格子
+      this.HOLD_AT = LASER.SPAWN_DELAY + LASER.LAUNCH_DUR + LASER.HOLD_DUR;
+    }
 
     // 生成期：气球/激光逐对出现的时刻表（一对 = 左右同高 2 个）
     this.balloonReveal = [];
@@ -249,16 +262,19 @@ export class LaserLevel {
       if (p >= 1) this.launch.done = true;
     }
 
-    // ====== 阶段3 搭关卡期：r1/r2/r3 排成激光阵 ======
-    if (t >= this.ROW1_AT) this._activateR1();
-    if (t >= this.ROW2_AT) this._activateR2();
-    if (t >= this.ROW3_AT) this._activateR3();
-    this._updateR1(dt);
-    this._updateR2(dt);
-    this._updateR3(dt);
+    // ====== 阶段3：仅 full 模式搭阵（r1/r2/r3）；drive 模式跳过，气球保持原位 ======
+    if (this.mode === 'full') {
+      if (t >= this.ROW1_AT) this._activateR1();
+      if (t >= this.ROW2_AT) this._activateR2();
+      if (t >= this.ROW3_AT) this._activateR3();
+      this._updateR1(dt);
+      this._updateR2(dt);
+      this._updateR3(dt);
+    }
 
     // ====== 通用每帧更新 ======
-    const FLOAT_AMP = 0.3, FLOAT_FREQ = 0.8, SPIN_SPEED = 0.4, TILT_AMP = 0.15;
+    const FLOAT_AMP = (this.mode === 'drive' && this.launch.done) ? 0.12 : 0.3; // drive 保持期仅极轻浮动
+    const FLOAT_FREQ = 0.8, SPIN_SPEED = 0.4, TILT_AMP = 0.15;
     const CORE_FREQ = 15, GLOW_FREQ = 6, HALO_FREQ = 3;
     for (let i = 0; i < this.groups.length; i++) {
       const g = this.groups[i];
@@ -275,9 +291,26 @@ export class LaserLevel {
       d.haloMat.opacity = br * (0.03 + 0.09 * (0.5 + 0.5 * Math.sin(t * HALO_FREQ + i)));
     }
 
+    // ====== 进入走格子阶段后：激光气球淡出 ======
+    if (this.fading) {
+      this.fadeT += dt;
+      const k = Math.max(0, 1 - this.fadeT / 1); // 1s 内缩到 0
+      for (const g of this.groups) g.scale.setScalar(GROUP_SCALE * k);
+      if (k <= 0) for (const g of this.groups) g.visible = false;
+    }
+
     // ====== 致命 / 过关门控 ======
-    this.lethal = t >= LASER.SPAWN_DELAY;        // 生成期不致命
-    this.courseReady = t >= this.ROW3_AT;        // 激光阵搭建完成后才允许过关
+    // 走格子阶段（gridActive）停止致命；否则生成期不致命、10s 后致命
+    if (!this.gridActive) this.lethal = t >= LASER.SPAWN_DELAY;
+    this.courseReady = this.mode === 'full' ? (t >= this.ROW3_AT) : (t >= this.HOLD_AT);
+  }
+
+  // 进入走格子阶段：停止致命并启动激光气球淡出（由 game.js 在保持期结束后调用）
+  enterGridPhase() {
+    this.gridActive = true;
+    this.lethal = false;
+    this.fading = true;
+    this.fadeT = 0;
   }
 
   // 生成期：逐对把气球缩放显形、激光淡入
@@ -428,8 +461,11 @@ export class LaserLevel {
     return null;
   }
 
-  // ---------- 过关判定：激光阵搭建完成后到达底边 ----------
+  // ---------- 过关判定 ----------
+  // full 模式：激光阵搭建完成且到达底边 z<=GOAL_Z
+  // drive 模式：保持期结束（HOLD_AT）即视为可进入走格子阶段，不看玩家位置
   reachedGoal(playerPos) {
-    return this.courseReady && playerPos.z <= LASER.GOAL_Z;
+    if (this.mode === 'full') return this.courseReady && playerPos.z <= LASER.GOAL_Z;
+    return this.courseReady;
   }
 }

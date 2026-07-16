@@ -92,6 +92,21 @@ export const LASER = {
   BEAM_LETHAL_R: 0.15, // 激光光束致命半径（含辉光余量）(m)
   PLAYER_R: 0.4,     // 玩家在激光关的碰撞半径 (m)
   BALLOON_R: 0.4,    // 激光气球实体致命半径 (m)
+  HOLD_DUR: 10,      // drive 模式：驱赶到位后保持原地（仍致命）的秒数
+};
+
+// 第九关「玻璃走格子」参数（供 glassGrid.js 引用，便于平衡）
+export const GRID = {
+  COLS: 4, ROWS: 8,        // 4×8 = 32 格
+  CELL: 1,                 // 每格 1m
+  Y: 0.11,                 // 玻璃格顶面高度（略高于边界盒 0.10，避免 z-fighting）
+  NUM_Y_OFFSET: 0.06,      // 编号平面高出玻璃顶面的距离，防 z-fighting
+  NUM_SIZE: 0.5,           // 编号平面边长 = 1m 格子的 1/2 边长 → 占 1/4 面积（"占据1/4大小"按面积解；可调）
+  GLASS_COLOR: 0x9fe8ff,   // 淡青光玻璃
+  GLASS_GLOW: 0x33ff99,    // 正确格发光色（淡绿，保持原地期脉冲）
+  TRANSMISSION: 0.92,      // 玻璃透射（MeshPhysicalMaterial.transmission）
+  CORRECT: [3,7,9,10,11,12,13,17,18,22,23,27,29,30,31,32], // 用户指定正确格（安全格）
+  WIN_CELL: 3,             // 走到此格通关
 };
 
 // 稀有度配置：权重、颜色、倍率
