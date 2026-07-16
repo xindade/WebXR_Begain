@@ -124,10 +124,11 @@ function createGroup(dir, color) {
 }
 
 export class LaserLevel {
-  constructor(scene, log = () => {}, mode = 'full') {
+  constructor(scene, log = () => {}, mode = 'full', holdDur = undefined) {
     this.scene = scene;
     this.log = log;
-    this.mode = mode;          // 'full' = 第三关（生成→驱赶→搭阵）；'drive' = 第九关（生成→驱赶→保持原地→走格子）
+    this.mode = mode;          // 'full' = 第三关（生成→驱赶→搭阵）；'drive' = 第九关（生成→驱赶→保持原地→走格子）；'flip' = 第十五关（生成→驱赶→保持原地→九宫格翻转）
+    this.holdDur = holdDur;    // 仅 drive/flip 用：覆盖 LASER.HOLD_DUR（flip 传 FLIP.HOLD_DUR=2）
     this.groups = [];
     this.npc = null;
     this.elapsed = 0;
@@ -162,8 +163,8 @@ export class LaserLevel {
       this.ROW2_AT = this.ROW1_AT + LASER.ROW2_DELAY;
       this.ROW3_AT = this.ROW2_AT + LASER.ROW3_DELAY;
     } else {
-      // 生成(0-10) + 驱赶(10-16) + 保持原地(16-26) → 26s 后转入走格子
-      this.HOLD_AT = LASER.SPAWN_DELAY + LASER.LAUNCH_DUR + LASER.HOLD_DUR;
+      // 生成(0-10) + 驱赶(10-16) + 保持原地(16-26，drive 为 10s / flip 由 holdDur 覆盖为 2s)
+      this.HOLD_AT = LASER.SPAWN_DELAY + LASER.LAUNCH_DUR + (this.holdDur ?? LASER.HOLD_DUR);
     }
 
     // 生成期：气球/激光逐对出现的时刻表（一对 = 左右同高 2 个）
@@ -272,7 +273,7 @@ export class LaserLevel {
     }
 
     // ====== 通用每帧更新 ======
-    const FLOAT_AMP = (this.mode === 'drive' && this.launch.done) ? 0.12 : 0.3; // drive 保持期仅极轻浮动
+    const FLOAT_AMP = (this.mode !== 'full' && this.launch.done) ? 0.12 : 0.3; // drive/flip 保持期仅极轻浮动；full 模式略大
     const FLOAT_FREQ = 0.8, SPIN_SPEED = 0.4, TILT_AMP = 0.15;
     const CORE_FREQ = 15, GLOW_FREQ = 6, HALO_FREQ = 3;
     for (let i = 0; i < this.groups.length; i++) {
@@ -466,5 +467,10 @@ export class LaserLevel {
   reachedGoal(playerPos) {
     if (this.mode === 'full') return this.courseReady && playerPos.z <= LASER.GOAL_Z;
     return this.courseReady;
+  }
+
+  // 保持原地期：驱赶到位、尚未进入走格子、激光未开始消散。供 game.js 驱动发光，收口内部字段。
+  isHoldPhase() {
+    return this.launch.done && !this.gridActive && !this.fading;
   }
 }

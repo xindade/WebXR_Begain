@@ -32,6 +32,11 @@ export class HUD {
     this.startBtn.style.cssText = 'pointer-events:auto;position:absolute;top:55%;left:50%;transform:translate(-50%,-50%);padding:14px 34px;font-size:20px;border:none;border-radius:12px;background:#ff7675;color:#fff;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.4);';
     this.root.appendChild(this.startBtn);
     this.startBtn.onclick = () => this._onStart && this._onStart(0);
+
+    // 倒计时横幅（第十五关 180s 用，平时隐藏）
+    this.timer = document.createElement('div');
+    this.timer.style.cssText = 'position:absolute;top:14px;left:50%;transform:translateX(-50%);font-size:22px;font-weight:bold;text-shadow:0 2px 6px #000;display:none;';
+    this.root.appendChild(this.timer);
   }
 
   onStart(cb) { this._onStart = cb; }
@@ -56,4 +61,12 @@ export class HUD {
       (sub ? `<div style="font-size:16px;margin-top:8px;text-shadow:0 1px 3px #000;opacity:.9">${sub}</div>` : '');
   }
   clearMessage() { this.msg.innerHTML = ''; }
+
+  // 倒计时横幅（第十五关 180s）
+  setCountdown(sec) {
+    this.timer.style.display = 'block';
+    this.timer.textContent = `⏱ ${sec}s`;
+    this.timer.style.color = sec <= 10 ? '#e74c3c' : '#fff';
+  }
+  clearCountdown() { this.timer.style.display = 'none'; this.timer.textContent = ''; }
 }

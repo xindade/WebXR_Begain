@@ -17,7 +17,7 @@ export const LEVELS = [
   { n: 12, kind: 'boss',   mood: 'day', boss: 'dragon' },
   { n: 13, kind: 'normal', mood: 'dusk' },
   { n: 14, kind: 'crisis', mood: 'night' },
-  { n: 15, kind: 'bonus',  mood: 'day' },
+  { n: 15, kind: 'laser',  mood: 'day', laserMode: 'flip' },
   { n: 16, kind: 'normal', mood: 'dusk' },
   { n: 17, kind: 'crisis', mood: 'night' },
   { n: 18, kind: 'boss',   mood: 'day', boss: 'face' },

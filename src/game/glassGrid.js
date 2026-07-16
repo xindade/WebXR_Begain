@@ -1,14 +1,26 @@
 // 第九关「玻璃走格子」：4×8=32 个玻璃格，编号 1–32，支持踩格检测 / 正确集 / 踩错破碎
 // 仅在第 9 关（laserMode:'drive'）创建，离开或本关重开时销毁/重建。
 import * as THREE from 'three';
-import { GRID } from '../core/constants.js';
-import { makeTextPlane } from '../core/canvasTexture.js';
+import { GRID, MOVE } from '../core/constants.js';
+import { makeTextTexture } from '../core/canvasTexture.js';
 
-// 列中心 X（4 列）：左(-X) → 右(+X)
-const COL_X = [-1.5, -0.5, 0.5, 1.5];
-// 行中心 Z（8 行）：前(-Z) → 后(+Z)
-const ROW_Z = [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5];
+// 列/行中心由玩家移动边界 MOVE.BOUND_* 与行列数派生：改边界自动适配网格，消除配置漂移
+const COL_W = (2 * MOVE.BOUND_X) / GRID.COLS; // 每列宽 (m)
+const ROW_W = (2 * MOVE.BOUND_Z) / GRID.ROWS; // 每行宽 (m)
+const COL_X = Array.from({ length: GRID.COLS }, (_, c) => -MOVE.BOUND_X + (c + 0.5) * COL_W);
+const ROW_Z = Array.from({ length: GRID.ROWS }, (_, r) => -MOVE.BOUND_Z + (r + 0.5) * ROW_W);
 const BREAK_DUR = 0.5; // 破碎动画时长(s)
+
+// ---- 模块级共享资源（不随 reset/重建销毁，避免死亡重开反复分配几何、反复上传 32 张编号纹理到 GPU）----
+const cellGeo = new THREE.BoxGeometry(0.96, 0.08, 0.96);          // 所有格子尺寸一致，可共享
+const numGeo  = new THREE.PlaneGeometry(GRID.NUM_SIZE, GRID.NUM_SIZE);
+const numTexCache = new Map();                                    // 编号纹理 1..32 仅首次创建，永久复用
+function numTexture(n) {
+  if (!numTexCache.has(n)) {
+    numTexCache.set(n, makeTextTexture({ text: String(n), font: 'bold 80px sans-serif', color: '#eaffff', width: 128, height: 128 }));
+  }
+  return numTexCache.get(n);
+}
 
 export class GlassGrid {
   constructor(scene) {
@@ -42,16 +54,15 @@ export class GlassGrid {
   }
 
   _makeCell() {
-    const geo = new THREE.BoxGeometry(0.96, 0.08, 0.96);
+    // 玻璃外观用「半透明 + clearcoat 高光」模拟；故意去掉 transmission/thickness/ior：
+    // MeshPhysicalMaterial.transmission>0 会强制每帧多做一次全场景透射渲染 pass，
+    // 32 个格子叠加让第九关走格子阶段帧率只剩普通关一半。空场景里折射几乎无可见差异，却极费。
     const mat = new THREE.MeshPhysicalMaterial({
       color: GRID.GLASS_COLOR,
       metalness: 0,
-      roughness: 0.08,
-      transmission: GRID.TRANSMISSION, // 玻璃透射
-      thickness: 0.5,
-      ior: 1.3,
-      clearcoat: 0.8,
-      clearcoatRoughness: 0.05,
+      roughness: 0.12,
+      clearcoat: 0.6,
+      clearcoatRoughness: 0.1,
       transparent: true,
       opacity: 0.55,
       depthWrite: false,
@@ -59,18 +70,22 @@ export class GlassGrid {
       emissive: new THREE.Color(GRID.GLASS_GLOW), // 保持原地期脉冲发光（默认不发光）
       emissiveIntensity: 0,
     });
-    return new THREE.Mesh(geo, mat);
+    return new THREE.Mesh(cellGeo, mat);
   }
 
-  // 编号：平躺于格面正中心的平面（复用 core/canvasTexture.js 工厂），朝上可读、贴表面
+  // 编号：平躺于格面正中心的平面，复用共享几何与共享编号纹理（朝上可读、贴表面）
   _makeNumMesh(n) {
-    return makeTextPlane({ text: String(n), size: GRID.NUM_SIZE });
+    const mat = new THREE.MeshBasicMaterial({ map: numTexture(n), transparent: true, depthWrite: false });
+    const m = new THREE.Mesh(numGeo, mat);
+    m.rotation.x = -Math.PI / 2; // 平躺于 XZ 面，朝上可读
+    m.renderOrder = 2;
+    return m;
   }
 
   // 玩家世界坐标 → 格子编号 1..32；越界返回 0
   cellAt(p) {
-    const col = Math.floor(p.x + 2); // x∈[-2,2) -> 0..3
-    const row = Math.floor(p.z + 4); // z∈[-4,4) -> 0..7
+    const col = Math.floor((p.x + MOVE.BOUND_X) / COL_W); // x∈[-BOUND_X,BOUND_X) -> 0..COLS-1
+    const row = Math.floor((p.z + MOVE.BOUND_Z) / ROW_W); // z∈[-BOUND_Z,BOUND_Z) -> 0..ROWS-1
     if (col < 0 || col >= GRID.COLS || row < 0 || row >= GRID.ROWS) return 0;
     return row * GRID.COLS + col + 1;
   }
@@ -136,12 +151,13 @@ export class GlassGrid {
 
   dispose() {
     this.scene.remove(this.group);
-    this.group.traverse((o) => {
-      if (o.geometry) o.geometry.dispose();
-      if (o.material) {
-        if (o.material.map) o.material.map.dispose();
-        o.material.dispose();
-      }
-    });
+    // 关键：必须先摘除子节点再释放 GPU 资源，否则 reset() 复用同一 group 重建时，
+    // 残留的旧 mesh 节点会累积在 group 里被持续渲染 —— 每次死亡重开渲染负载翻倍（帧率暴跌）。
+    for (const o of [...this.group.children]) {
+      this.group.remove(o);
+      o.traverse((c) => {
+        if (c.isMesh && c.material) c.material.dispose(); // 几何/纹理为模块级共享，不可 dispose
+      });
+    }
   }
 }

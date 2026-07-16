@@ -63,6 +63,9 @@ export class CardDraft {
     this.active = false;
     this.onDone = null;
     this._state = null;
+    // 分数访问解耦：默认 no-op，open 时由外部注入 getScore/spendScore 回调（不再反向持有 game 实例）
+    this._getScore = () => 0;
+    this._spendScore = () => {};
 
     this.resolving = false;   // 是否已触发选择/刷新，进入结算动画
     this.resolveT = 0;
@@ -81,6 +84,9 @@ export class CardDraft {
   open(playerPos, forward, state, onDone) {
     if (playerPos) this._playerPos.copy(playerPos);
     this._state = state;
+    // score 访问解耦：优先用注入回调；兼容旧调用直接传 game 实例（state.game.score）
+    this._getScore = state.getScore || (() => state.game?.score ?? 0);
+    this._spendScore = state.spendScore || ((c) => { if (state.game) state.game.score -= c; });
     this.active = true;
     this.group.visible = true;
     this.timer = CARD.DURATION;
@@ -109,7 +115,7 @@ export class CardDraft {
       }
     }
     // 刷新卡（第 4 个可射击气球）；积分不足以支付当前刷新费时锁定（不可击中 + 变暗）
-    const canAfford = this._state.game.score >= this.refreshCost;
+    const canAfford = this._getScore() >= this.refreshCost;
     picks.push({
       kind: 'refresh',
       label: '刷新',
@@ -243,8 +249,8 @@ export class CardDraft {
     if (item.pick.kind === 'refresh') {
       // 刷新：全部飞走（含被击中的刷新气球），不产生粒子；立即扣分清零，手腕面板实时更新
       flyAll();
-      if (this._state.game.score >= this.refreshCost) {
-        this._state.game.score -= this.refreshCost;
+      if (this._getScore() >= this.refreshCost) {
+        this._spendScore(this.refreshCost);
         this.refreshCost *= 2;
       }
     } else {
