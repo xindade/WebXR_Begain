@@ -224,25 +224,27 @@ export class Game {
 
   _enterCard() {
     this.state = 'card';
-    this.input.consumeConfirm(); // 丢弃游玩阶段误触的确认，避免一进抽卡就自动选中
+    this.bullets.clear(); // 清掉上一波残留子弹，避免误击卡气球
     this.log('波次清空，选择强化');
     const pp = this._playerPos();
     this.world.camera.getWorldDirection(this._fwd);
     this._fwd.negate(); // 相机/手柄前向为 -Z，getWorldDirection 返回 +Z，需取反，否则卡牌会生成在身后
-    this._cardState = { player: this.player, score: this.score };
-    this.hud.message('选择强化', '准星指向卡牌后按确认（点击/扳机）', '#ffd43b');
+    this._cardState = { player: this.player, game: this }; // 抽卡直接读写 game.score（实时同步手腕面板）
+    this.hud.message('选择强化', '射击对应气球进行选择（刷新气球可重roll，积分不足时锁定）', '#ffd43b');
     this.cards.open(pp, this._fwd.clone(), this._cardState, () => this._onCardDone());
   }
 
+  // 抽卡模式：允许自由移动 + 射击，子弹命中卡气球即选卡
   _updateCard(dt) {
-    this.input.updateLook(); // 允许玩家转动视角瞄准卡牌
-    this.cards.update(dt, this.input.getAimRay());
-    if (this.input.consumeConfirm()) this.cards.confirm();
+    this.input.update(dt);
+    this.player.update(dt);
+    this.bullets.update(dt);
+    for (const shot of this.input.shots) this.player.fire(shot, this.bullets, this.audio);
+    this.cards.update(dt, this.bullets, this._playerPos().clone());
   }
 
   _onCardDone() {
-    this.score = this._cardState.score;
-    this.hud.setScore(this.score);
+    this.hud.setScore(this.score); // game.score 已由抽卡实时维护
     this.hud.clearMessage();
     this.levelIndex++;
     if (!this.player.buddhaUnlocked) this.player.buddhaUnlocked = true; // 首波后解锁大招
