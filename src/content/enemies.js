@@ -23,4 +23,3 @@ export const ENEMY_TYPES = {
 // 普通关可用池（排除特殊机制型，后面关卡逐步引入）
 export const NORMAL_POOL = ['basic', 'speed', 'chameleon', 'panda', 'shield'];
 export const CRISIS_POOL = ['basic', 'speed', 'ninja', 'shield', 'knight', 'bomber', 'spinner'];
-export const BOSS_POOL = ['knight'];

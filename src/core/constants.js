@@ -21,15 +21,6 @@ export const BALLOON = {
   RADIUS: 0.5,
   SCORE: 10,
   DAMAGE: 5,        // 撞船伤害
-  COLORS: ['#ff5a5f', '#ffb400', '#ffd166', '#06d6a0', '#118ab2', '#9b5de5', '#f15bb5'],
-};
-
-export const KNIGHT = {
-  HP: 500,
-  SCORE: 30,
-  SCALE: 3,
-  RADIUS: 1.5,
-  SPEED: 0.35,
 };
 
 export const SHIP = {
@@ -61,11 +52,9 @@ export const CARD = {
   COUNT: 3,                 // 每次抽卡展示数量
   REFRESH_BASE_COST: 20,    // 刷新基础积分，逐次翻倍
   DURATION: 15,             // 选项卡存在秒数（超时自动随机选）
-  DISTANCE: 1.75,           // （已弃用）旧版距玩家距离
   WIDTH: 0.5,
   HEIGHT: 0.3,
   SPACING: 0.8,             // 卡片沿 X 轴均匀间距 m
-  REFRESH_OFFSET_Y: -0.25,  // （已弃用）旧版刷新卡下移
   // —— 固定世界坐标摆放（射击选卡版）——
   ROW_Z: -4,                // 卡片固定世界 Z（场地底边）
   ROW_Y: 2,                 // 卡片固定世界 Y（比原方案提高 1m）

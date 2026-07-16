@@ -2,6 +2,7 @@
 // 仅在第 9 关（laserMode:'drive'）创建，离开或本关重开时销毁/重建。
 import * as THREE from 'three';
 import { GRID } from '../core/constants.js';
+import { makeTextPlane } from '../core/canvasTexture.js';
 
 // 列中心 X（4 列）：左(-X) → 右(+X)
 const COL_X = [-1.5, -0.5, 0.5, 1.5];
@@ -61,24 +62,9 @@ export class GlassGrid {
     return new THREE.Mesh(geo, mat);
   }
 
-  // 编号：平躺于格面正中心的平面（CanvasTexture），朝上可读、贴表面
+  // 编号：平躺于格面正中心的平面（复用 core/canvasTexture.js 工厂），朝上可读、贴表面
   _makeNumMesh(n) {
-    const cv = document.createElement('canvas');
-    cv.width = 128; cv.height = 128;
-    const ctx = cv.getContext('2d');
-    ctx.clearRect(0, 0, 128, 128);
-    ctx.font = 'bold 80px sans-serif';
-    ctx.fillStyle = '#eaffff';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(String(n), 64, 64);
-    const tex = new THREE.CanvasTexture(cv);
-    const geo = new THREE.PlaneGeometry(GRID.NUM_SIZE, GRID.NUM_SIZE);
-    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
-    const m = new THREE.Mesh(geo, mat);
-    m.rotation.x = -Math.PI / 2; // 平躺于 XZ 面，朝上可读
-    m.renderOrder = 2;
-    return m;
+    return makeTextPlane({ text: String(n), size: GRID.NUM_SIZE });
   }
 
   // 玩家世界坐标 → 格子编号 1..32；越界返回 0

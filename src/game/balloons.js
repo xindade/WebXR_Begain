@@ -64,7 +64,6 @@ class Balloon {
     const bar = new THREE.Group();
     bar.add(bg); bar.add(fg);
     bar.position.y = r * 1.4;
-    bar.lookAtCam = true;
     this.mesh.add(bar);
     this._hpBar = bar;
   }

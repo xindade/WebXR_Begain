@@ -7,7 +7,6 @@ export class BulletManager {
     this.scene = scene;
     this.active = [];
     this._pool = [];
-    this.dmg = 100; // 由 player.atk 每帧同步
   }
 
   _obtain() {

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { MOVE } from './constants.js';
+import { makeTextSprite } from './canvasTexture.js';
 
 // 世界：渲染器、场景、相机、灯光、天空、星空
 // 多平台 WebXR 标准实现，无厂商专属 hack。
@@ -21,22 +22,9 @@ void main() {
   gl_FragColor = vec4(mix(bottomColor, topColor, smoothstep(0.0, 1.0, h)), 1.0);
 }`;
 
-// 生成文字精灵：CanvasTexture → Sprite，始终面向相机，用于坐标系数字标注。
+// 生成文字精灵：始终面向相机，用于坐标系数字标注（复用 core/canvasTexture.js 工厂）
 function _textSprite(text, color) {
-  const cv = document.createElement('canvas');
-  cv.width = 128; cv.height = 64;
-  const ctx = cv.getContext('2d');
-  ctx.clearRect(0, 0, cv.width, cv.height);
-  ctx.font = 'bold 44px sans-serif';
-  ctx.fillStyle = color;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, cv.width / 2, cv.height / 2);
-  const tex = new THREE.CanvasTexture(cv);
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
-  const sp = new THREE.Sprite(mat);
-  sp.scale.set(0.3, 0.15, 1); // 约 0.3m 宽，保证 VR 里可读
-  return sp;
+  return makeTextSprite({ text, color });
 }
 
 export class World {

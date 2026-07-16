@@ -26,5 +26,4 @@ export const LEVELS = [
 // 是否危机关：精英比例提升、四周奖励气球
 export function isCrisis(lv) { return lv.kind === 'crisis'; }
 export function isBoss(lv) { return lv.kind === 'boss'; }
-export function isBonus(lv) { return lv.kind === 'bonus'; }
 export function isLaser(lv) { return lv.kind === 'laser'; }

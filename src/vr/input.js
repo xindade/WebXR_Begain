@@ -27,7 +27,6 @@ export class InputManager {
     this.shots = []; // 本帧待发射：{position, direction}
 
     this._cooldowns = { desktop: 0, left: 0, right: 0 };
-    this._confirmQueued = false;
     this._buddhaQueued = false;
 
     // handedness -> { controller, prevTrigger, prevGrip, prevAB }
@@ -56,7 +55,6 @@ export class InputManager {
         return; // 第一次点击仅锁定
       }
       this.desktopShooting = true;
-      this._confirmQueued = true; // 抽卡确认
     });
     window.addEventListener('mouseup', (e) => { if (e.button === 0) this.desktopShooting = false; });
     window.addEventListener('mousemove', (e) => {
@@ -226,7 +224,6 @@ export class InputManager {
             this.shots.push({ position: _v.clone(), direction: _v2.clone() });
             this._cooldowns.right = SHOOT.COOLDOWN;
           }
-          if (ctrl && !ctrl.userData.prevTrigger) this._confirmQueued = true;
         }
         if (ctrl) ctrl.userData.prevTrigger = trigger;
 
@@ -237,11 +234,8 @@ export class InputManager {
           ctrl.userData.prevAB = ab;
         }
       } else if (hand === 'left') {
-        // 左手扳机：抽卡确认（边缘），方便左手也能选卡
-        if (ctrl) {
-          if (trigger && !ctrl.userData.prevTrigger) this._confirmQueued = true;
-          ctrl.userData.prevTrigger = trigger;
-        }
+        // 左手扳机：记录扳机边缘状态
+        if (ctrl) ctrl.userData.prevTrigger = trigger;
       }
     }
   }
@@ -256,46 +250,10 @@ export class InputManager {
     else this._tryShootDesktop(dt);
   }
 
-  // 仅刷新视角（抽卡界面用，不移动/不开火，避免卡牌相对玩家漂移）
-  updateLook() {
-    this._applyDesktopLook();
-    // VR 下抽卡确认仍需读取扳机边缘
-    if (this.world.isPresenting) {
-      const session = this.world.renderer.xr.getSession?.();
-      if (session?.inputSources) {
-        for (const src of session.inputSources) {
-          const gp = src.gamepad; if (!gp) continue;
-          const ctrl = this._hands[src.handedness];
-          const trigger = (gp.buttons[0]?.value || 0) > TRIGGER_THRESHOLD;
-          if (ctrl) {
-            if (trigger && !ctrl.userData.prevTrigger) this._confirmQueued = true;
-            ctrl.userData.prevTrigger = trigger;
-          }
-        }
-      }
-    }
-  }
-
   // 取手柄（targetRay，用于射击/瞄准/挂面板）
   getController(hand) { return this._hands[hand]; }
   // 取握把（grip，用于挂手腕面板，更贴合手背）
   getGrip(hand) { return this._gripHands[hand]; }
-
-  // 单选目标（用于抽卡指向）：返回射线起点+方向，桌面用相机、VR 用右手柄
-  getAimRay() {
-    const rightCtrl = this._hands.right || this._controllers[1];
-    if (this.world.isPresenting && rightCtrl) {
-      rightCtrl.getWorldPosition(_v);
-      this._forwardOf(rightCtrl, _v2);
-    } else {
-      this.camera.getWorldPosition(_v);
-      this._forwardOf(this.camera, _v2);
-    }
-    return { origin: _v.clone(), direction: _v2.clone() };
-  }
-
-  // 抽卡确认（点击/扳机按下边缘）
-  consumeConfirm() { const v = this._confirmQueued; this._confirmQueued = false; return v; }
 
   // 大招触发（桌面 F / VR 握柄）
   consumeBuddha() { const v = this._buddhaQueued; this._buddhaQueued = false; return v; }

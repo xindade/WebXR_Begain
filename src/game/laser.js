@@ -236,7 +236,6 @@ export class LaserLevel {
   }
 
   update(dt, playerPos) {
-    void playerPos;
     this.elapsed += dt;
     const t = this.elapsed;
 
