@@ -7,10 +7,12 @@ import { CardDraft } from './cardDraft.js';
 import { LaserLevel } from './laser.js';
 import { GlassGrid } from './glassGrid.js';
 import { FlipGrid } from './flipGrid.js';
+import { RightGun } from '../vr/rightGun.js';
 import { LEVELS, isLaser } from '../content/levels.js';
-import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION } from '../core/constants.js';
 
 const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关' };
+const ORIGIN = new THREE.Vector3(0, 0, 0);
 
 export class Game {
   constructor(world, hud) {
@@ -30,6 +32,7 @@ export class Game {
     this.bullets = new BulletManager(world.scene);
     this.waves = new WaveManager(world.scene, this.balloons, () => this.rig.getWorldPosition(new THREE.Vector3()));
     this.cards = new CardDraft(world.scene);
+    this.rightGun = new RightGun(world.scene);   // 右手柄 AK 枪（VR 手持，纯视觉）
 
     this.state = 'menu';
     this.levelIndex = 0;
@@ -43,6 +46,8 @@ export class Game {
     this.score = 0;
     this._buddhaFx = null;
     this._cardState = null;
+    this._levelSnapshot = null;  // 关卡开始时的玩家属性+分数快照
+    this._explosions = [];       // 爆炸视觉特效列表
 
     this._tmp = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
@@ -74,6 +79,7 @@ export class Game {
     this.hud.setHp(this.player.hp, this.player.maxHp);
     this.audio?.unlock();
     this.audio?.startBGM();
+    this._clearExplosions();
     this.log('游戏开始');
     this._loadLevel(this.levelIndex);
     this.state = 'playing';
@@ -111,6 +117,8 @@ export class Game {
       this.waves.startLevel(lv);
       this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
     }
+    // 非激光关在关卡加载完成后拍照快照（用于死亡重开时恢复属性+分数）
+    if (!isLaser(lv)) this._snapshotState();
   }
 
   _playerPos() { return this.rig.getWorldPosition(this._tmp); }
@@ -119,7 +127,9 @@ export class Game {
     dt = Math.min(dt, 0.05);
     this.world.update(dt);
     this.wristUI?.update(dt, this, this.input); // 手腕面板（VR 下显示，桌面忽略）
+    this.rightGun.update(dt, this.input);        // 右手柄 AK 枪（VR 手持，桌面忽略）
     this._updateBuddhaFx(dt);
+    this._updateExplosions(dt);
 
     if (this.state === 'playing') this._updatePlaying(dt);
     else if (this.state === 'card') this._updateCard(dt);
@@ -144,15 +154,19 @@ export class Game {
     }
 
     // ====== 普通关 ======
-    this.balloons.update(dt, pp, this.world.camera);
+    // 气球追踪原点(0,0,0)而非玩家位置
+    this.balloons.update(dt, ORIGIN, this.world.camera);
     this.waves.update(dt);
 
-    this._collide();
+    this._collide(); // 仅子弹vs气球（气球vs飞船已移除，改由 _checkExplosions 处理）
+
+    // 气球进入4×8区域则自爆，可能伤害飞船并触发重开
+    if (this._checkExplosions()) return;
 
     this.hud.setScore(this.score);
     this.hud.setHp(this.player.hp, this.player.maxHp);
 
-    if (!this.player.alive) { this._gameOver(); return; }
+    if (!this.player.alive) { this._restartLevel(); return; }
     if (this.waves.cleared) this._enterCard();
   }
 
@@ -170,11 +184,20 @@ export class Game {
       // 2) 九宫格交互（16–18s 与 18s+ 都生效）
       if (this.flipGrid) {
         for (const b of [...this.bullets.active]) {
-          if (this.flipGrid.tryHit(b)) { this.bullets.release(b); this.audio?.playPop(); }
+          const hit = this.flipGrid.tryHit(b);
+          if (hit) {
+            this.bullets.release(b);
+            this.audio?.playPop();
+            if (hit.reset) {
+              this.flipGrid.resetState();
+              this.flipTimer = FLIP.COUNTDOWN;   // 倒计时重置
+              this.log('九宫格已重置，倒计时重置为180秒');
+            }
+          }
         }
         this.flipGrid.update(dt);
         if (!this.flipGrid.victory && this.flipGrid.checkWin()) this.flipGrid.beginVictory();
-        if (this.flipGrid.victoryDone) { this._finishFlipLevel(); return; }
+        if (this.flipGrid.victoryDone) { this._finishFlipLevel(true); return; }
       }
       // 3) 致命判定：进入安全期前激光仍致命（用户修改①：16–18s 致命）
       if (!this.flipPhase) {
@@ -186,13 +209,13 @@ export class Game {
         this.flipPhase = true;
         this.laser.enterGridPhase();
         this.flipTimer = FLIP.COUNTDOWN;
-        this.log('激光消散，180 秒倒计时解谜（解出或归零均进入下一关）');
+        this.log('激光消散，180 秒倒计时解谜（解出→抽卡，归零→直接下一关）');
       }
       // 5) 安全期倒计时（用户修改②）
       if (this.flipPhase) {
         this.flipTimer -= dt;
         this.hud.setCountdown(Math.max(0, Math.ceil(this.flipTimer)));
-        if (this.flipTimer <= 0) { this._finishFlipLevel(); return; }
+        if (this.flipTimer <= 0) { this._finishFlipLevel(false); return; }
       }
       this.hud.setScore(this.score);
       this.hud.setHp(this.player.hp, this.player.maxHp);
@@ -276,27 +299,30 @@ export class Game {
     this.hud.clearCountdown();
   }
 
-  // 第十五关收尾：通关(解出)或 180s 倒计时归零，均进入下一关、无抽卡
-  _finishFlipLevel() {
+  // 第十五关收尾：解出→抽卡(withCard=true)；倒计时归零→直接下一关(withCard=false)
+  _finishFlipLevel(withCard = true) {
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.laser) { this.laser.dispose(); this.laser = null; }
     this.flipPhase = false;
     this.flipTimer = 0;
     this.hud.clearCountdown();
     this.laserMode = false;
-    this.levelIndex++;
-    if (this.levelIndex >= LEVELS.length) {
-      this.state = 'over';
-      this.hud.message('通关！', '按「开始游戏」重新挑战', '#2ecc71');
-      this.hud.showStart();
-      return;
+    if (withCard) {
+      this._enterCard();   // 解出 → 抽卡（_onCardDone 负责 levelIndex++ 与加载下一关）
+    } else {
+      this.levelIndex++;   // 倒计时归零 → 直接下一关，不抽卡
+      if (this.levelIndex >= LEVELS.length) {
+        this.state = 'over';
+        this.hud.message('通关！', '按「开始游戏」重新挑战', '#2ecc71');
+        this.hud.showStart();
+        return;
+      }
+      this._loadLevel(this.levelIndex);
+      this.state = 'playing';
     }
-    this._loadLevel(this.levelIndex);
-    this.state = 'playing';
   }
 
   _collide() {
-    const pp = this._playerPos();
     // 子弹 vs 气球
     for (const b of [...this.bullets.active]) {
       for (const balloon of [...this.balloons.list]) {
@@ -309,15 +335,7 @@ export class Game {
         }
       }
     }
-    // 气球 vs 飞船
-    for (const balloon of [...this.balloons.list]) {
-      const d = balloon.mesh.position.distanceTo(pp);
-      if (d < SHIP.COLLISION_RADIUS + balloon.radius) {
-        const dead = this.player.takeDamage(balloon.isBoss ? 40 : BALLOON.DAMAGE);
-        this.balloons.remove(balloon);
-        if (dead) { this._gameOver(); return; }
-      }
-    }
+    // 气球 vs 飞船碰撞已移除 → 改由 _checkExplosions() 处理
   }
 
   _onKilled(balloon) {
@@ -370,7 +388,117 @@ export class Game {
     }
   }
 
+  // ====== 爆炸系统 ======
+
+  // 检查气球是否进入4×8区域，进入则自爆并伤害飞船
+  _checkExplosions() {
+    for (const balloon of [...this.balloons.list]) {
+      const pos = balloon.mesh.position;
+      // 4×8区域 = |x|<=BOUND_X(2), |z|<=BOUND_Z(4)；气球边缘触及区域边界即触发
+      const inArea = Math.abs(pos.x) <= (MOVE.BOUND_X + balloon.radius)
+                  && Math.abs(pos.z) <= (MOVE.BOUND_Z + balloon.radius);
+      if (inArea) {
+        this._spawnExplosionFx(balloon.mesh.position.clone(), balloon.radius);
+        this.balloons.remove(balloon);
+        this.audio?.playPop();
+        // 气球入侵飞船区域即造成伤害，不依赖玩家与爆炸点的距离
+        const dead = this.player.takeDamage(balloon.isBoss ? 40 : BALLOON.DAMAGE);
+        if (dead) { this._restartLevel(); return true; }
+      }
+    }
+    return false;
+  }
+
+  _spawnExplosionFx(position, radius) {
+    const geo = new THREE.SphereGeometry(radius, 16, 12);
+    const mat = new THREE.MeshBasicMaterial({
+      color: EXPLOSION.COLOR,
+      transparent: true,
+      opacity: EXPLOSION.START_OPACITY,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(position);
+    this.world.scene.add(mesh);
+    this._explosions.push({ mesh, t: 0 });
+  }
+
+  _updateExplosions(dt) {
+    for (const exp of [...this._explosions]) {
+      exp.t += dt;
+      const k = Math.min(1, exp.t / EXPLOSION.DURATION);
+      exp.mesh.scale.setScalar(1 + k * EXPLOSION.MAX_SCALE);
+      exp.mesh.material.opacity = EXPLOSION.START_OPACITY * (1 - k);
+      if (k >= 1) {
+        this.world.scene.remove(exp.mesh);
+        exp.mesh.geometry.dispose();
+        exp.mesh.material.dispose();
+        const i = this._explosions.indexOf(exp);
+        if (i !== -1) this._explosions.splice(i, 1);
+      }
+    }
+  }
+
+  _clearExplosions() {
+    for (const exp of this._explosions) {
+      this.world.scene.remove(exp.mesh);
+      exp.mesh.geometry.dispose();
+      exp.mesh.material.dispose();
+    }
+    this._explosions = [];
+  }
+
+  // ====== 快照与重开 ======
+
+  _snapshotState() {
+    const p = this.player;
+    this._levelSnapshot = {
+      atk: p.atk,
+      shootCooldown: p.shootCooldown,
+      multiShotChance: p.multiShotChance,
+      explosion: p.explosion,
+      maxHp: p.maxHp,
+      hp: p.hp,
+      buddhaUnlocked: p.buddhaUnlocked,
+      buddhaCooldown: p.buddhaCooldown,
+      buddhaTimer: p.buddhaTimer,
+      shieldTime: p.shieldTime,
+      score: this.score,
+    };
+  }
+
+  _restoreSnapshot() {
+    if (!this._levelSnapshot) return;
+    const s = this._levelSnapshot;
+    const p = this.player;
+    p.atk = s.atk;
+    p.shootCooldown = s.shootCooldown;
+    p.multiShotChance = s.multiShotChance;
+    p.explosion = s.explosion;
+    p.maxHp = s.maxHp;
+    p.hp = s.hp;
+    p.buddhaUnlocked = s.buddhaUnlocked;
+    p.buddhaCooldown = s.buddhaCooldown;
+    p.buddhaTimer = s.buddhaTimer;
+    p.shieldTime = s.shieldTime;
+    this.score = s.score;
+  }
+
+  _restartLevel() {
+    this.log('飞船坠毁，本关重开');
+    this._restoreSnapshot();
+    this.balloons.clear();
+    this.bullets.clear();
+    // 不调 _clearExplosions()：让死亡爆炸特效在 0.4s 内自然消亡
+    this.rig.position.set(0, 0, 0);
+    this._loadLevel(this.levelIndex); // 会重新拍快照（恢复后的状态）
+    this.hud.setScore(this.score);
+    this.hud.setHp(this.player.hp, this.player.maxHp);
+  }
+
   _enterCard() {
+    this._clearExplosions();
     this.state = 'card';
     this.bullets.clear(); // 清掉上一波残留子弹，避免误击卡气球
     this.log('波次清空，选择强化');

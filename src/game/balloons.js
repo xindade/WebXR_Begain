@@ -119,6 +119,7 @@ export class BalloonManager {
   constructor(scene) {
     this.scene = scene;
     this.list = [];
+    this._sepVec = new THREE.Vector3();
   }
 
   spawn(typeId, position) {
@@ -138,6 +139,38 @@ export class BalloonManager {
 
   update(dt, target, camera) {
     for (const b of this.list) b.update(dt, target, camera);
+    this._applySeparation();
+  }
+
+  // 气球间分离力：O(n²) 两两检查，最大10个=45对，性能无忧
+  _applySeparation() {
+    const GAP = 0.2; // 最小间隙(m)
+    const list = this.list;
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j];
+        this._sepVec.subVectors(a.mesh.position, b.mesh.position);
+        this._sepVec.y = 0; // 仅在 xz 平面分离
+        const dist = this._sepVec.length();
+        const minDist = a.radius + b.radius + GAP;
+        if (dist < minDist) {
+          if (dist > 0.001) {
+            this._sepVec.normalize();
+            const overlap = (minDist - dist) * 0.5;
+            a.mesh.position.addScaledVector(this._sepVec, overlap);
+            b.mesh.position.addScaledVector(this._sepVec, -overlap);
+          } else {
+            // 完全重合：随机方向推开
+            const angle = Math.random() * Math.PI * 2;
+            this._sepVec.set(Math.cos(angle), 0, Math.sin(angle));
+            const push = minDist * 0.5;
+            a.mesh.position.addScaledVector(this._sepVec, push);
+            b.mesh.position.addScaledVector(this._sepVec, -push);
+          }
+        }
+      }
+    }
   }
 
   clear() {

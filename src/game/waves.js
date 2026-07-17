@@ -46,19 +46,35 @@ export class WaveManager {
     return 1;
   }
 
-  _spawnPos() {
-    const p = this.getPlayerPos();
-    const phase = this._phase();
-    let a;
-    if (phase === 1) a = (-40 + Math.random() * 80) * Math.PI / 180;
-    else if (phase === 2) a = (-110 + Math.random() * 220) * Math.PI / 180;
-    else a = Math.random() * Math.PI * 2;
-    // 前方为 -Z
-    const dir = new THREE.Vector3(Math.sin(a), 0, -Math.cos(a));
-    const pos = p.clone().addScaledVector(dir, WAVE.SPAWN_DISTANCE);
-    pos.x += (Math.random() - 0.5) * WAVE.SPAWN_SPREAD;
-    pos.y = 1 + Math.random() * 2.5;
+  _spawnPos(spawnRadius = 0.5) {
+    const GAP = 0.2;
+    const MAX_ATTEMPTS = 10;
+    let pos, attempts = 0;
+    do {
+      const phase = this._phase();
+      let a;
+      if (phase === 1) a = (-40 + Math.random() * 80) * Math.PI / 180;
+      else if (phase === 2) a = (-110 + Math.random() * 220) * Math.PI / 180;
+      else a = Math.random() * Math.PI * 2;
+      // 前方为 -Z
+      const dir = new THREE.Vector3(Math.sin(a), 0, -Math.cos(a));
+      // 相对原点(0,0,0)生成，而非 getPlayerPos()
+      pos = new THREE.Vector3(0, 0, 0).addScaledVector(dir, WAVE.SPAWN_DISTANCE);
+      pos.x += (Math.random() - 0.5) * WAVE.SPAWN_SPREAD;
+      pos.y = 1 + Math.random() * 2.5;
+      attempts++;
+    } while (attempts < MAX_ATTEMPTS && this._isSpawnTooClose(pos, spawnRadius, GAP));
     return pos;
+  }
+
+  _isSpawnTooClose(pos, spawnRadius, gap) {
+    for (const b of this.balloons.list) {
+      const dx = pos.x - b.mesh.position.x;
+      const dz = pos.z - b.mesh.position.z;
+      const minDist = spawnRadius + b.radius + gap;
+      if (dx * dx + dz * dz < minDist * minDist) return true;
+    }
+    return false;
   }
 
   _pickType() {
@@ -69,7 +85,7 @@ export class WaveManager {
   }
 
   _spawnBoss() {
-    const b = this.balloons.spawn('knight', this._spawnPos());
+    const b = this.balloons.spawn('knight', this._spawnPos(ENEMY_TYPES.knight.radius));
     b.maxHp = 3000; b.hp = 3000; b.speed = 0.25; b.radius = 2; b.score = 500;
     b.mesh.scale.setScalar(4);
     b.isBoss = true;
@@ -95,7 +111,9 @@ export class WaveManager {
       const room = WAVE.MAX_ACTIVE - this.balloons.count;
       const n = Math.min(WAVE.BATCH_SIZE, room, this.total - this.spawned);
       for (let i = 0; i < n; i++) {
-        this.balloons.spawn(this._pickType(), this._spawnPos());
+        const typeId = this._pickType();
+        const spawnRadius = ENEMY_TYPES[typeId]?.radius || 0.5;
+        this.balloons.spawn(typeId, this._spawnPos(spawnRadius));
         this.spawned++;
       }
     }

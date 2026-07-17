@@ -1,13 +1,15 @@
 import * as THREE from 'three';
 import { FLIP } from '../core/constants.js';
+import { makeTextTexture } from '../core/canvasTexture.js';
 
 // ============================================================
 // 第十五关「九宫格翻转射击」谜题
-// - 3×3 = 9 格组成竖直墙面，底边中心 (FLIP.BASE = 0,4,0)，每格 1m，整墙 3×3m（y=4~7）
+// - 3×3 = 9 格组成竖直墙面，group.position.z=-3，每格 1.5m，整墙 4.5×4.5m（y≈2.25~6.75）
 // - 每格正反面各附一个气球：正面(朝玩家 +z) 白、反面(-z) 黑
 // - 击破某格当前朝前气球 → 该格 + 上下左右相邻格一起绕 Y 轴翻转 180°（十字翻转）
 // - 翻转动画 0.5s，期间所有参与格气球无敌
 // - 胜利：9 格朝前气球全同色（全白或全黑）→ 无敌闪烁 1s 后消失
+// - 右侧红色「重置」气球：射击后九宫格恢复初始布局 + 调用方重置倒计时（永久保留可反复用）
 // 气球 mesh 从不销毁，翻转仅旋转 pivot + 切逻辑状态，天然满足"击破即重生"。
 // ============================================================
 
@@ -21,16 +23,19 @@ export class FlipGrid {
   constructor(scene) {
     this.scene = scene;
     this.group = new THREE.Group();
+    this.group.position.z = -3;   // 整体后移3米
     this.cells = [];           // 3×3
     this.victory = false;
     this.victoryT = 0;
     this.victoryDone = false;
+    this._resetPulse = 0;       // 重置气球命中脉冲计时
     this._build();
+    this._buildResetBalloon();
     scene.add(this.group);
   }
 
   _build() {
-    const xs = [-1, 0, 1], ys = [6.5, 5.5, 4.5];
+    const xs = [-1.5, 0, 1.5], ys = [6.0, 4.5, 3.0]; // 间距×1.5；中心 5.5→4.5（下移1米）
     for (let r = 0; r < 3; r++) {
       this.cells[r] = [];
       for (let c = 0; c < 3; c++) {
@@ -58,6 +63,33 @@ export class FlipGrid {
     }
   }
 
+  // 重置气球：九宫格右侧红色球 + "重置"文字贴面，射击后重置九宫格与倒计时（永久保留可反复用）
+  _buildResetBalloon() {
+    this.resetBalloon = new THREE.Group();
+    this.resetBalloon.position.set(FLIP.RESET_X, 4.5, 0); // 与网格中心同高，右侧
+
+    const sphereMat = new THREE.MeshStandardMaterial({
+      color: 0xff4444, emissive: 0x661111, emissiveIntensity: 0.5, roughness: 0.5,
+    });
+    const sphere = new THREE.Mesh(balloonGeo, sphereMat); // 复用模块级气球几何(半径0.75)
+    this.resetBalloon.add(sphere);
+
+    // "重置"文字贴面（朝 +z 玩家）
+    const tex = makeTextTexture({
+      text: '重置', font: 'bold 64px sans-serif', color: '#ffffff',
+      width: 128, height: 128,
+    });
+    const textPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.6, 0.6),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false })
+    );
+    textPlane.position.z = FLIP.BALLOON_OFFSET_Z + 0.02; // 略前于球面避免 z-fighting
+    textPlane.renderOrder = 5;
+    this.resetBalloon.add(textPlane);
+
+    this.group.add(this.resetBalloon);
+  }
+
   // 当前朝向玩家、应被命中的那一面 mesh
   _frontMeshOf(cell) {
     // 未翻转：本地 +z 白球朝玩家；翻转后：本地 -z 黑球转到 +z 朝玩家
@@ -69,6 +101,14 @@ export class FlipGrid {
   tryHit(bullet) {
     if (this.victory) return null;
     const wp = new THREE.Vector3();
+    // 先检测重置气球
+    if (this.resetBalloon) {
+      this.resetBalloon.getWorldPosition(wp);
+      if (bullet.mesh.position.distanceTo(wp) < FLIP.HIT_R) {
+        this._resetPulse = 0.3;  // 触发命中脉冲反馈
+        return { reset: true };
+      }
+    }
     for (let r = 0; r < 3; r++) {
       for (let c = 0; c < 3; c++) {
         const cell = this.cells[r][c];
@@ -95,6 +135,25 @@ export class FlipGrid {
       cell.flipTo = cell.rot + Math.PI; // 连续累加，动画朝目标角
       cell.flipT = 0;
     }
+  }
+
+  // 轻量重置：9格恢复初始布局（不重建mesh），清victory标志，group恢复可见
+  resetState() {
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        const cell = this.cells[r][c];
+        const flipped = FLIP.INITIAL[r][c] === 1;
+        cell.flipped = flipped;
+        cell.rot = flipped ? Math.PI : 0;
+        cell.flipFrom = 0; cell.flipTo = 0; cell.flipT = undefined;
+        cell.invincible = false;
+        cell.pivot.rotation.y = cell.rot;
+      }
+    }
+    this.victory = false;
+    this.victoryT = 0;
+    this.victoryDone = false;
+    this.group.visible = true;
   }
 
   // 胜利判定：所有格动画结束 + 全部 flipped 同值（首格为准）
@@ -148,13 +207,21 @@ export class FlipGrid {
         this.victoryDone = true;
       }
     }
+    // 3) 重置气球命中脉冲：scale 从1.3缓回1.0
+    if (this._resetPulse > 0 && this.resetBalloon) {
+      this._resetPulse = Math.max(0, this._resetPulse - dt);
+      const k = this._resetPulse / 0.3;
+      this.resetBalloon.scale.setScalar(1 + 0.3 * k);
+    }
   }
 
   reset() {
     this.dispose();
     this.cells = [];
     this.victory = false; this.victoryT = 0; this.victoryDone = false;
+    this._resetPulse = 0;
     this._build();
+    this._buildResetBalloon();
     this.scene.add(this.group);
   }
 
@@ -166,7 +233,10 @@ export class FlipGrid {
       o.traverse((node) => {
         if (node.isMesh) {
           if (node.geometry && node.geometry !== balloonGeo) node.geometry.dispose();
-          if (node.material) node.material.dispose(); // 每格独立材质，可安全释放
+          if (node.material) {
+            if (node.material.map) node.material.map.dispose(); // 释放文字贴图等
+            node.material.dispose(); // 每格独立材质，可安全释放
+          }
         }
       });
     }

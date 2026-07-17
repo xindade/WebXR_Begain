@@ -13,7 +13,7 @@ export class BulletManager {
     let b = this._pool.pop();
     if (!b) {
       const mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(0.08, 8, 8),
+        new THREE.SphereGeometry(SHOOT.BULLET_RADIUS, 8, 8),  // 子弹大小由 SHOOT.BULLET_RADIUS 控制
         new THREE.MeshStandardMaterial({ color: 0xffe066, emissive: 0xffcc33, emissiveIntensity: 1.2 })
       );
       b = { mesh, vel: new THREE.Vector3(), life: 0, alive: false };

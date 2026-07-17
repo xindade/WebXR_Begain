@@ -85,17 +85,24 @@ export class InputManager {
         ctrl.userData.inputSource = e.data;
         this._hands[hand] = ctrl;
         this._gripHands[hand] = this._grips[i];
+        // 右手射线：变红 + 绕 X 轴俯仰 RIGHT_PITCH_DEG（与子弹方向共用同一俯角）
+        const ray = ctrl.userData.rayLine;
+        if (ray && hand === 'right') {
+          ray.material.color.setHex(SHOOT.RAY_COLOR);
+          ray.rotation.x = THREE.MathUtils.degToRad(SHOOT.RIGHT_PITCH_DEG);
+        }
       });
       ctrl.addEventListener('disconnected', () => {
         if (ctrl.userData.hand) this._hands[ctrl.userData.hand] = null;
         ctrl.userData.inputSource = null;
       });
 
-      // 可见光标
+      // 可见光标（射线）：默认左手青色、沿本地 -Z；右手在 connected 时改红并绕 X 俯仰
       const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]);
-      const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x66ccff }));
-      line.scale.z = 5;
+      const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: SHOOT.RAY_COLOR_LEFT }));
+      line.scale.z = SHOOT.RAY_LENGTH;
       ctrl.add(line);
+      ctrl.userData.rayLine = line;   // 存引用，connected 时按左右手调整颜色/俯角
       // 挂到 rig 而非 camera：控制器位姿本身已在参考空间内，
       // 再作为 camera 子节点会重复叠加头部变换导致偏移。
       this.rig.add(ctrl);
@@ -179,6 +186,18 @@ export class InputManager {
     return out.set(0, 0, -1).applyQuaternion(_q).normalize();
   }
 
+  // 右手 AK 枪瞄准：方向 = 本地 -Z 绕 X 俯仰 RIGHT_PITCH_DEG 后转世界；与红色射线朝向一致。
+  // 出生点 = 手柄世界位置沿该方向前移 SPAWN_OFFSET（模拟枪口）。写入 outPos / outDir。
+  _rightAim(ctrl, outPos, outDir) {
+    const t = THREE.MathUtils.degToRad(SHOOT.RIGHT_PITCH_DEG);
+    // 本地方向：(0,0,-1) 绕 X 轴旋转 t → (0, sin t, -cos t)
+    outDir.set(0, Math.sin(t), -Math.cos(t));
+    ctrl.getWorldQuaternion(_q);
+    outDir.applyQuaternion(_q).normalize();
+    ctrl.getWorldPosition(outPos);
+    outPos.addScaledVector(outDir, SHOOT.SPAWN_OFFSET);
+  }
+
   _tryShootDesktop(dt) {
     this._cooldowns.desktop -= dt * 1000;
     if (this.desktopShooting && !this.world.isPresenting && this._cooldowns.desktop <= 0) {
@@ -219,8 +238,7 @@ export class InputManager {
         // 右手扳机：射击（冷却控制）+ 抽卡确认（边缘）
         if (trigger) {
           if (ctrl && this._cooldowns.right <= 0) {
-            ctrl.getWorldPosition(_v);
-            this._forwardOf(ctrl, _v2);
+            this._rightAim(ctrl, _v, _v2);   // 方向含俯角、出生点含枪口偏移（与红色射线一致）
             this.shots.push({ position: _v.clone(), direction: _v2.clone() });
             this._cooldowns.right = SHOOT.COOLDOWN;
           }

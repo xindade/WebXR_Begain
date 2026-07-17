@@ -1,10 +1,12 @@
 import * as THREE from 'three';
+import { WRIST_UI } from '../core/constants.js';
 
 // 手腕面板（参考 vr-controller-kit skill 的 ui.js 思路，改为自包含实现）
 //   - 右手柄：当前关卡 / 剩余敌人 / 船血 / 分数（青色边框）
 //   - 左手柄：实时日志（橙色边框）
 // 每个面板 = Canvas2D 画布 → CanvasTexture → PlaneGeometry，挂到手柄 grip 下。
 // 不依赖原项目的 ship.js / buddhaPalm.js，数据直接从 Game 读取。
+// 放置参数（位置/旋转/大小/边框/画布）统一在 constants.js 的 WRIST_UI 中，便于随时调整。
 
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -18,32 +20,36 @@ function roundRect(ctx, x, y, w, h, r) {
 
 export class WristUI {
   constructor() {
-    // 右手：战斗信息（青），物理尺寸 0.5m × 0.5m
-    this.right = this._make(512, 512, '#00e5ff', 1);
-    // 左手：日志（橙），物理尺寸缩到 1/6（约 0.083m × 0.042m），保持 Canvas 分辨率清晰
-    this.left = this._make(512, 256, '#ff7a00', 1 / 6);
+    // 右手：战斗信息（青），左手：日志（橙）。放置参数全部来自 constants.js 的 WRIST_UI。
+    this.right = this._make(WRIST_UI.RIGHT);
+    this.left = this._make(WRIST_UI.LEFT);
     this._frame = 0;
     this._log = [];
     this._attached = false;
   }
 
-  // scale：物理尺寸相对 Canvas 像素(1px≈1mm)的缩放。Canvas 分辨率不变 → 缩小后文字依然锐利。
-  _make(w, h, border, scale = 1) {
+  // 由 WRIST_UI 配置构建面板。
+  //   SCALE   : 物理尺寸相对 Canvas 像素(1px≈1mm)的缩放。Canvas 分辨率不变 → 缩小后文字依然锐利。
+  //   POSITION: 相对手柄的放置位置（米），不再随尺寸自动缩放，方便独立微调。
+  //   ROTATION: 角度(度)绕 XYZ；x 向下倾斜方便低头看手腕。
+  //   CANVAS  : 画布分辨率（像素），只影响清晰度不影响物理大小。
+  _make(cfg) {
     const cv = document.createElement('canvas');
-    cv.width = w; cv.height = h;
+    cv.width = cfg.CANVAS.w; cv.height = cfg.CANVAS.h;
     const ctx = cv.getContext('2d');
     const tex = new THREE.CanvasTexture(cv);
-    // 1px ≈ 1mm：512px → 0.5m，再乘 scale 得到最终物理尺寸
-    const geo = new THREE.PlaneGeometry((w / 1024) * scale, (h / 1024) * scale);
+    // 1px ≈ 1mm：512px → 0.5m，再乘 SCALE 得到最终物理尺寸
+    const geo = new THREE.PlaneGeometry((cfg.CANVAS.w / 1024) * cfg.SCALE, (cfg.CANVAS.h / 1024) * cfg.SCALE);
     const mat = new THREE.MeshBasicMaterial({
       map: tex, transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide,
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.renderOrder = 999; // 始终画在最前，不被头显模型挡住
-    // 相对手柄：略低于手背、前移一点，向上倾斜方便低头看。偏移随尺寸同步缩小。
-    mesh.position.set(0, -0.05 * scale, 0.09 * scale);
-    mesh.rotation.x = -0.6;
-    return { cv, ctx, tex, mesh, w, h, border };
+    // 相对手柄：从配置应用位置 / 旋转（米 / 角度），上机后看效果微调。
+    const D2R = THREE.MathUtils.degToRad;
+    mesh.position.set(cfg.POSITION.x, cfg.POSITION.y, cfg.POSITION.z);
+    mesh.rotation.set(D2R(cfg.ROTATION.x), D2R(cfg.ROTATION.y), D2R(cfg.ROTATION.z));
+    return { cv, ctx, tex, mesh, w: cfg.CANVAS.w, h: cfg.CANVAS.h, border: cfg.BORDER };
   }
 
   // 追加一条日志（带时间戳），环形缓冲
