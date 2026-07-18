@@ -53,6 +53,7 @@ class Balloon {
 
     this._flash = 0;
     this._hop = Math.random() * Math.PI * 2;
+    this.controlled = false;   // 由外部(如龙Boss)逐帧接管位置时为 true：跳过自动朝玩家移动与分离力
     this.group = this.mesh;
   }
 
@@ -82,12 +83,14 @@ class Balloon {
   }
 
   update(dt, target, camera) {
-    // 朝玩家移动
-    const dir = target.clone().sub(this.mesh.position);
-    dir.y = 0;
-    const dist = dir.length();
-    if (dist > 0.001) dir.normalize();
-    this.mesh.position.addScaledVector(dir, this.speed * dt);
+    // 朝玩家移动（controlled 气球由外部逐帧设位置，跳过自动移动）
+    if (!this.controlled) {
+      const dir = target.clone().sub(this.mesh.position);
+      dir.y = 0;
+      const dist = dir.length();
+      if (dist > 0.001) dir.normalize();
+      this.mesh.position.addScaledVector(dir, this.speed * dt);
+    }
 
     // 笑脸朝向玩家
     this.mesh.lookAt(target.x, target.y, target.z);
@@ -148,8 +151,10 @@ export class BalloonManager {
     const list = this.list;
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
+      if (a.controlled) continue; // 受外部控制的龙气球：位置由路径决定，不参与自动分离
       for (let j = i + 1; j < list.length; j++) {
         const b = list[j];
+        if (b.controlled) continue;
         this._sepVec.subVectors(a.mesh.position, b.mesh.position);
         this._sepVec.y = 0; // 仅在 xz 平面分离
         const dist = this._sepVec.length();

@@ -193,3 +193,26 @@ export const WRIST_UI = {
   },
 };
 
+// ============================================================
+// 第十二关「龙 Boss」参数（dragonLevel.js 引用）
+//   龙头 = Model/龙头.glb（沿路径跟随移动）；龙身/龙爪 = 由敌人气球组成（默认 basic）
+//   运动数据来自 ANIM_URL 的 JSON（schemaVersion 2，字段见 dragon-anim.json）
+//   —— 换同格式文件 = 改 ANIM_URL 一行即可「一键套用」（如 dragon-anim-v2.json）
+//   坐标系：数据为「世界中心」右手系、Y 向上、单位米；通过 SCALE 缩放 + HOME 平移贴合战场
+// ============================================================
+export const DRAGON = {
+  ANIM_URL:   'Model/dragon-anim.json',   // 运动数据 JSON（相对 index.html；换文件只改这里）
+  HEAD_MODEL: 'Model/龙头.glb',           // 龙头 GLB 模型（项目 Model 目录）
+
+  SCALE: 0.08,                            // 数据坐标 → 世界坐标缩放（越大龙越大；0.08≈体长27m、绕玩家盘旋）
+  HOME:  { x: 0, y: 4, z: -9 },           // 龙「包围盒中心」落在：玩家正前方 9m、上方 4m 处（前方为 -Z）
+
+  BODY_TYPE: 'basic',                     // 龙身气球类型（默认敌人气球；后期可换 shield/knight/bomber 等）
+  CLAW_TYPE: 'basic',                     // 龙爪气球类型（同上）
+  CLAW_NODE: 3,                           // 龙爪挂在「第几节身体」上（1=紧邻龙头，越大越靠龙尾）
+
+  HEAD_SCALE: 1.0,                        // 龙头模型额外缩放倍率（模型已按包围盒自动贴合身体尺寸，此项做微调）
+  HEAD_YAW:   0,                          // 龙头朝向修正（度）：lookAt 路径切线后额外绕 Y 旋转（模型前向轴未知时调）
+  HP_MULT:    1.0,                         // 龙气球血量倍率（>1 更肉，如 2.0 = 每节 200 血）
+};
+

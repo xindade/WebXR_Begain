@@ -8,6 +8,7 @@ import { LaserLevel } from './laser.js';
 import { GlassGrid } from './glassGrid.js';
 import { FlipGrid } from './flipGrid.js';
 import { RightGun } from '../vr/rightGun.js';
+import { DragonBoss } from './dragonLevel.js';
 import { LEVELS, isLaser } from '../content/levels.js';
 import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION } from '../core/constants.js';
 
@@ -43,6 +44,7 @@ export class Game {
     this.flipGrid = null;    // 第十五关九宫格实例（仅第15关）
     this.flipPhase = false;  // 是否处于"安全解谜期"(18s 后、激光不致命)
     this.flipTimer = 0;      // 180s 倒计时剩余秒
+    this.dragon = null;      // 第十二关龙 Boss 实例（boss==='dragon' 时存在）
     this.score = 0;
     this._buddhaFx = null;
     this._cardState = null;
@@ -91,6 +93,7 @@ export class Game {
     if (this.laser) { this.laser.dispose(); this.laser = null; }
     if (this.grid) { this.grid.dispose(); this.grid = null; }
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
+    if (this.dragon) { this.dragon.dispose(); this.dragon = null; }
     this.gridPhase = false;
     this.flipPhase = false; this.flipTimer = 0;
     this._lastCell = 0;
@@ -114,8 +117,15 @@ export class Game {
       }
     } else {
       this.laserMode = false;
-      this.waves.startLevel(lv);
-      this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
+      if (lv.boss === 'dragon') {
+        // 第十二关：龙 Boss（龙头 GLB + 龙身/龙爪气球沿动画路径移动）
+        this.dragon = new DragonBoss(this.world.scene, this.balloons);
+        this.dragon.start();
+        this.log(`第 ${lv.n} 关 · 龙 Boss：击破全部龙身/龙爪气球`);
+      } else {
+        this.waves.startLevel(lv);
+        this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
+      }
     }
     // 非激光关在关卡加载完成后拍照快照（用于死亡重开时恢复属性+分数）
     if (!isLaser(lv)) this._snapshotState();
@@ -156,18 +166,23 @@ export class Game {
     // ====== 普通关 ======
     // 气球追踪原点(0,0,0)而非玩家位置
     this.balloons.update(dt, ORIGIN, this.world.camera);
-    this.waves.update(dt);
+    if (this.dragon) {
+      this.dragon.update(dt, pp);   // 龙 Boss：逐帧接管龙气球位置
+    } else {
+      this.waves.update(dt);
+    }
 
     this._collide(); // 仅子弹vs气球（气球vs飞船已移除，改由 _checkExplosions 处理）
 
-    // 气球进入4×8区域则自爆，可能伤害飞船并触发重开
+    // 气球进入4×8区域则自爆，可能伤害飞船并触发重开（龙气球为纯靶子，跳过不伤人）
     if (this._checkExplosions()) return;
 
     this.hud.setScore(this.score);
     this.hud.setHp(this.player.hp, this.player.maxHp);
 
     if (!this.player.alive) { this._restartLevel(); return; }
-    if (this.waves.cleared) this._enterCard();
+    const cleared = this.dragon ? this.dragon.cleared : this.waves.cleared;
+    if (cleared) this._enterCard();
   }
 
   // 激光关主循环：激光动画 + 保持期发光驱动 + 走格子/九宫格阶段分派
@@ -393,6 +408,7 @@ export class Game {
   // 检查气球是否进入4×8区域，进入则自爆并伤害飞船
   _checkExplosions() {
     for (const balloon of [...this.balloons.list]) {
+      if (balloon.controlled) continue; // 龙 Boss 气球：纯靶子，不进入4×8自爆、不伤飞船
       const pos = balloon.mesh.position;
       // 4×8区域 = |x|<=BOUND_X(2), |z|<=BOUND_Z(4)；气球边缘触及区域边界即触发
       const inArea = Math.abs(pos.x) <= (MOVE.BOUND_X + balloon.radius)

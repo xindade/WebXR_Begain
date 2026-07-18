@@ -35,6 +35,7 @@ const enterVRBtn = document.getElementById('enter-vr-btn');
 const enterVRLaserBtn = document.getElementById('enter-vr-laser-btn');
 const enterVRLevel9Btn = document.getElementById('enter-vr-level9-btn');
 const enterVRLevel15Btn = document.getElementById('enter-vr-level15-btn');
+const enterVRLevel12Btn = document.getElementById('enter-vr-level12-btn');
 const statusMsg = document.getElementById('status-msg');
 
 function showStatus(text, isError = false) {
@@ -108,6 +109,11 @@ world.xr.addEventListener('sessionend', () => {
     enterVRLevel15Btn.textContent = '🎯 进入 VR · 第十五关（九宫格翻转）';
     enterVRLevel15Btn.disabled = false;
   }
+  if (enterVRLevel12Btn) {
+    enterVRLevel12Btn.style.display = 'block';
+    enterVRLevel12Btn.textContent = '🐉 进入 VR · 第十二关（龙 Boss）';
+    enterVRLevel12Btn.disabled = false;
+  }
 });
 
 // 探测 WebXR 支持情况，给出明确提示
@@ -119,6 +125,7 @@ if (navigator.xr && navigator.xr.isSessionSupported) {
       enterVRLaserBtn.style.display = 'none'; // 桌面用 HUD 内的「第三关测试」按钮
       if (enterVRLevel9Btn) enterVRLevel9Btn.style.display = 'none';
       if (enterVRLevel15Btn) enterVRLevel15Btn.style.display = 'none';
+      if (enterVRLevel12Btn) enterVRLevel12Btn.style.display = 'none';
     }
   }).catch(() => {});
 } else {
@@ -127,6 +134,7 @@ if (navigator.xr && navigator.xr.isSessionSupported) {
   enterVRLaserBtn.style.display = 'none';
   if (enterVRLevel9Btn) enterVRLevel9Btn.style.display = 'none';
   if (enterVRLevel15Btn) enterVRLevel15Btn.style.display = 'none';
+  if (enterVRLevel12Btn) enterVRLevel12Btn.style.display = 'none';
 }
 
 // 进入 VR：默认第 1 关
@@ -137,6 +145,8 @@ enterVRLaserBtn.onclick = () => { audio.unlock(); pendingStartIndex = 2; enterVR
 enterVRLevel9Btn.onclick = () => { audio.unlock(); pendingStartIndex = 8; enterVR(); };
 // 进入 VR：直接第十五关（激光驱赶 + 九宫格翻转）测试
 if (enterVRLevel15Btn) enterVRLevel15Btn.onclick = () => { audio.unlock(); pendingStartIndex = 14; enterVR(); };
+// 进入 VR：直接第十二关（龙 Boss）测试
+if (enterVRLevel12Btn) enterVRLevel12Btn.onclick = () => { audio.unlock(); pendingStartIndex = 11; enterVR(); };
 
 const clock = new THREE.Clock();
 world.renderer.setAnimationLoop(() => {
