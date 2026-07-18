@@ -86,6 +86,31 @@ export class WristUI {
     c.strokeStyle = p.border; c.lineWidth = 6;
     roundRect(c, 8, 8, p.w - 16, p.h - 16, 22); c.stroke();
 
+    // —— 龙 Boss 关：右侧显示 Boss 实时血量条（进入 Boss 关后持续显示）——
+    if (game.dragon) {
+      c.fillStyle = p.border;
+      c.font = 'bold 40px sans-serif';
+      c.fillText('🐉 龙 Boss', 28, 56);
+
+      const d = game.dragon;
+      const max = d.maxHpPool || 1;
+      const cur = Math.max(0, Math.round(d.hpPool));
+      const ratio = Math.max(0, Math.min(1, cur / max));
+      const bx = 28, by = 84, bw = p.w - 56, bh = 40;
+      c.fillStyle = 'rgba(255,255,255,0.15)';            // 底槽
+      roundRect(c, bx, by, bw, bh, 10); c.fill();
+      c.fillStyle = ratio > 0.3 ? '#ff5a5f' : '#e63946'; // 血量（低于30%转深红）
+      if (bw * ratio > 1) { roundRect(c, bx, by, bw * ratio, bh, 10); c.fill(); }
+      c.fillStyle = '#ffffff';
+      c.font = 'bold 30px sans-serif';
+      c.fillText(`${cur} / ${max}`, bx, by + bh + 36);
+      c.font = '34px sans-serif';
+      c.fillText(`船血 : ${game.player.hp} / ${game.player.maxHp}`, 28, by + bh + 92);
+      c.fillText(`分数 : ${game.score}`, 28, by + bh + 140);
+      p.tex.needsUpdate = true;
+      return;
+    }
+
     c.fillStyle = p.border;
     c.font = 'bold 40px sans-serif';
     c.fillText('🎮 战斗信息', 28, 56);

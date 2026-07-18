@@ -120,8 +120,9 @@ export class Game {
       if (lv.boss === 'dragon') {
         // 第十二关：龙 Boss（龙头 GLB + 龙身/龙爪气球沿动画路径移动）
         this.dragon = new DragonBoss(this.world.scene, this.balloons);
+        this.dragon.audio = this.audio; // 注入音效，连爆时播放
         this.dragon.start();
-        this.log(`第 ${lv.n} 关 · 龙 Boss：击破全部龙身/龙爪气球`);
+        this.log(`第 ${lv.n} 关 · 龙 Boss：击破龙身/龙爪气球（打爆即复活，血量清零才击杀）`);
       } else {
         this.waves.startLevel(lv);
         this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
@@ -341,6 +342,7 @@ export class Game {
     // 子弹 vs 气球
     for (const b of [...this.bullets.active]) {
       for (const balloon of [...this.balloons.list]) {
+        if (!balloon.alive) continue; // 跳过已隐藏的龙气球（复活前），防重复触发
         if (b.mesh.position.distanceTo(balloon.mesh.position) < balloon.radius + 0.12) {
           const killed = balloon.takeDamage(b.dmg);
           this.bullets.release(b);
@@ -354,6 +356,18 @@ export class Game {
   }
 
   _onKilled(balloon) {
+    // 龙 Boss 部件：隐藏并由 DragonBoss 管理「1秒复活」，不从这里永久移除（且不再连锁炸其他龙部件）
+    if (balloon.isDragonPart) {
+      if (this.dragon && !this.dragon.dying) {
+        this.score += balloon.score;
+        this.audio?.playPop();
+        this._spawnExplosionFx(balloon.mesh.position.clone(), balloon.radius);
+        this.dragon.notifyKilled(balloon);
+      }
+      balloon.alive = false;
+      balloon.mesh.visible = false;
+      return;
+    }
     this.score += balloon.score;
     if (balloon.behavior === 'heal') {
       this.player.hp = Math.min(this.player.maxHp, this.player.hp + 20);
@@ -362,6 +376,7 @@ export class Game {
     if (this.player.explosion > 0) {
       for (const other of [...this.balloons.list]) {
         if (other === balloon) continue;
+        if (other.isDragonPart) continue; // 不让爆炸连锁白嫖龙部件
         if (other.mesh.position.distanceTo(balloon.mesh.position) < this.player.explosion) {
           if (other.takeDamage(this.player.atk * 0.5)) this._onKilled(other);
         }
