@@ -56,6 +56,24 @@
     }
     #status-msg.error { color: #ff6b6b; }
 
+    /* ── 预览加载遮罩 + 进度条：所有全景天空就绪前覆盖全屏，闸门 Enter VR 按钮 ── */
+    #loading-overlay {
+      position: fixed; inset: 0; z-index: 9999;   /* 低于 pagelog(10000)，调试日志仍可见 */
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, .92); color: #fff; font-family: sans-serif;
+    }
+    #loading-text {
+      font-size: 15px; margin-bottom: 14px; text-shadow: 0 1px 3px #000;
+    }
+    #loading-bar {
+      width: 46vw; max-width: 520px; height: 10px; border-radius: 6px;
+      background: rgba(255, 255, 255, .15); overflow: hidden;
+    }
+    #loading-bar-fill {
+      width: 0%; height: 100%; border-radius: 6px;
+      background: linear-gradient(90deg, #6c5ce7, #00b894); transition: width .15s ease;
+    }
+
     /* ── 最高优先级页面日志：浏览器最左侧，占 1/4 面积 ── */
     .pagelog {
       position: fixed; left: 0; top: 0; width: 25vw; height: 100vh;
@@ -91,6 +109,10 @@
 <body>
   <canvas id="app"></canvas>
   <div id="status-msg"></div>
+  <div id="loading-overlay">
+    <div id="loading-text">正在加载天空资源…</div>
+    <div id="loading-bar"><div id="loading-bar-fill"></div></div>
+  </div>
   <button id="enter-vr-btn">🎈 进入 VR</button>
   <button id="enter-vr-laser-btn">🎯 进入 VR · 第三关（激光）</button>
   <button id="enter-vr-level9-btn">🚀 进入 VR · 第九关（激光驱赶）</button>

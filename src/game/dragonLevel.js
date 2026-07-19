@@ -18,6 +18,40 @@ import { DRAGON, EXPLOSION } from '../core/constants.js';
 const D2R = THREE.MathUtils.degToRad;
 const UP = new THREE.Vector3(0, 1, 0);
 
+// ── 预览阶段预加载缓存（避免进第 12 关时黑屏/空等）──
+let _animData = null;    // 龙动画 JSON（已解析）
+let _headGltf = null;    // 龙头 GLB（已加载，跨关共享复用，dispose 时只摘除不释放）
+let _preloadPromise = null;
+
+// 预览阶段调用：加载龙关专属资产（动画 JSON + 龙头 GLB）。进第 12 关时直接命中缓存。
+// onProgress(loaded, total) 报告 GLB 下载进度（JSON 体积小忽略不计）。
+export function preloadDragonAssets(onProgress) {
+  if (_preloadPromise) return _preloadPromise;
+  _preloadPromise = (async () => {
+    if (!_animData) {
+      try {
+        const res = await fetch(DRAGON.ANIM_URL);
+        if (res.ok) _animData = await res.json();
+      } catch (e) { console.warn('[DragonBoss] 预加载动画 JSON 失败:', e); }
+    }
+    if (!_headGltf) {
+      const draco = new DRACOLoader();
+      draco.setDecoderPath('vendor/draco/');
+      const loader = new GLTFLoader();
+      loader.setDRACOLoader(draco);
+      _headGltf = await new Promise((resolve, reject) => {
+        loader.load(
+          DRAGON.HEAD_MODEL,
+          (g) => resolve(g),
+          (e) => onProgress && onProgress(e.loaded || 0, e.total || 1),
+          (err) => reject(err)
+        );
+      });
+    }
+  })();
+  return _preloadPromise;
+}
+
 // 归一化（手写，避免 new THREE.Vector3 的额外开销）
 function _norm(v) {
   const l = Math.hypot(v.x, v.y, v.z) || 1;
@@ -80,13 +114,12 @@ export class DragonBoss {
     this.allParts = [];                 // 全部龙气球（用于 alive 统计）
   }
 
-  // 异步加载：解析 JSON → 生成气球 → 加载龙头模型
+  // 异步加载：解析 JSON → 生成气球 → 加载龙头模型（JSON/GLB 命中预览预加载缓存）
   async start() {
     try {
-      const res = await fetch(DRAGON.ANIM_URL);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const data = await res.json();
-      this._buildFromData(data);
+      await preloadDragonAssets();
+      const data = _animData;
+      if (data) this._buildFromData(data);
       this._spawnBalloons();
       this._loadHead();
     } catch (err) {
@@ -253,6 +286,14 @@ export class DragonBoss {
   }
 
   _loadHead() {
+    // 命中预览预加载缓存：直接复用已加载的 GLB（不重复下载/解码）
+    if (_headGltf) {
+      this.headModel = _headGltf.scene;
+      this._fitHead();
+      this.headGroup.add(this.headModel);
+      return;
+    }
+    // 兜底：未预加载时异步加载（含红色线框占位，便于上机确认路径正确）
     const draco = new DRACOLoader();
     draco.setDecoderPath('vendor/draco/');
     const loader = new GLTFLoader();
@@ -261,14 +302,7 @@ export class DragonBoss {
       DRAGON.HEAD_MODEL,
       (gltf) => {
         this.headModel = gltf.scene;
-        // 自动按包围盒缩放：使龙头直径 ≈ 2 * headRadius * SCALE（与龙身尺寸一致）
-        const box = new THREE.Box3().setFromObject(this.headModel);
-        const size = new THREE.Vector3();
-        box.getSize(size);
-        const maxDim = Math.max(size.x, size.y, size.z) || 1;
-        const desiredDiameter = 2 * (this.config.headRadius || 10) * this.dScale;
-        this.headFitScale = desiredDiameter / maxDim;
-        this.headModel.scale.setScalar(this.headFitScale * DRAGON.HEAD_SCALE);
+        this._fitHead();
         this.headGroup.add(this.headModel);
       },
       undefined,
@@ -283,6 +317,17 @@ export class DragonBoss {
         this.headGroup.add(m);
       }
     );
+  }
+
+  // 自动按包围盒缩放：使龙头直径 ≈ 2 * headRadius * SCALE（与龙身尺寸一致）
+  _fitHead() {
+    const box = new THREE.Box3().setFromObject(this.headModel);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const desiredDiameter = 2 * (this.config.headRadius || 10) * this.dScale;
+    this.headFitScale = desiredDiameter / maxDim;
+    this.headModel.scale.setScalar(this.headFitScale * DRAGON.HEAD_SCALE);
   }
 
   update(dt, playerPos) {
@@ -318,6 +363,21 @@ export class DragonBoss {
 
     // 暂停/待机时波动幅度更大（呼吸感），移动时保留细微流动
     const amp = this.pauseTimer > 0 ? this._idleAmp : this._moveAmp;
+
+    // —— 复活计时（外形复活，不回血）——
+    // 必须放在「位置更新循环」之前：刚复活的龙气球在本帧就会被下方 body/claw 循环
+    // 摆到当前龙身正确位置，否则会先以「死亡原地」闪现一帧 → 玩家看到原地残影。
+    for (let k = this._respawns.length - 1; k >= 0; k--) {
+      const r = this._respawns[k];
+      r.t -= dt;
+      if (r.t <= 0) {
+        r.b.alive = true;
+        r.b.hp = r.b.maxHp;
+        r.b.mesh.visible = true;
+        r.b._flash = 0;
+        this._respawns.splice(k, 1);
+      }
+    }
 
     // —— 龙头（极轻微 idle 浮沉，不放大波动，避免龙头「飘」）——
     const headRaw = this._sample(this.s);
@@ -359,19 +419,6 @@ export class DragonBoss {
       nodeWorld.addScaledVector(Nworld, part.side * clawSpread * this.dScale);
       nodeWorld.add(this._undulate(part.node, t, amp));
       part.balloon.mesh.position.copy(nodeWorld);
-    }
-
-    // —— 复活计时（外形复活，不回血）——
-    for (let k = this._respawns.length - 1; k >= 0; k--) {
-      const r = this._respawns[k];
-      r.t -= dt;
-      if (r.t <= 0) {
-        r.b.alive = true;
-        r.b.hp = r.b.maxHp;
-        r.b.mesh.visible = true;
-        r.b._flash = 0;
-        this._respawns.splice(k, 1);
-      }
     }
 
     // —— 通关判定：仅死亡连爆结束后由 _updateFinale 置 cleared（打爆即复活，故不以全灭判定）——
@@ -500,18 +547,10 @@ export class DragonBoss {
     this.dying = false;
     this.cleared = false;
 
-    // 移除龙头（含几何/材质释放）
+    // 移除龙头：龙头模型是预览预加载的共享缓存（_headGltf），只从 headGroup 摘下，
+    // 不 dispose 其几何/材质（否则重玩第 12 关时缓存已失效），由缓存自行跨关复用。
     this.scene.remove(this.headGroup);
-    if (this.headModel) {
-      this.headModel.traverse((o) => {
-        if (o.geometry) o.geometry.dispose();
-        if (o.material) {
-          if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose());
-          else o.material.dispose();
-        }
-      });
-      this.headGroup.remove(this.headModel);
-    }
+    if (this.headModel) this.headGroup.remove(this.headModel);
     this.headModel = null;
     this.headGroup.visible = true;
     this.bodyParts = [];

@@ -6,8 +6,16 @@
 // 无条目的关卡走 world.setSkyMood() 的渐变天空。后续加关只需加一行「关号: '路径'」。
 export const SKY_PANORAMA = {
   3:  'Sky/sky-arctic-6k.jpg', // 第3关（激光·搭阵）→ 北极天空 6K
+  12: 'Sky/12.exr',            // 第12关（龙 Boss）→ OpenEXR HDR 全景天空（线性 HDR）
   15: 'Sky/sky-lake-8k.jpg',   // 第15关（激光·九宫格）→ 湖边天空 8K（与第3关对比清晰度）
 };
+
+// 全景天空亮度倍率（天地朝向已确认正确，只调亮度用）。
+// 1.0 = 原样；<1 = 变暗；>1 = 变亮。改完刷新页面即生效。
+export const SKY_BRIGHTNESS     = 1.0; // JPG 全景（第3/15关）亮度倍率
+export const SKY_EXR_BRIGHTNESS = 0.6; // EXR(HDR) 全景（第12关）亮度倍率。
+                                        // 第12关 EXR 是线性 HDR，渲染器 NoToneMapping 下易过曝，
+                                        // 建议从 0.3~0.7 之间按体感下调；调到 1.0 会明显偏亮。
 
 export const MOVE = {
   SPEED: 3.5,        // 摇杆/键鼠 移动速度 m/s

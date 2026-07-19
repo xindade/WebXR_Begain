@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { MOVE } from './constants.js';
+import { MOVE, SKY_BRIGHTNESS, SKY_EXR_BRIGHTNESS } from './constants.js';
 import { makeTextSprite } from './canvasTexture.js';
+import { EXRLoader } from '../../vendor/EXRLoader.js';
 
 // 世界：渲染器、场景、相机、灯光、天空、星空
 // 多平台 WebXR 标准实现，无厂商专属 hack。
@@ -46,6 +47,7 @@ export class World {
 
     // 全景天空：懒加载 + 缓存，避免死亡重开重复加载
     this._texLoader = new THREE.TextureLoader();
+    this._exrLoader = new EXRLoader();
     this._panoCache = {};
     this._panoActive = false;
     this._skydome = null; // 全景天空穹顶（环绕原点的大球，用真实网格采样贴图，完整保留 8K + 各向异性）
@@ -104,35 +106,71 @@ export class World {
   // 用真实网格采样器渲染（不走 scene.background 的内部 equirect→平面 quad 转换，
   // 该转换会绕开各向异性、且受帧缓冲倍率限制导致发糊）。
   // 纹理缓存，重复进入同一关不重复加载。url 为同源本地路径（离线 PICO）。
-  setSkyPanorama(url) {
-    let tex = this._panoCache[url];
-    if (!tex) {
-      tex = this._texLoader.load(url);
+
+  // 纹理色彩 / 过滤配置（EXR 与 JPG 不同），抽出供 setSkyPanorama 与 loadSky 复用
+  _configurePano(tex, isEXR) {
+    if (isEXR) {
+      // OpenEXR 为线性 HDR 数据：
+      // - 不应用 sRGB 解码（否则会二次提亮），走 DataTexture 默认线性色彩；
+      // - DataTexture 默认 flipY=false（与 JPG 的 flipY=true 相反），会导致画面上下颠倒，
+      //   故强制 flipY=true 以与 JPG 全景在穹顶球面上的朝向一致；
+      // - 开启 mipmap（DataTexture 默认 false，半浮点 WebGL2 可生成）保远距离清晰。
+      tex.colorSpace = THREE.NoColorSpace;
+      //tex.flipY = true;
+      tex.generateMipmaps = true;
+    } else {
       // 作为普通 2D 贴图（UVMapping）由穹顶球面 UV 直接采样；
       // 不设 EquirectangularReflectionMapping（那是给环境反射用的，会改采样方式）。
       tex.colorSpace = THREE.SRGBColorSpace;
-      // 各向异性过滤：天空在视野边缘以掠射角显示时仍能保持锐利，减少发糊
-      tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
-      tex.minFilter = THREE.LinearMipmapLinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      this._panoCache[url] = tex;
     }
+    // 各向异性过滤：天空在视野边缘以掠射角显示时仍能保持锐利，减少发糊
+    tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+  }
 
-    if (!this._skydome) {
-      const geo = new THREE.SphereGeometry(90, 64, 48);
-      const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, depthWrite: false });
-      this._skydome = new THREE.Mesh(geo, mat);
-      this._skydome.renderOrder = -1;           // 最先绘制，作为背景层
-      this._skydome.frustumCulled = false;      // 永远填满视野，勿被剔除
-      this.scene.add(this._skydome);
-    }
-    this._skydome.material.map = tex;
-    this._skydome.material.needsUpdate = true;
-    this._skydome.visible = true;
+  // 预加载 / 取全景纹理（供预览阶段预加载 + 进度回调，返回 Promise）。
+  // 已缓存则直接同步 resolve；否则按扩展名选 EXR/JPG 加载器，配置后入缓存。
+  loadSky(url, onProgress) {
+    return new Promise((resolve, reject) => {
+      const isEXR = url.toLowerCase().endsWith('.exr');
+      const cached = this._panoCache[url];
+      if (cached) { onProgress?.(1, 1); resolve(cached); return; }
+      const loader = isEXR ? this._exrLoader : this._texLoader;
+      loader.load(
+        url,
+        (tex) => { this._configurePano(tex, isEXR); this._panoCache[url] = tex; resolve(tex); },
+        (ev)  => { onProgress?.(ev.loaded, ev.total); },
+        (err) => reject(err)
+      );
+    });
+  }
 
-    this.sky.visible = false;                              // 隐藏渐变天空球
-    this._starLayers.forEach((l) => { l.visible = false; }); // 隐藏星空（全景自带天空）
-    this._panoActive = true;
+  setSkyPanorama(url) {
+    const isEXR = url.toLowerCase().endsWith('.exr');
+    const apply = (tex) => {
+      if (!this._skydome) {
+        const geo = new THREE.SphereGeometry(90, 64, 48);
+        const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, depthWrite: false });
+        this._skydome = new THREE.Mesh(geo, mat);
+        this._skydome.renderOrder = -1;           // 最先绘制，作为背景层
+        this._skydome.frustumCulled = false;      // 永远填满视野，勿被剔除
+        this.scene.add(this._skydome);
+      }
+      this._skydome.material.map = tex;
+      // 亮度倍率：skydome 为 MeshBasicMaterial，color 会与贴图相乘 → 实现整体变暗/变亮。
+      // EXR(线性HDR) 与 JPG 用各自参数，天地朝向不受影响。
+      this._skydome.material.color.setScalar(isEXR ? SKY_EXR_BRIGHTNESS : SKY_BRIGHTNESS);
+      this._skydome.material.needsUpdate = true;
+      this._skydome.visible = true;
+
+      this.sky.visible = false;                              // 隐藏渐变天空球
+      this._starLayers.forEach((l) => { l.visible = false; }); // 隐藏星空（全景自带天空）
+      this._panoActive = true;
+    };
+    const cached = this._panoCache[url];
+    if (cached) { apply(cached); return; }
+    this.loadSky(url).then(apply).catch(() => {}); // 兜底：未预加载时也能用
   }
 
   // 退出全景关：恢复渐变球+星空，隐藏穹顶
