@@ -132,7 +132,10 @@ export class FlipGrid {
       const cell = this.cells[tr][tc];
       cell.flipped = !cell.flipped;     // 逻辑状态立即切换
       cell.flipFrom = cell.rot;
-      cell.flipTo = cell.rot + Math.PI; // 连续累加，动画朝目标角
+      // 目标角永远落在「整数倍 π」：球面必回到格轴(x=xs[c])，杜绝快速连击时
+      // 翻转被打断导致角度累积漂移、相邻气球永久偏出轴而重叠
+      const k = Math.round(cell.rot / Math.PI);
+      cell.flipTo = (k + 1) * Math.PI;
       cell.flipT = 0;
     }
   }
@@ -187,7 +190,7 @@ export class FlipGrid {
           cell.rot = cell.flipFrom + (cell.flipTo - cell.flipFrom) * easeInOut(k);
           cell.pivot.rotation.y = cell.rot;
           if (k >= 1) {
-            cell.rot = cell.flipTo;
+            cell.rot = Math.round(cell.flipTo / Math.PI) * Math.PI; // 吸附到整数倍π，球面归位(防漂移)
             cell.pivot.rotation.y = cell.rot;
             cell.flipT = undefined;
           }

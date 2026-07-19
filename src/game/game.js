@@ -10,7 +10,7 @@ import { FlipGrid } from './flipGrid.js';
 import { RightGun } from '../vr/rightGun.js';
 import { DragonBoss } from './dragonLevel.js';
 import { LEVELS, isLaser } from '../content/levels.js';
-import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA } from '../core/constants.js';
 
 const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关' };
 const ORIGIN = new THREE.Vector3(0, 0, 0);
@@ -100,6 +100,9 @@ export class Game {
     this.bullets.clear();        // 防跨关残留子弹误击
     this.hud.clearCountdown();   // 关倒计时显示
     this.world.setSkyMood(lv.mood);
+    // 有全景配置的关卡（如第3/15关）用全景图作天空，覆盖渐变；无配置则维持渐变天空
+    const pano = SKY_PANORAMA[lv.n];
+    if (pano) this.world.setSkyPanorama(pano);
     this.hud.setLevel(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
     if (isLaser(lv)) {
       this.laserMode = true;

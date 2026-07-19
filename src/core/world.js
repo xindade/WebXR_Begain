@@ -33,6 +33,9 @@ export class World {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0)); // 降采样，知识库要求
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.xr.enabled = true;
+    // 提升头显实际渲染分辨率：默认 1.0 偏低，导致全景天空/整体发糊。
+    // 1.5 显著变清晰（PICO 4 可承受；若实测掉帧可降到 1.25）。
+    this.renderer.xr.setFramebufferScaleFactor(1.5);
     this.renderer.toneMapping = THREE.NoToneMapping;
     this.renderer.shadowMap.enabled = false; // VR 关阴影
 
@@ -40,6 +43,12 @@ export class World {
 
     // 相机放在 playerRig 下，由输入层控制移动
     this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 200);
+
+    // 全景天空：懒加载 + 缓存，避免死亡重开重复加载
+    this._texLoader = new THREE.TextureLoader();
+    this._panoCache = {};
+    this._panoActive = false;
+    this._skydome = null; // 全景天空穹顶（环绕原点的大球，用真实网格采样贴图，完整保留 8K + 各向异性）
 
     this._buildLights();
     this._buildSky();
@@ -77,6 +86,8 @@ export class World {
 
   // 知识库：三预设（日/夜/黄昏）指数缓动过渡
   setSkyMood(mood) {
+    // 若上一关是全景天空，先复原渐变球+星空，再切回渐变
+    if (this._panoActive) this.clearSkyPanorama();
     const presets = {
       day:   { top: 0x4aa3ff, bottom: 0xbfe3ff },
       dusk:  { top: 0x1a2a6c, bottom: 0xff9a76 },
@@ -87,6 +98,49 @@ export class World {
       top: new THREE.Color(p.top),
       bottom: new THREE.Color(p.bottom),
     };
+  }
+
+  // 全景天空：用等距柱状全景图贴到一个「环绕原点的大球穹顶」上，
+  // 用真实网格采样器渲染（不走 scene.background 的内部 equirect→平面 quad 转换，
+  // 该转换会绕开各向异性、且受帧缓冲倍率限制导致发糊）。
+  // 纹理缓存，重复进入同一关不重复加载。url 为同源本地路径（离线 PICO）。
+  setSkyPanorama(url) {
+    let tex = this._panoCache[url];
+    if (!tex) {
+      tex = this._texLoader.load(url);
+      // 作为普通 2D 贴图（UVMapping）由穹顶球面 UV 直接采样；
+      // 不设 EquirectangularReflectionMapping（那是给环境反射用的，会改采样方式）。
+      tex.colorSpace = THREE.SRGBColorSpace;
+      // 各向异性过滤：天空在视野边缘以掠射角显示时仍能保持锐利，减少发糊
+      tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      this._panoCache[url] = tex;
+    }
+
+    if (!this._skydome) {
+      const geo = new THREE.SphereGeometry(90, 64, 48);
+      const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, depthWrite: false });
+      this._skydome = new THREE.Mesh(geo, mat);
+      this._skydome.renderOrder = -1;           // 最先绘制，作为背景层
+      this._skydome.frustumCulled = false;      // 永远填满视野，勿被剔除
+      this.scene.add(this._skydome);
+    }
+    this._skydome.material.map = tex;
+    this._skydome.material.needsUpdate = true;
+    this._skydome.visible = true;
+
+    this.sky.visible = false;                              // 隐藏渐变天空球
+    this._starLayers.forEach((l) => { l.visible = false; }); // 隐藏星空（全景自带天空）
+    this._panoActive = true;
+  }
+
+  // 退出全景关：恢复渐变球+星空，隐藏穹顶
+  clearSkyPanorama() {
+    if (this._skydome) this._skydome.visible = false;
+    this.sky.visible = true;
+    this._starLayers.forEach((l) => { l.visible = true; });
+    this._panoActive = false;
   }
 
   _buildStars() {
@@ -115,6 +169,7 @@ export class World {
   }
 
   _updateSky(dt) {
+    if (this._panoActive) return; // 全景关：跳过渐变/星空缓动
     if (!this._skyTarget) return;
     const k = Math.min(1, dt * 0.6); // 指数缓动
     this._skyUniforms.topColor.value.lerp(this._skyTarget.top, k);

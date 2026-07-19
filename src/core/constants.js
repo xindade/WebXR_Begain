@@ -1,6 +1,14 @@
 // 核心常量速查表 —— 数据来自 ima 知识库「WebXR 肉鸽打气球」
 // 所有可调参数集中在此，方便平衡性调整。
 
+// 全景天空：按关卡号 lv.n 映射本地 360° 全景图（equirectangular，2:1）。
+// 有条目的关卡用该全景图作 scene.background（并隐藏渐变天空球+星空）；
+// 无条目的关卡走 world.setSkyMood() 的渐变天空。后续加关只需加一行「关号: '路径'」。
+export const SKY_PANORAMA = {
+  3:  'Sky/sky-arctic-6k.jpg', // 第3关（激光·搭阵）→ 北极天空 6K
+  15: 'Sky/sky-lake-8k.jpg',   // 第15关（激光·九宫格）→ 湖边天空 8K（与第3关对比清晰度）
+};
+
 export const MOVE = {
   SPEED: 3.5,        // 摇杆/键鼠 移动速度 m/s
   DEADZONE: 0.2,    // 摇杆死区
