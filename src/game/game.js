@@ -178,6 +178,11 @@ export class Game {
       this.waves.update(dt);
     }
 
+    // 聚宝盆等脚本化死亡（寿命到期 → 标记 _pendingKill）在此结算
+    for (const b of [...this.balloons.list]) {
+      if (b._pendingKill && b.alive) { b.alive = false; this._onKilled(b); }
+    }
+
     this._collide(); // 仅子弹vs气球（气球vs飞船已移除，改由 _checkExplosions 处理）
 
     // 气球进入4×8区域则自爆，可能伤害飞船并触发重开（龙气球为纯靶子，跳过不伤人）
@@ -348,7 +353,25 @@ export class Game {
     for (const b of [...this.bullets.active]) {
       for (const balloon of [...this.balloons.list]) {
         if (!balloon.alive) continue; // 跳过已隐藏的龙气球（复活前），防重复触发
+        // 幽灵怪隐身期间无视子弹（仅蓄力显形时可被击中）
+        if (balloon.behavior === 'ghost' && !balloon.revealed) continue;
         if (b.mesh.position.distanceTo(balloon.mesh.position) < balloon.effectiveRadius + 0.12) {
+          // 盾兵怪：盾牌当前朝向玩家且在挡弹夹角内 → 挡下子弹（不扣血）
+          if (balloon.behavior === 'shield') {
+            const sb = balloon.getShieldBlock();
+            if (sb) {
+              const toPlayer = this._playerPos().clone().sub(balloon.mesh.position);
+              toPlayer.y = 0;
+              if (toPlayer.lengthSq() > 1e-6) {
+                toPlayer.normalize();
+                if (toPlayer.dot(sb.dir) > Math.cos(sb.arc)) {
+                  this.bullets.release(b);
+                  this._spawnExplosionFx(b.mesh.position.clone(), 0.2); // 挡弹火花
+                  continue; // 子弹被盾挡下，气球不受伤
+                }
+              }
+            }
+          }
           const killed = balloon.takeDamage(b.dmg);
           this.bullets.release(b);
           this.audio?.playPop();
@@ -373,9 +396,30 @@ export class Game {
       balloon.mesh.visible = false;
       return;
     }
+    // 聚宝盆：无敌，仅寿命到期死亡；结算 = 自身携带积分 + 存活期间每死一个气球 +50
+    if (balloon.behavior === 'treasure') {
+      const bonus = (balloon.type.baseScore || 0) + (balloon._killsDuringLife || 0) * (balloon.type.perKillScore || 0);
+      this.score += bonus;
+      this.audio?.playPop();
+      this.balloons.remove(balloon);
+      return;
+    }
     this.score += balloon.score;
+    // 心型怪：击败后为船恢复血量（知识库 30）
     if (balloon.behavior === 'heal') {
-      this.player.hp = Math.min(this.player.maxHp, this.player.hp + 20);
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + (balloon.type.shipHealOnDeath || 30));
+    }
+    // 宝箱怪：死后弹出一次选项卡（占位：暂以奖励积分代替，待 mid-level 卡片系统接入）
+    if (balloon.behavior === 'chest' && balloon.type.dropCard) {
+      this.score += 50;
+      this.log('宝箱怪被击破：待接入 mid-level 选项卡弹出');
+      // TODO: 接入 mid-level 卡片弹窗（参考 _enterCard / cardDraft）
+    }
+    // 存活的聚宝盆记录「本气球死亡」计数（用于结算 +50/个）
+    for (const t of this.balloons.list) {
+      if (t.behavior === 'treasure' && t.alive && t !== balloon) {
+        t._killsDuringLife = (t._killsDuringLife || 0) + 1;
+      }
     }
     // 召唤怪被击杀：清掉其所有小怪（击杀召唤者才清场）
     if (balloon.behavior === 'summon' && balloon.minions && balloon.minions.length) {

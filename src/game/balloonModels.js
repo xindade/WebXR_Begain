@@ -15,11 +15,15 @@ const _cache = new Map(); // url -> Promise<gltf.scene>
 //   rot:   [x, y, z] 模型本地欧拉旋转(角度°)；默认 [0,0,0] = 沿用模型原生朝向。
 //                      例：某盾牌正面本应朝 -Z（气球「前方」），若实测发现侧身，调对应 rot 的 y（如 90 / -90）即可转正，比弧度直观。
 //   scale: 模型相对「自动贴合碰撞球」的额外缩放系数；默认 1.0 = 与碰撞体积等大。>1 放大、<1 缩小（仅改外观，不影响碰撞判定半径）。
+//   注意：骑士.glb 同时被「盾兵怪(普通大小)」与「骑士Boss(放大)」使用。
+//        此处默认 scale=0.5 适配 Boss（配合 waves._spawnBoss 的 mesh.scale=4 → 约 6m）；
+//        盾兵怪在 balloons.js 调用时传入 tuning 覆盖 {scale:1.0} → 约 1.8m 正常体型。
 export const MODEL_TUNING = {
-  'Model/基础怪.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
-  'Model/召唤师.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
-  'Model/骑士.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/基础怪.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 2.0 },
+  'Model/召唤师.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 3.0 },
+  'Model/骑士.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 0.5 },
   'Model/盾牌.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/龙头.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
 };
 
 // 返回缓存的加载 Promise；失败则 reject（调用方兜底保留程序化球体）
@@ -40,7 +44,7 @@ export function loadBalloonModel(url) {
 }
 
 // 把加载好的模型居中并缩放到与碰撞半径匹配：免去手猜 GLB 原生尺寸
-function _fitToRadius(obj, radius) {
+export function fitToRadius(obj, radius) {
   obj.updateMatrixWorld(true); // 克隆体未入场景，先刷新世界矩阵再量包围盒
   let box = new THREE.Box3().setFromObject(obj);
   const center = new THREE.Vector3();
@@ -57,7 +61,8 @@ function _fitToRadius(obj, radius) {
 // 把模型挂到气球上；fire-and-forget（async，不阻塞构造）。
 // balloon.mesh 是球体(Mesh)：模型作为子节点挂上后隐藏球体材质，碰撞/血条/朝向逻辑都照常。
 // tint：通用身体(基础怪)按类型染色用；专用模型传 null 不打 tint。
-export function attachBalloonModel(balloon, url, radius, tint = null) {
+// tuningOverride：可选，覆盖 MODEL_TUNING 中该 url 的 {pos,rot,scale}（用于同一模型不同体型，如盾兵骑士 vs Boss 骑士）。
+export function attachBalloonModel(balloon, url, radius, tint = null, tuningOverride = null) {
   loadBalloonModel(url)
     .then((gltfScene) => {
       // 气球可能在加载期间已被打死/移除：直接释放克隆体，不挂场景
@@ -68,17 +73,17 @@ export function attachBalloonModel(balloon, url, radius, tint = null) {
         return;
       }
       const clone = gltfScene.clone(true);
-      _fitToRadius(clone, radius);
+      fitToRadius(clone, radius);
 
       // 应用手动微调：位置(米)叠加在「居中」之上；旋转(角度°)转弧度覆盖原生朝向；scale 在「自动贴合」基础上再缩放（见文件顶部 MODEL_TUNING）
-      const tune = MODEL_TUNING[url] || { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 };
+      const tune = { ...(MODEL_TUNING[url] || { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 }), ...(tuningOverride || {}) };
       clone.position.add(new THREE.Vector3(tune.pos[0], tune.pos[1], tune.pos[2]));
       clone.rotation.set(
         THREE.MathUtils.degToRad(tune.rot[0]),
         THREE.MathUtils.degToRad(tune.rot[1]),
         THREE.MathUtils.degToRad(tune.rot[2])
       );
-      clone.scale.multiplyScalar(tune.scale ?? 1.0); // 在 _fitToRadius 的贴合缩放之上叠加手动缩放
+      clone.scale.multiplyScalar(tune.scale ?? 1.0); // 在 fitToRadius 的贴合缩放之上叠加手动缩放
 
       // 每个气球独立克隆材质，互不影响闪烁/染色
       const modelMats = [];

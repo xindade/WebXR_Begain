@@ -1,45 +1,26 @@
-// 01/02 关固定出怪计划（依据 IMA 知识库《关卡设计》笔记）。
-// 仅当 LEVEL_PLANS[level.n] 存在时，WaveManager 走本表（固定编队），其余关保持原随机池。
-//
-// segments：按时长分段的出怪节奏；until = 该段结束的累计秒数；
-//   dirs   = 该段出怪方位：'front'(前/-Z) | 'left'(左) | 'right'(右)，多值为并集；
-//   spawns = 该段要生成的 [{类型, 数量}]（数量之和计入本关 total）。
-// cards：覆盖该关选项卡品质权重（见 cardDraft.js）；firstCardForceAttackPurple 仅第2关。
+// 关卡 → 单一敌人映射（需求：每关只出现一种敌人；一次只出一个，死后出下一个）。
+// 覆盖 12 个非 Boss 战斗关：1,2,4,5,7,8,10,11,13,14,16,17。
+// Boss 关(6/12/18) 与激光关(3/9/15) 不在此表，由各自系统处理。
+// 10 种小怪各占一关；16/17 复用章鱼/龙头，覆盖更均衡。
+// count：本关该敌人连续出场总数（场上始终只留 1 个，死亡后补下一个）。
+export const LEVEL_ENEMY = {
+  1:  { type: 'basic',      count: 8 },
+  2:  { type: 'shield',     count: 6 },
+  4:  { type: 'summoner',   count: 5 },
+  5:  { type: 'ninja',      count: 6 },
+  7:  { type: 'chest',      count: 5 },
+  8:  { type: 'ghost',      count: 6 },
+  10: { type: 'octopus',    count: 6 },
+  11: { type: 'heart',      count: 5 },
+  13: { type: 'dragonhead', count: 5 },
+  14: { type: 'treasure',   count: 3 },
+  16: { type: 'octopus',    count: 6 },  // 复用：章鱼
+  17: { type: 'dragonhead', count: 5 },  // 复用：龙头
+};
 
+// 选项卡品质覆盖（供 cardDraft / game.js 读取；与出怪逻辑无关）。
+// 仅 01/02 关有自定义品质；其余关用全局默认 RARITY。
 export const LEVEL_PLANS = {
-  // ===== 01-普通关（教学）=====
-  // 出怪点：先前方15s → 左15s → 前+左30s
-  // 出怪种类：基础29 + 召唤1；卡片：白60 蓝40
-  1: {
-    segments: [
-      { until: 15, dirs: ['front'],                spawns: [['basic', 10]] },
-      { until: 30, dirs: ['left'],                 spawns: [['basic', 10]] },
-      { until: 60, dirs: ['front', 'left'],        spawns: [['basic', 10], ['summoner', 1]] },
-    ],
-    cards: { white: 60, blue: 40 },
-  },
-
-  // ===== 02-普通关（适应）=====
-  // 出怪点：先前方15s → 左+右15s → 前+左+右30s
-  // 出怪种类：基础30 + 召唤4；卡片：白50 蓝30 紫20（首卡必出攻击紫）
-  2: {
-    segments: [
-      { until: 15, dirs: ['front'],                spawns: [['basic', 10], ['summoner', 1]] },
-      { until: 30, dirs: ['left', 'right'],        spawns: [['basic', 10], ['summoner', 1]] },
-      { until: 60, dirs: ['front', 'left', 'right'], spawns: [['basic', 10], ['summoner', 2]] },
-    ],
-    cards: { white: 50, blue: 30, purple: 20 },
-    firstCardForceAttackPurple: true,
-  },
-
-  // ===== 04-普通关（盾牌卫队）=====
-  // 设计：骑士登场，盾牌气球环绕骑士旋转（每 2 秒 1 圈）形成护卫阵。
-  // 出怪点：前15s → 前+左+右45s；种类 基础20 + 骑士2 + 盾牌9（共31）
-  4: {
-    segments: [
-      { until: 15, dirs: ['front'],                  spawns: [['basic', 8], ['shield', 2]] },
-      { until: 35, dirs: ['front', 'left', 'right'], spawns: [['knight', 1], ['shield', 3], ['basic', 6]] },
-      { until: 99, dirs: ['front', 'left', 'right'], spawns: [['knight', 1], ['shield', 4], ['basic', 6]] },
-    ],
-  },
+  1: { cards: { white: 60, blue: 40 } },
+  2: { cards: { white: 50, blue: 30, purple: 20 }, firstCardForceAttackPurple: true },
 };
