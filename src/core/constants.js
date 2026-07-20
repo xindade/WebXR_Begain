@@ -227,8 +227,8 @@ export const DRAGON = {
   ROLL:  0,                               // 整体绕Z旋转(度)：修正龙的「翻滚」偏差
   // ↑ 三轴组成全局刚体旋转，头/身/爪一起绕 HOME 转动；线下手动调这三个值对齐数据系与游戏系
 
-  BODY_TYPE: 'basic',                     // 龙身气球类型（默认敌人气球；后期可换 shield/knight/bomber 等）
-  CLAW_TYPE: 'basic',                     // 龙爪气球类型（同上）
+  BODY_TYPE: 'dragonBody',               // 龙身气球类型：轻量程序化几何体（见 enemies.dragonBody），避免 14×48万面 基础怪.glb 拖垮 GPU
+  CLAW_TYPE: 'dragonBody',               // 龙爪气球类型（同上）
   CLAW_NODES: [7, 14],                     // 龙爪生成点（身体节号数组）：每个挂点左右各1爪 → 共4爪；增删挂点只改此数组
 
   HEAD_SCALE: 1.0,                        // 龙头模型额外缩放倍率（模型已按包围盒自动贴合身体尺寸，此项做微调）

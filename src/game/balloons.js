@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { BALLOON, MOVE } from '../core/constants.js';
-import { attachBalloonModel, fitToRadius, loadBalloonModel } from './balloonModels.js';
+import { attachBalloonModel, fitToRadius, loadBalloonModel, attachDragonSegment } from './balloonModels.js';
 
 // 程序化笑脸贴图（按颜色缓存）——占位怪也复用调色板
 const _faceCache = new Map();
@@ -58,6 +58,12 @@ class Balloon {
       // 盾兵怪复用骑士模型但需正常体型（Boss 骑士用 MODEL_TUNING 默认缩小），此处覆盖 scale
       const knightTuning = (t.id === 'shield') ? { scale: 1.0 } : null;
       attachBalloonModel(this, t.model, t.radius, null, knightTuning);
+    } else if (t.dragonSegment) {
+      // 2b) 龙身/龙爪：极轻量程序化几何体（见 balloonModels.attachDragonSegment），
+      //     避免 14 份 48万面 基础怪.glb 拖垮 GPU（龙 Boss 掉帧核心修复）
+      this._hasModel = true;
+      this.mesh.material.visible = false;
+      attachDragonSegment(this, t.radius);
     } else {
       // 2) 无模型 → 程序化占位（彩色胶囊 + 眼睛），保留 _modelMats 以便受击闪烁
       this._hasModel = true; // 跳过锥形头盔显示逻辑
@@ -68,8 +74,8 @@ class Balloon {
     // 盾兵怪：在骑士模型基础上附加「会旋转的盾牌」（绕骑士旋转，挡子弹）
     if (t.shieldModel) this._buildShield(t);
 
-    // 血条：所有非基础怪显示（含盾兵/召唤/心/忍者/宝箱/幽灵/龙头/聚宝盆/章鱼）
-    if (t.id !== 'basic') this._makeHealthBar(this.effectiveRadius);
+    // 血条：所有非基础怪显示（含盾兵/召唤/心/忍者/宝箱/幽灵/龙头/聚宝盆/章鱼）；龙身(noHealthBar)除外——龙用全局血量池
+    if (t.id !== 'basic' && !t.noHealthBar) this._makeHealthBar(this.effectiveRadius);
     if (t.scale) this.mesh.scale.setScalar(t.scale);
 
     // 幽灵怪：默认隐身，仅在自身蓄力攻击时显形（见 update）

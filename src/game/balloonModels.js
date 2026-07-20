@@ -24,6 +24,12 @@ export const MODEL_TUNING = {
   'Model/骑士.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 0.5 },
   'Model/盾牌.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
   'Model/龙头.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  // —— 新增怪物模型微调（替换占位；pos/rot/scale 含义同上，按需微调）——
+  'Model/宝箱.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/幽灵.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/心形怪.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/忍者.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/章鱼.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
 };
 
 // 返回缓存的加载 Promise；失败则 reject（调用方兜底保留程序化球体）
@@ -105,4 +111,23 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
       balloon.mesh.material.visible = true;
       console.warn('[BalloonModels] 降级为程序化球体:', url);
     });
+}
+
+// 龙身/龙爪专用轻量几何体（龙 Boss 掉帧的核心修复）。
+// 原理：原方案每段克隆 基础怪.glb（48万面），14 段 = 约 677万三角形/帧，直接压垮 PICO GPU。
+// 此处改用逐节独立的低面数二十面体（≈320 面），14 段合计仅约 4500 三角形；
+// 逐节独立几何便于各自 dispose，避免共享几何被提前释放；龙鳞红 + 平面着色呈现鳞片质感。
+// 注意：dragonBody 类型的气球在 balloons.js 构造时同步调用本函数（无异步加载），bodyModel 立即可用。
+export function attachDragonSegment(balloon, radius) {
+  const geo = new THREE.IcosahedronGeometry(radius, 2); // 单位半径烘焙进几何，seg.scale 留作龙身渐细用
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x8b1a1a, roughness: 0.45, metalness: 0.15, flatShading: true,
+    emissive: 0x000000,
+  });
+  const seg = new THREE.Mesh(geo, mat);
+  balloon.mesh.add(seg);
+  balloon.mesh.material.visible = false; // 隐藏程序化球体（碰撞仍靠 position）
+  balloon.bodyModel = seg;
+  balloon._modelMats = [mat]; // 复用受击闪烁路径
+  balloon._hasModel = true;
 }

@@ -18,6 +18,10 @@ import { DRAGON, EXPLOSION } from '../core/constants.js';
 const D2R = THREE.MathUtils.degToRad;
 const UP = new THREE.Vector3(0, 1, 0);
 
+// 模块级临时量：消除 update 热循环里每帧 new Vector3 的 GC 压力（龙身/龙爪每帧多次采样）
+const _wob = new THREE.Vector3();   // _toWorld 的悬停位移（每帧赋值）
+const _lat = new THREE.Vector3();   // _undulate 的侧向向量（调用即消费，安全复用）
+
 // ── 预览阶段预加载缓存（避免进第 12 关时黑屏/空等）──
 let _animData = null;    // 龙动画 JSON（已解析）
 let _headGltf = null;    // 龙头 GLB（已加载，跨关共享复用，dispose 时只摘除不释放）
@@ -186,7 +190,8 @@ export class DragonBoss {
       raw.z - this.center.z
     ).multiplyScalar(this.dScale);
     off.applyQuaternion(this._rigQuat); // 全局刚体旋转（YAW/PITCH/ROLL）
-    return off.add(this._rigPos).add(new THREE.Vector3(0, this._wobbleY, 0));
+    _wob.set(0, this._wobbleY, 0);
+    return off.add(this._rigPos).add(_wob);
   }
 
   // 取 raw 空间某「单位方向」经全局刚体变换后的世界单位方向（用于龙爪法线方向）
@@ -262,6 +267,9 @@ export class DragonBoss {
       b.controlled = true; // 跳过自动朝玩家移动 + 分离力
       b.isDragonPart = true; // 标记为龙部件：击破后由本类管理「1秒复活」而非永久移除
       if (hpMult !== 1) { b.maxHp = Math.round(b.maxHp * hpMult); b.hp = b.maxHp; }
+      // 龙身由头(i=1)到尾(i=bodyCount)渐细：仅改外观(bodyModel.scale)，不影响碰撞半径
+      const taper = 1.4 - 0.9 * ((i - 1) / Math.max(1, bodyCount - 1));
+      if (b.bodyModel) b.bodyModel.scale.setScalar(taper);
       this.maxHpPool += b.maxHp;
       this.bodyParts.push({ balloon: b, i });
       this.allParts.push(b);
@@ -430,14 +438,14 @@ export class DragonBoss {
   // 蛇形波动偏移：沿龙身流动的侧向摆动 + 轻微起伏（世界空间）
   //   phaseIdx = 节号（i / node），tangentWorld = 该处单位切向，amp = 当前幅度
   _undulate(phaseIdx, tangentWorld, amp) {
-    const lat = new THREE.Vector3().crossVectors(tangentWorld, UP);
-    if (lat.lengthSq() < 1e-6) lat.set(1, 0, 0); else lat.normalize(); // 切向近竖直时兜底
+    _lat.crossVectors(tangentWorld, UP);
+    if (_lat.lengthSq() < 1e-6) _lat.set(1, 0, 0); else _lat.normalize(); // 切向近竖直时兜底
     const phase = phaseIdx * this._phaseStep;
     const a = Math.sin(this._t * this._idleFreq + phase) * amp;          // 侧向摆动
     const b = Math.sin(this._t * this._idleFreq * 0.8 + phase) * amp * 0.4; // 轻微起伏
-    const off = lat.multiplyScalar(a);
+    const off = _lat.multiplyScalar(a);
     off.addScaledVector(UP, b);
-    return off;
+    return off; // 注：返回 _lat 本身，调用方(base.add)立即消费，无跨调用别名风险
   }
 
   // 龙气球被击破：扣固定血量池（只降不升），排入 1 秒复活队列；血量清零则触发死亡连爆

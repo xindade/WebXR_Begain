@@ -40,6 +40,7 @@ export const ENEMY_TYPES = {
     id: 'heart', name: '心型怪',
     hp: 1000, speed: 0, radius: 0.9, score: 40,
     behavior: 'heal', selfDamage: 0,
+    model: 'Model/心形怪.glb',
     healAura: 10,        // 每秒为周围敌人恢复血量
     healRadius: 6,       // 治疗光环半径(m)
     shipHealOnDeath: 30, // 击败后为船恢复血量
@@ -50,6 +51,7 @@ export const ENEMY_TYPES = {
     id: 'ninja', name: '忍者怪',
     hp: 500, speed: 1.5, radius: 0.6, score: 24,
     behavior: 'ninja', selfDamage: 5,
+    model: 'Model/忍者.glb',
     blinkInterval: 3.0,  // 闪现间隔(s)
     blinkRange: 5.0,     // 闪现范围(m)
     shurikenInterval: 3.0, shurikenDamage: 5, // 手里剑（后续补齐抛射）
@@ -60,6 +62,7 @@ export const ENEMY_TYPES = {
     id: 'chest', name: '宝箱怪',
     hp: 500, speed: 1.0, radius: 0.7, score: 30,
     behavior: 'chest', selfDamage: 0,
+    model: 'Model/宝箱.glb',
     hopInterval: 2.0,    // 绕玩家短跳间隔(s)
     dropCard: true,      // 死后弹出一次选项卡
     tint: 0xe1b12c,
@@ -69,6 +72,7 @@ export const ENEMY_TYPES = {
     id: 'ghost', name: '幽灵怪',
     hp: 800, speed: 0, radius: 0.8, score: 34,
     behavior: 'ghost', selfDamage: 10,
+    model: 'Model/幽灵.glb',
     ghostFireInterval: 3.0, ghostFireCharge: 2.0, ghostFireDamage: 10, // 鬼火（蓄力2s后显形）
     tint: 0xdfe6e9,
   },
@@ -97,6 +101,7 @@ export const ENEMY_TYPES = {
     id: 'octopus', name: '章鱼怪',
     hp: 1000, speed: 1.0, radius: 0.9, score: 30,
     behavior: 'octopus', selfDamage: 5,
+    model: 'Model/章鱼.glb',
     inkInterval: 3.0, inkDuration: 1.0, inkDamage: 5, // 喷墨污染视线（后续补齐屏幕遮挡）
     tint: 0x6c5ce7,
   },
@@ -107,6 +112,17 @@ export const ENEMY_TYPES = {
     hp: 500, speed: 0.35, radius: 1.5, score: 30,
     behavior: 'knight', scale: 3,
     model: 'Model/骑士.glb',
+  },
+
+  // —— 龙身/龙爪（Boss 专用，非小怪；由 dragonLevel 逐帧接管位置）——
+  // 关键优化：dragonSegment=true → 走 balloonModels.attachDragonSegment 的极轻量程序化几何体，
+  // 而非克隆 48万面 基础怪.glb。14 节合计仅约 4500 三角形（原 14×48万≈677万），是龙 Boss 关掉帧的核心修复。
+  dragonBody: {
+    id: 'dragonBody', name: '龙身',
+    hp: 100, speed: 0, radius: 0.5, score: 10,
+    behavior: 'basic', selfDamage: 0,
+    dragonSegment: true,  // 触发 balloonModels.attachDragonSegment（轻量几何体，不加载 48万面 GLB）
+    noHealthBar: true,    // 龙用全局血量池(d.hpPool 显示在手腕 UI)，逐节血条多余
   },
 };
 
