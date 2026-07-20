@@ -10,6 +10,7 @@ import { FlipGrid } from './flipGrid.js';
 import { RightGun } from '../vr/rightGun.js';
 import { DragonBoss } from './dragonLevel.js';
 import { LEVELS, isLaser } from '../content/levels.js';
+import { LEVEL_PLANS } from '../content/spawnPlans.js';
 import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA } from '../core/constants.js';
 
 const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关' };
@@ -97,6 +98,7 @@ export class Game {
     this.gridPhase = false;
     this.flipPhase = false; this.flipTimer = 0;
     this._lastCell = 0;
+    this._firstCardOfLevel = true;   // 每关首次抽卡才强制攻击紫（02关）
     this.bullets.clear();        // 防跨关残留子弹误击
     this.hud.clearCountdown();   // 关倒计时显示
     this.world.setSkyMood(lv.mood);
@@ -346,7 +348,7 @@ export class Game {
     for (const b of [...this.bullets.active]) {
       for (const balloon of [...this.balloons.list]) {
         if (!balloon.alive) continue; // 跳过已隐藏的龙气球（复活前），防重复触发
-        if (b.mesh.position.distanceTo(balloon.mesh.position) < balloon.radius + 0.12) {
+        if (b.mesh.position.distanceTo(balloon.mesh.position) < balloon.effectiveRadius + 0.12) {
           const killed = balloon.takeDamage(b.dmg);
           this.bullets.release(b);
           this.audio?.playPop();
@@ -364,7 +366,7 @@ export class Game {
       if (this.dragon && !this.dragon.dying) {
         this.score += balloon.score;
         this.audio?.playPop();
-        this._spawnExplosionFx(balloon.mesh.position.clone(), balloon.radius);
+        this._spawnExplosionFx(balloon.mesh.position.clone(), balloon.effectiveRadius);
         this.dragon.notifyKilled(balloon);
       }
       balloon.alive = false;
@@ -374,6 +376,11 @@ export class Game {
     this.score += balloon.score;
     if (balloon.behavior === 'heal') {
       this.player.hp = Math.min(this.player.maxHp, this.player.hp + 20);
+    }
+    // 召唤怪被击杀：清掉其所有小怪（击杀召唤者才清场）
+    if (balloon.behavior === 'summon' && balloon.minions && balloon.minions.length) {
+      for (const m of balloon.minions) if (m.alive) this.balloons.remove(m);
+      balloon.minions.length = 0;
     }
     // 爆炸范围伤害
     if (this.player.explosion > 0) {
@@ -429,14 +436,14 @@ export class Game {
       if (balloon.controlled) continue; // 龙 Boss 气球：纯靶子，不进入4×8自爆、不伤飞船
       const pos = balloon.mesh.position;
       // 4×8区域 = |x|<=BOUND_X(2), |z|<=BOUND_Z(4)；气球边缘触及区域边界即触发
-      const inArea = Math.abs(pos.x) <= (MOVE.BOUND_X + balloon.radius)
-                  && Math.abs(pos.z) <= (MOVE.BOUND_Z + balloon.radius);
+      const inArea = Math.abs(pos.x) <= (MOVE.BOUND_X + balloon.effectiveRadius)
+                  && Math.abs(pos.z) <= (MOVE.BOUND_Z + balloon.effectiveRadius);
       if (inArea) {
-        this._spawnExplosionFx(balloon.mesh.position.clone(), balloon.radius);
+        this._spawnExplosionFx(balloon.mesh.position.clone(), balloon.effectiveRadius);
         this.balloons.remove(balloon);
         this.audio?.playPop();
-        // 气球入侵飞船区域即造成伤害，不依赖玩家与爆炸点的距离
-        const dead = this.player.takeDamage(balloon.isBoss ? 40 : BALLOON.DAMAGE);
+        // 气球入侵飞船区域即造成伤害，不依赖玩家与爆炸点的距离；伤害按该气球自身自爆值
+        const dead = this.player.takeDamage(balloon.isBoss ? 40 : (balloon.selfDamage ?? BALLOON.DAMAGE));
         if (dead) { this._restartLevel(); return true; }
       }
     }
@@ -544,7 +551,11 @@ export class Game {
       // score 访问解耦：注入回调，cardDraft 不再反向持有 game 实例
       getScore: () => this.score,
       spendScore: (cost) => { this.score -= cost; },
+      // 01/02 关卡片品质覆盖（见 LEVEL_PLANS）；首卡强制攻击紫仅 02 关且本关首次
+      rarity: LEVEL_PLANS[LEVELS[this.levelIndex].n]?.cards || null,
+      forceAttackPurple: !!(LEVEL_PLANS[LEVELS[this.levelIndex].n]?.firstCardForceAttackPurple && this._firstCardOfLevel),
     };
+    this._firstCardOfLevel = false; // 翻转：本关仅首张卡强制攻击紫
     this.hud.message('选择强化', '射击对应气球进行选择（刷新气球可重roll，积分不足时锁定）', '#ffd43b');
     this.cards.open(pp, this._fwd.clone(), this._cardState, () => this._onCardDone());
   }

@@ -20,41 +20,37 @@
       cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.4);
     }
     #enter-vr-btn:disabled { opacity: .6; cursor: default; }
-    #enter-vr-laser-btn {
-      position: fixed; bottom: 104px; left: 50%; transform: translateX(-50%);
-      z-index: 20; padding: 10px 22px; font-size: 15px; font-family: sans-serif;
-      border: none; border-radius: 10px; background: #e17055; color: #fff;
-      cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.4);
-    }
-    #enter-vr-laser-btn:disabled { opacity: .6; cursor: default; }
-    #enter-vr-level9-btn {
-      position: fixed; bottom: 154px; left: 50%; transform: translateX(-50%);
-      z-index: 20; padding: 10px 22px; font-size: 15px; font-family: sans-serif;
-      border: none; border-radius: 10px; background: #00b894; color: #fff;
-      cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.4);
-    }
-    #enter-vr-level9-btn:disabled { opacity: .6; cursor: default; }
-    #enter-vr-level15-btn {
-      position: fixed; bottom: 204px; left: 50%; transform: translateX(-50%);
-      z-index: 20; padding: 10px 22px; font-size: 15px; font-family: sans-serif;
-      border: none; border-radius: 10px; background: #0984e3; color: #fff;
-      cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.4);
-    }
-    #enter-vr-level15-btn:disabled { opacity: .6; cursor: default; }
-    #enter-vr-level12-btn {
-      position: fixed; bottom: 254px; left: 50%; transform: translateX(-50%);
-      z-index: 20; padding: 10px 22px; font-size: 15px; font-family: sans-serif;
-      border: none; border-radius: 10px; background: #fdcb6e; color: #2d3436;
-      cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.4);
-    }
-    #enter-vr-level12-btn:hover { filter: brightness(1.08); }
-    #enter-vr-level12-btn:disabled { opacity: .6; cursor: default; filter: none; }
+    /* 特殊关居中按钮(3/9/12/15)已移除，全关卡入口统一用右侧 #level-panel 面板 */
     #status-msg {
       position: fixed; bottom: 304px; left: 0; right: 0; text-align: center;
       color: #ffd43b; font-family: sans-serif; font-size: 14px; z-index: 20;
       text-shadow: 0 1px 3px #000; display: none;
     }
     #status-msg.error { color: #ff6b6b; }
+
+    /* ── 右侧关卡快捷进入面板 ── */
+    #level-panel {
+      position: fixed; right: 12px; top: 12px; z-index: 30;
+      display: flex; flex-direction: column; gap: 6px;
+      width: 118px; max-height: 92vh; overflow-y: auto;
+      padding: 8px; border-radius: 12px;
+      background: rgba(20, 20, 28, .82); border: 1px solid rgba(255, 255, 255, .12);
+      font-family: sans-serif; color: #fff;
+    }
+    #level-panel h4 { margin: 0 0 2px; font-size: 12px; font-weight: 700; opacity: .9; text-align: center; letter-spacing: 1px; }
+    .level-btn {
+      pointer-events: auto; cursor: pointer; border: none; border-radius: 8px;
+      padding: 7px 8px; font-size: 13px; font-weight: 600; color: #fff; text-align: left;
+      background: #4b4b5e; box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
+      display: flex; align-items: baseline; gap: 6px; line-height: 1.1;
+    }
+    .level-btn:hover { filter: brightness(1.12); }
+    .level-btn.normal { background: #4b4b5e; }
+    .level-btn.crisis { background: #2d4a8a; }
+    .level-btn.laser  { background: #b8651f; }
+    .level-btn.boss   { background: #9b7d2e; }
+    .level-btn .num { font-weight: 800; font-size: 14px; }
+    .level-btn .tag { font-size: 11px; opacity: .92; }
 
     /* ── 预览加载遮罩 + 进度条：所有全景天空就绪前覆盖全屏，闸门 Enter VR 按钮 ── */
     #loading-overlay {
@@ -114,10 +110,8 @@
     <div id="loading-bar"><div id="loading-bar-fill"></div></div>
   </div>
   <button id="enter-vr-btn">🎈 进入 VR</button>
-  <button id="enter-vr-laser-btn">🎯 进入 VR · 第三关（激光）</button>
-  <button id="enter-vr-level9-btn">🚀 进入 VR · 第九关（激光驱赶）</button>
-  <button id="enter-vr-level15-btn">🎯 进入 VR · 第十五关（九宫格翻转）</button>
-  <button id="enter-vr-level12-btn">🐉 进入 VR · 第十二关（龙 Boss）</button>
+  <!-- 特殊关居中按钮已移除；全关卡入口见右侧 #level-panel -->
+  <div id="level-panel"><h4>关卡快捷</h4></div>
   <div id="hint">桌面：WASD 移动 · 鼠标看 · 左键射击 · F 放大招 · 点击画面锁定鼠标 | 头显：摇杆移动 · 扳机射击 · 握柄放大招 · A/B 退出</div>
   <!-- 最高优先级页面日志：经典脚本优先加载，不依赖 three，可捕获黑屏类致命错误 -->
   <script src="./src/ui/pagelog.js"></script>

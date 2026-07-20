@@ -8,12 +8,15 @@ import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
 
 const _up = new THREE.Vector3(0, 1, 0);
 
-function rollRarity() {
-  const entries = Object.entries(RARITY);
+function rollRarity(weights) {
+  // weights: 形如 {white:60, blue:40} 的覆盖权重（来自 LEVEL_PLANS 的 cards）；缺省用全局 RARITY
+  const entries = weights
+    ? Object.entries(weights).map(([k, w]) => [k, { weight: w }])
+    : Object.entries(RARITY);
   const total = entries.reduce((s, [, v]) => s + v.weight, 0);
   let r = Math.random() * total;
   for (const [k, v] of entries) { if ((r -= v.weight) <= 0) return k; }
-  return 'white';
+  return entries[0][0];
 }
 
 function makeCardTexture(title, sub, color) {
@@ -96,6 +99,9 @@ export class CardDraft {
     this.selected = null;
     this._clearLightFx();
     this.onDone = onDone;
+    // 01/02 关卡片品质覆盖（来自 LEVEL_PLANS）：仅首次 open 注入，refresh 复用本对象
+    this._rarity = state.rarity || null;
+    this._forceAtkPurple = !!state.forceAttackPurple;
     this._buildCards();
   }
 
@@ -104,16 +110,21 @@ export class CardDraft {
     this._clearLightFx();
 
     const picks = [];
+    const atkAttr = ATTR_TYPES.find(a => a.id === 'atk'); // 攻击力（首卡强制紫用）
     for (let i = 0; i < CARD.COUNT; i++) {
-      if (Math.random() < 0.2 && SKILL_CARDS.length) {
+      // 有覆盖权重时只出属性卡，避免池外品质（如 01 关无紫/金）
+      if (!this._rarity && Math.random() < 0.2 && SKILL_CARDS.length) {
         const s = SKILL_CARDS[Math.floor(Math.random() * SKILL_CARDS.length)];
         picks.push({ kind: 'skill', def: s, rarity: s.rarity, label: s.label, sub: s.desc, color: RARITY[s.rarity].color });
       } else {
-        const attr = ATTR_TYPES[Math.floor(Math.random() * ATTR_TYPES.length)];
-        const rar = rollRarity();
+        // 首卡强制攻击紫（02 关首次）：仅 i===0 生效一次
+        const forced = this._forceAtkPurple && i === 0 && atkAttr;
+        const attr = forced ? atkAttr : ATTR_TYPES[Math.floor(Math.random() * ATTR_TYPES.length)];
+        const rar = forced ? 'purple' : rollRarity(this._rarity || undefined);
         picks.push({ kind: 'attr', def: attr, rarity: rar, label: attr.label, sub: `+${attr.values[rar]}`, color: RARITY[rar].color });
       }
     }
+    this._forceAtkPurple = false; // 仅首张卡强制一次（refresh 不再强制）
     // 刷新卡（第 4 个可射击气球）；积分不足以支付当前刷新费时锁定（不可击中 + 变暗）
     const canAfford = this._getScore() >= this.refreshCost;
     picks.push({
