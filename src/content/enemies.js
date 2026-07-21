@@ -125,8 +125,9 @@ export const ENEMY_TYPES = {
     noHealthBar: true,    // 龙用全局血量池(d.hpPool 显示在手腕 UI)，逐节血条多余
   },
 
-  // —— 龙身「模型节点」（Boss 专用）：与 dragonBody 同属龙部件，但外观是「完整基础怪模型」（减面版，保留辨识度）——
-  // 龙身 10 段里均匀散落 NODE_COUNT 个此节点，其余段仍是黑红圆柱，形成「模型串 + 圆柱串」混合龙身。
+  // —— 龙身「模型节点」（Boss 专用）：与 dragonBody 同属龙部件，但外观是「完整小怪模型」——
+  // 哪些节挂模型、用哪个模型、缩放/旋转，由 constants.js 的 DRAGON.NODE_DEFS 显式指定；
+  // 其余段仍是黑红圆柱，形成「模型串 + 圆柱串」混合龙身。
   dragonNode: {
     id: 'dragonNode', name: '龙身(模型)',
     hp: 100, speed: 0, radius: 0.5, score: 10,
