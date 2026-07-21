@@ -116,14 +116,17 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
 
 // 龙身/龙爪混合外观装配（龙 Boss 掉帧修复的「外观升级」版）。
 // kind:
-//   'model'    → 挂 NODE_MODEL（基础怪减面版，保留外观辨识度），taper 经 extraScale 应用到缩放
+//   'model'    → 挂模型节点（默认 DRAGON.NODE_MODEL，可被 modelUrl 覆盖），taper*nodeScale 经 extraScale 应用
 //   'cylinder' → 程序化黑红圆柱（黑底炭灰 + 红色发光环），沿本地 Z 躺平，像龙脊椎骨节
-// taper：逐段缩放（头粗尾细），由 dragonLevel 按节号传入。
+// taper       ：逐段缩放（头粗尾细），由 dragonLevel 按节号传入。
+// modelUrl    ：仅 kind='model' 时生效，覆盖 NODE_MODEL（指向 NODE_DEFS[].model）。
+// tuningOverride：仅 kind='model' 时生效，传给 attachBalloonModel 的 { pos, rot(度) }，rot 做三轴自身旋转。
+// nodeScale   ：仅 kind='model' 时生效，叠加在 taper 之上的额外缩放（指向 NODE_DEFS[].scale）。
 // 注意：dragonBody/dragonNode 气球在 balloons.js 构造时仅隐藏球体，此处由 dragonLevel._spawnBalloons 显式调用。
-export function attachDragonSegment(balloon, radius, kind = 'cylinder', taper = 1) {
+export function attachDragonSegment(balloon, radius, kind = 'cylinder', taper = 1, modelUrl = null, tuningOverride = null, nodeScale = 1) {
   if (kind === 'model') {
-    // 模型节点：异步挂 GLB（命中 preload 缓存，几乎无等待）；taper 作为 extraScale 应用到缩放
-    attachBalloonModel(balloon, DRAGON.NODE_MODEL, radius, null, null, taper);
+    // 模型节点：异步挂 GLB（命中 preload 缓存，几乎无等待）；taper*nodeScale 作为 extraScale 应用到缩放
+    attachBalloonModel(balloon, modelUrl || DRAGON.NODE_MODEL, radius, null, tuningOverride, taper * nodeScale);
     balloon._hasModel = true;
     return;
   }

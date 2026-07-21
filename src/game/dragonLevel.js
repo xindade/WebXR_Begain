@@ -67,8 +67,12 @@ export function preloadDragonAssets(onProgress) {
       });
     }
 
-    // 预加载龙身「模型节点」用 GLB（基础怪减面版）：进龙关时直接命中缓存，避免开打后才异步加载出现短暂空缺
-    try { await loadBalloonModel(DRAGON.NODE_MODEL); } catch (e) { console.warn('[DragonBoss] 预加载龙身节点模型失败:', e); }
+    // 预加载所有 NODE_DEFS 里出现的模型（含兜底 NODE_MODEL）：进龙关时直接命中缓存，避免开打后才异步加载出现短暂空缺
+    const modelsToPreload = new Set([DRAGON.NODE_MODEL]);
+    for (const d of (DRAGON.NODE_DEFS || [])) { if (d && d.model) modelsToPreload.add(d.model); }
+    for (const m of modelsToPreload) {
+      try { await loadBalloonModel(m); } catch (e) { console.warn('[DragonBoss] 预加载龙身节点模型失败:', m, e); }
+    }
   })();
   return _preloadPromise;
 }
@@ -194,9 +198,10 @@ export class DragonBoss {
     }
 
     // 初始：龙头从「路径起点稍前方」开始，龙身沿路径向后铺满 → 龙一开始就摆好形状（不再从一点冒出）
-    const bodyCount = this.config.bodyCount || 10;
-    const bodySpacing = this.config.bodySpacing || 10;
-    this.s = Math.min(this.total, bodyCount * bodySpacing);
+    // ① 龙身总段数 / 段间距：优先用 constants.js 的 DRAGON.BODY_COUNT / BODY_SPACING（集中调参），否则回退 JSON
+    this.bodyCount = DRAGON.BODY_COUNT || this.config.bodyCount || 10;
+    this.bodySpacing = DRAGON.BODY_SPACING || this.config.bodySpacing || 10;
+    this.s = Math.min(this.total, this.bodyCount * this.bodySpacing);
   }
 
   // 原始坐标(raw) → 世界坐标：以包围盒中心为锚，缩放 → 全局刚体旋转 → 平移到 HOME（+ 暂停晃动）
@@ -288,24 +293,37 @@ export class DragonBoss {
   }
 
   _spawnBalloons() {
-    const bodyCount = this.config.bodyCount || 10;
+    const bodyCount = this.bodyCount;       // ① 来自 constants DRAGON.BODY_COUNT（_buildFromData 已赋值）
     const hpMult = DRAGON.HP_MULT;
-    const nodeCount = DRAGON.NODE_COUNT || 6;
 
-    // 龙身「模型节点」均匀散落：在 [1..bodyCount] 里选 nodeCount 个下标挂完整模型，其余段是黑红圆柱
-    const nodeIdx = new Set(pickEvenly(bodyCount, nodeCount));
+    // ②/③ 由 NODE_DEFS 构建「节号 → 节点定义」映射（显式指定节点位置 / 模型 / 缩放 / 旋转）
+    const nodeMap = new Map();
+    for (const d of (DRAGON.NODE_DEFS || [])) {
+      if (d && d.at != null) nodeMap.set(d.at, d);
+    }
 
     // 龙身
     for (let i = 1; i <= bodyCount; i++) {
-      const isNode = nodeIdx.has(i);
+      const def = nodeMap.get(i);            // 该节是否有模型节点定义（有即模型节点）
+      const isNode = !!def;
       const b = this.balloons.spawn(isNode ? DRAGON.NODE_TYPE : DRAGON.BODY_TYPE, new THREE.Vector3(0, -999, 0));
       b.controlled = true; // 跳过自动朝玩家移动 + 分离力
       b.isDragonPart = true; // 标记为龙部件：击破后由本类管理「1秒复活」而非永久移除
       if (hpMult !== 1) { b.maxHp = Math.round(b.maxHp * hpMult); b.hp = b.maxHp; }
       // 龙身由头(i=1)到尾(i=bodyCount)渐细：仅改外观，不影响碰撞半径
       const taper = 1.4 - 0.9 * ((i - 1) / Math.max(1, bodyCount - 1));
-      // 视觉装配延后到此：model 节点挂减面版基础怪，其余段挂黑红圆柱
-      attachDragonSegment(b, b.radius, isNode ? 'model' : 'cylinder', taper);
+      if (isNode) {
+        // ②/③ 模型节点：用 NODE_DEFS[].model（缺省回退 NODE_MODEL）、scale、rot[绕X,绕Y,绕Z](度)
+        attachDragonSegment(
+          b, b.radius, 'model', taper,
+          def.model || null,
+          { rot: def.rot || [0, 0, 0] },
+          def.scale != null ? def.scale : 1.0
+        );
+      } else {
+        // 其余段：黑红程序化圆柱
+        attachDragonSegment(b, b.radius, 'cylinder', taper);
+      }
       this.maxHpPool += b.maxHp;
       this.bodyParts.push({ balloon: b, i, kind: isNode ? 'model' : 'cylinder' });
       this.allParts.push(b);
@@ -441,7 +459,7 @@ export class DragonBoss {
     }
 
     // —— 龙身（蛇形波动，替换原整体上下平移）——
-    const bodySpacing = this.config.bodySpacing || 10;
+    const bodySpacing = this.bodySpacing;   // ① 来自 constants DRAGON.BODY_SPACING（_buildFromData 已赋值）
     for (const part of this.bodyParts) {
       if (!part.balloon.alive) continue;
       const arc = this.s - part.i * bodySpacing;   // 负弧长由 _sample 取模环绕 → 循环时龙身连续
