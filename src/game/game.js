@@ -9,6 +9,7 @@ import { GlassGrid } from './glassGrid.js';
 import { FlipGrid } from './flipGrid.js';
 import { RightGun } from '../vr/rightGun.js';
 import { DragonBoss } from './dragonLevel.js';
+import { OpeningModel } from './openingModel.js';
 import { LEVELS, isLaser } from '../content/levels.js';
 import { LEVEL_PLANS } from '../content/spawnPlans.js';
 import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA } from '../core/constants.js';
@@ -46,6 +47,7 @@ export class Game {
     this.flipPhase = false;  // 是否处于"安全解谜期"(18s 后、激光不致命)
     this.flipTimer = 0;      // 180s 倒计时剩余秒
     this.dragon = null;      // 第十二关龙 Boss 实例（boss==='dragon' 时存在）
+    this.openingModel = null; // 第3/9/15关开场动画模型（魔术师），10秒后自动移除
     this.score = 0;
     this._buddhaFx = null;
     this._cardState = null;
@@ -96,6 +98,7 @@ export class Game {
     if (this.grid)     { this.grid.dispose();     this.grid = null; }
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon)   { this.dragon.dispose();   this.dragon = null; }
+    if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清开场动画
     // 清理实体
     this.balloons.clear();
     this.bullets.clear();
@@ -131,6 +134,7 @@ export class Game {
     if (this.grid) { this.grid.dispose(); this.grid = null; }
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon) { this.dragon.dispose(); this.dragon = null; }
+    if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清上一关残留的开场动画
     this.gridPhase = false;
     this.flipPhase = false; this.flipTimer = 0;
     this._lastCell = 0;
@@ -142,6 +146,12 @@ export class Game {
     const pano = SKY_PANORAMA[lv.n];
     if (pano) this.world.setSkyPanorama(pano);
     this.hud.setLevel(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
+
+    // 第3/9/15关开头：世界固定点播放在「魔术师动画版」模型，循环播放 10 秒后自动消失
+    if (lv.n === 3 || lv.n === 9 || lv.n === 15) {
+      this.openingModel = new OpeningModel(this.world.scene, new THREE.Vector3(0, 1.4, -5));
+      this.openingModel.start();
+    }
     if (isLaser(lv)) {
       this.laserMode = true;
       // 透传 laserMode：'drive' 为第九关（生成→驱赶→保持原地→走格子），'full' 为第三关（搭阵），'flip' 为第十五关（九宫格）
@@ -178,6 +188,7 @@ export class Game {
   update(dt) {
     dt = Math.min(dt, 0.05);
     this.world.update(dt);
+    if (this.openingModel) this.openingModel.update(dt); // 开场动画模型：推进动画 + 10秒计时
     this.wristUI?.update(dt, this, this.input); // 手腕面板（VR 下显示，桌面忽略）
     this.rightGun.update(dt, this.input);        // 右手柄 AK 枪（VR 手持，桌面忽略）
     this._updateBuddhaFx(dt);
@@ -352,6 +363,7 @@ export class Game {
     this.player.hp = this.player.maxHp;
     if (this.laser) this.laser.reset();
     if (this.grid) this.grid.reset();   // 玻璃网格（含破碎格）一并重建
+    if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 激光关死亡重开：清开场动画，防重复生成
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; } // 九宫格 dispose，下次 16s 由 isHoldPhase 重建为初始布局
     this.gridPhase = false;
     this.flipPhase = false; this.flipTimer = 0;
