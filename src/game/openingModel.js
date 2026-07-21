@@ -78,7 +78,11 @@ export class OpeningModel {
     this._disposed = true;
     this._ready = false;
 
-    if (this.mixer) { this.mixer.stop(); this.mixer = null; }
+    // 停掉动画：AnimationMixer 只有 stopAllAction()，没有 stop()
+    if (this.mixer) {
+      try { this.mixer.stopAllAction(); } catch (e) { console.warn('[OpeningModel] 停止动画失败:', e); }
+      this.mixer = null;
+    }
     if (this.root) {
       this.scene.remove(this.root);
       // 本类每次新建 GLTFLoader 单独加载，root 不与他人共享 → 可整体释放
