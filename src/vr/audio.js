@@ -87,9 +87,17 @@ export class AudioManager {
         const og = this.ctx.createGain();
         og.gain.setValueAtTime(0.2, tt);
         og.gain.exponentialRampToValueAtTime(0.001, tt + 0.3);
-        o.connect(og).connect(bus);
-        o.start(tt); o.stop(tt + 0.3);
-      }
+      o.connect(og).connect(bus);
+      o.start(tt); o.stop(tt + 0.3);
     }
   }
+  this.bgmNodes = bus;   // 保存引用，供 stopBGM 断开（原仅判空不赋值，重复 start 会叠加）
+}
+
+stopBGM() {
+  if (this.bgmNodes) {
+    try { this.bgmNodes.disconnect(); } catch (e) { /* 已断开 */ }
+    this.bgmNodes = null;
+  }
+}
 }

@@ -88,6 +88,42 @@ export class Game {
     this.state = 'playing';
   }
 
+  // 回到「未开始」状态：供 sessionend 调用，使再次进入 VR 时 sessionstart 守卫生效、从干净状态开局
+  toMenu() {
+    this.state = 'menu';                       // 关键：让 sessionstart 的 game.start 守卫重新生效
+    // 释放关卡专属实例（沿用 _loadLevel 头部写法）
+    if (this.laser)    { this.laser.dispose();    this.laser = null; }
+    if (this.grid)     { this.grid.dispose();     this.grid = null; }
+    if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
+    if (this.dragon)   { this.dragon.dispose();   this.dragon = null; }
+    // 清理实体
+    this.balloons.clear();
+    this.bullets.clear();
+    this._clearExplosions();
+    if (this._buddhaFx) { this.world.scene.remove(this._buddhaFx.mesh); this._buddhaFx = null; }
+    this.cards.clearCards();                    // 清抽卡气球（不拆除 group，可再次 open 复用）
+    this._cardState = null;
+    this._levelSnapshot = null;
+    // 重置数值
+    this.player.reset();
+    this.score = 0;
+    this.levelIndex = 0;
+    this.gridPhase = false;
+    this.flipPhase = false; this.flipTimer = 0;
+    this._lastCell = 0; this._failing = false; this._failTimer = 0;
+    this.laserMode = false;
+    // 位置 / 天空恢复预览初始态（默认天空 == dusk 预设，见 world.js 构造）
+    this.rig.position.set(0, 0, 0);
+    this.world.clearSkyPanorama();
+    this.world.setSkyMood('dusk');
+    // HUD / 音频
+    this.hud.showStart();
+    this.hud.clearMessage();
+    this.hud.setScore(0);
+    this.hud.setHp(this.player.maxHp, this.player.maxHp);
+    this.audio?.stopBGM();
+  }
+
   _loadLevel(i) {
     const lv = LEVELS[i];
     // 离开上一关时清理激光关实例与玻璃网格

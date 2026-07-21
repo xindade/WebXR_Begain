@@ -218,7 +218,7 @@ export const WRIST_UI = {
 // ============================================================
 export const DRAGON = {
   ANIM_URL:   'Model/dragon-anim.json',   // 运动数据 JSON（相对 index.html；换文件只改这里）
-  HEAD_MODEL: 'Model/灭世龙头.glb',       // 龙头 GLB 模型（替换后的新龙头；朝向/尺寸待 PICO 实测，必要时调 HEAD_YAW）
+  HEAD_MODEL: 'Model/龙头.glb',           // 龙头 GLB 模型（本地 Model/ 下已有；若之后换灭世龙头需先把文件放入 Model/ 并改此处）
 
   SCALE: 0.08,                            // 数据坐标 → 世界坐标缩放（越大龙越大；0.08≈体长27m、绕玩家盘旋）
   HOME:  { x: 0, y: 0, z: 0 },           // 龙「包围盒中心」落在：玩家正前方 9m、上方 4m 处（前方为 -Z）。即整条龙的整体位置

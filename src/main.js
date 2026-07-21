@@ -141,6 +141,7 @@ async function enterVR() {
 // 会话结束：恢复按钮；并「暂停日志滚动」防止报错信息丢失
 world.xr.addEventListener('sessionend', () => {
   pageLog?.pauseScroll();
+  game.toMenu();            // B/退出 VR 后真正回到未开始状态（state='menu' 并清场，重进 VR 即从干净状态开局）
   pendingStartIndex = 0; // 复位，下次默认从第 1 关开始
   enterVRBtn.disabled = false;
   enterVRBtn.style.display = 'block';
