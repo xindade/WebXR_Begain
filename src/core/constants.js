@@ -218,7 +218,7 @@ export const WRIST_UI = {
 // ============================================================
 export const DRAGON = {
   ANIM_URL:   'Model/dragon-anim.json',   // 运动数据 JSON（相对 index.html；换文件只改这里）
-  HEAD_MODEL: 'Model/龙头.glb',           // 龙头 GLB 模型（项目 Model 目录）
+  HEAD_MODEL: 'Model/灭世龙头.glb',       // 龙头 GLB 模型（替换后的新龙头；朝向/尺寸待 PICO 实测，必要时调 HEAD_YAW）
 
   SCALE: 0.08,                            // 数据坐标 → 世界坐标缩放（越大龙越大；0.08≈体长27m、绕玩家盘旋）
   HOME:  { x: 0, y: 0, z: 0 },           // 龙「包围盒中心」落在：玩家正前方 9m、上方 4m 处（前方为 -Z）。即整条龙的整体位置
@@ -227,8 +227,11 @@ export const DRAGON = {
   ROLL:  0,                               // 整体绕Z旋转(度)：修正龙的「翻滚」偏差
   // ↑ 三轴组成全局刚体旋转，头/身/爪一起绕 HOME 转动；线下手动调这三个值对齐数据系与游戏系
 
-  BODY_TYPE: 'dragonBody',               // 龙身气球类型：轻量程序化几何体（见 enemies.dragonBody），避免 14×48万面 基础怪.glb 拖垮 GPU
-  CLAW_TYPE: 'dragonBody',               // 龙爪气球类型（同上）
+  BODY_TYPE: 'dragonBody',               // 龙身「圆柱段」气球类型：黑红程序化几何体（见 enemies.dragonBody）
+  CLAW_TYPE: 'dragonBody',               // 龙爪气球类型（同上，黑红圆柱）
+  NODE_MODEL: 'Model/基础怪.glb',        // 龙身「模型节点」复用基础怪模型（已跟踪；满模保外观，沙箱无法提交中文名减面文件，故直接复用）
+  NODE_TYPE:  'dragonNode',              // 龙身模型节点气球类型（见 enemies.dragonNode）
+  NODE_COUNT: 6,                         // 龙身 10 段里均匀散落几个「完整模型节点」，其余段用黑红圆柱填充
   CLAW_NODES: [7, 14],                     // 龙爪生成点（身体节号数组）：每个挂点左右各1爪 → 共4爪；增删挂点只改此数组
 
   HEAD_SCALE: 1.0,                        // 龙头模型额外缩放倍率（模型已按包围盒自动贴合身体尺寸，此项做微调）

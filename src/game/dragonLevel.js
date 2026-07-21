@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from '../../vendor/GLTFLoader.js';
 import { DRACOLoader } from '../../vendor/DRACOLoader.js';
 import { DRAGON, EXPLOSION } from '../core/constants.js';
+import { attachDragonSegment, loadBalloonModel } from './balloonModels.js';
 
 // 第十二关「龙 Boss」
 //   龙头 = Model/龙头.glb（沿 headPath 跟随移动，自动按包围盒缩放贴合龙身）
@@ -21,6 +22,19 @@ const UP = new THREE.Vector3(0, 1, 0);
 // 模块级临时量：消除 update 热循环里每帧 new Vector3 的 GC 压力（龙身/龙爪每帧多次采样）
 const _wob = new THREE.Vector3();   // _toWorld 的悬停位移（每帧赋值）
 const _lat = new THREE.Vector3();   // _undulate 的侧向向量（调用即消费，安全复用）
+// 圆柱节点朝向：复用临时量，避免每帧 new
+const _tanA = new THREE.Vector3();
+const _tanB = new THREE.Vector3();
+const _tanDir = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+const FORWARD_Z = new THREE.Vector3(0, 0, 1); // 圆柱本地 +Z（旋转后对齐脊柱切向）
+
+// 在 [1..n] 里均匀选 k 个整数下标（用于龙身「模型节点」均匀散落）
+function pickEvenly(n, k) {
+  const res = [];
+  for (let j = 0; j < k; j++) res.push(Math.round(1 + (n - 1) * j / Math.max(1, k - 1)));
+  return res;
+}
 
 // ── 预览阶段预加载缓存（避免进第 12 关时黑屏/空等）──
 let _animData = null;    // 龙动画 JSON（已解析）
@@ -52,6 +66,9 @@ export function preloadDragonAssets(onProgress) {
         );
       });
     }
+
+    // 预加载龙身「模型节点」用 GLB（基础怪减面版）：进龙关时直接命中缓存，避免开打后才异步加载出现短暂空缺
+    try { await loadBalloonModel(DRAGON.NODE_MODEL); } catch (e) { console.warn('[DragonBoss] 预加载龙身节点模型失败:', e); }
   })();
   return _preloadPromise;
 }
@@ -257,25 +274,44 @@ export class DragonBoss {
     return t.normalize();
   }
 
+  // 圆柱沿脊柱躺平：让 mesh 本地 +Z 对齐该处「世界切向」（圆柱几何已预旋转轴到 Z）。
+  // 用世界坐标采样点求切向（而非 _tangent 的 raw 坐标），保证方向与可见龙身一致。
+  _orientAlongSpine(mesh, arc) {
+    const d = Math.max(1, this.total * 0.002);
+    _tanA.copy(this._toWorld(this._sample(arc - d)));
+    _tanB.copy(this._toWorld(this._sample(arc + d)));
+    _tanDir.subVectors(_tanB, _tanA);
+    if (_tanDir.lengthSq() < 1e-9) return; // 退化保底：保持上一帧朝向
+    _tanDir.normalize();
+    _q.setFromUnitVectors(FORWARD_Z, _tanDir);
+    mesh.quaternion.copy(_q);
+  }
+
   _spawnBalloons() {
     const bodyCount = this.config.bodyCount || 10;
     const hpMult = DRAGON.HP_MULT;
+    const nodeCount = DRAGON.NODE_COUNT || 6;
+
+    // 龙身「模型节点」均匀散落：在 [1..bodyCount] 里选 nodeCount 个下标挂完整模型，其余段是黑红圆柱
+    const nodeIdx = new Set(pickEvenly(bodyCount, nodeCount));
 
     // 龙身
     for (let i = 1; i <= bodyCount; i++) {
-      const b = this.balloons.spawn(DRAGON.BODY_TYPE, new THREE.Vector3(0, -999, 0));
+      const isNode = nodeIdx.has(i);
+      const b = this.balloons.spawn(isNode ? DRAGON.NODE_TYPE : DRAGON.BODY_TYPE, new THREE.Vector3(0, -999, 0));
       b.controlled = true; // 跳过自动朝玩家移动 + 分离力
       b.isDragonPart = true; // 标记为龙部件：击破后由本类管理「1秒复活」而非永久移除
       if (hpMult !== 1) { b.maxHp = Math.round(b.maxHp * hpMult); b.hp = b.maxHp; }
-      // 龙身由头(i=1)到尾(i=bodyCount)渐细：仅改外观(bodyModel.scale)，不影响碰撞半径
+      // 龙身由头(i=1)到尾(i=bodyCount)渐细：仅改外观，不影响碰撞半径
       const taper = 1.4 - 0.9 * ((i - 1) / Math.max(1, bodyCount - 1));
-      if (b.bodyModel) b.bodyModel.scale.setScalar(taper);
+      // 视觉装配延后到此：model 节点挂减面版基础怪，其余段挂黑红圆柱
+      attachDragonSegment(b, b.radius, isNode ? 'model' : 'cylinder', taper);
       this.maxHpPool += b.maxHp;
-      this.bodyParts.push({ balloon: b, i });
+      this.bodyParts.push({ balloon: b, i, kind: isNode ? 'model' : 'cylinder' });
       this.allParts.push(b);
     }
 
-    // 龙爪（每个挂点 CLAW_NODES 左右各1爪 → 默认 [3,7] 共4爪）
+    // 龙爪（每个挂点 CLAW_NODES 左右各1爪 → 默认 [3,7] 共4爪）：统一黑红圆柱
     const clawNodes = Array.isArray(DRAGON.CLAW_NODES) ? DRAGON.CLAW_NODES : [DRAGON.CLAW_NODE];
     for (const node of clawNodes) {
       for (const side of [-1, 1]) {
@@ -283,8 +319,11 @@ export class DragonBoss {
         b.controlled = true;
         b.isDragonPart = true;
         if (hpMult !== 1) { b.maxHp = Math.round(b.maxHp * hpMult); b.hp = b.maxHp; }
+        // 龙爪 taper 取所在节点位置（中等粗细）
+        const taper = 1.4 - 0.9 * ((node - 1) / Math.max(1, bodyCount - 1));
+        attachDragonSegment(b, b.radius, 'cylinder', taper);
         this.maxHpPool += b.maxHp;
-        this.clawParts.push({ balloon: b, side, node });
+        this.clawParts.push({ balloon: b, side, node, kind: 'cylinder' });
         this.allParts.push(b);
       }
     }
@@ -410,6 +449,8 @@ export class DragonBoss {
       const tan = this._tangent(arc);
       base.add(this._undulate(part.i, tan, amp));
       part.balloon.mesh.position.copy(base);
+      // 圆柱节点沿脊柱躺平（模型节点保持直立，不在此处理）
+      if (part.kind === 'cylinder') this._orientAlongSpine(part.balloon.mesh, arc);
     }
 
     // —— 龙爪：每个挂点(node)处，沿世界法线左右偏移 + 同样蛇形波动 ——
@@ -427,6 +468,8 @@ export class DragonBoss {
       nodeWorld.addScaledVector(Nworld, part.side * clawSpread * this.dScale);
       nodeWorld.add(this._undulate(part.node, t, amp));
       part.balloon.mesh.position.copy(nodeWorld);
+      // 龙爪统一黑红圆柱，沿脊柱躺平
+      this._orientAlongSpine(part.balloon.mesh, nodeArc);
     }
 
     // —— 通关判定：仅死亡连爆结束后由 _updateFinale 置 cleared（打爆即复活，故不以全灭判定）——

@@ -59,11 +59,11 @@ class Balloon {
       const knightTuning = (t.id === 'shield') ? { scale: 1.0 } : null;
       attachBalloonModel(this, t.model, t.radius, null, knightTuning);
     } else if (t.dragonSegment) {
-      // 2b) 龙身/龙爪：极轻量程序化几何体（见 balloonModels.attachDragonSegment），
-      //     避免 14 份 48万面 基础怪.glb 拖垮 GPU（龙 Boss 掉帧核心修复）
+      // 2b) 龙身/龙爪：外观装配延后到 dragonLevel._spawnBalloons 显式调用 attachDragonSegment，
+      //     因为逐段 taper（头粗尾细）在构造时未知，需由外部传入。
+      //     此处仅隐藏程序化球体 + 标记 _hasModel（跳过锥形头盔逻辑）。
       this._hasModel = true;
       this.mesh.material.visible = false;
-      attachDragonSegment(this, t.radius);
     } else {
       // 2) 无模型 → 程序化占位（彩色胶囊 + 眼睛），保留 _modelMats 以便受击闪烁
       this._hasModel = true; // 跳过锥形头盔显示逻辑
@@ -223,8 +223,8 @@ class Balloon {
     // 小怪特殊行为
     this._updateBehavior(dt, target);
 
-    // 笑脸/模型朝向玩家
-    this.mesh.lookAt(target.x, target.y, target.z);
+    // 笑脸/模型朝向玩家（龙部件由 dragonLevel 逐帧接管朝向，跳过以免被 lookAt 覆盖）
+    if (!this.isDragonPart) this.mesh.lookAt(target.x, target.y, target.z);
 
     // 受击闪烁（有模型/占位材质则闪材质，否则闪程序化球体）
     if (this._flash > 0) {

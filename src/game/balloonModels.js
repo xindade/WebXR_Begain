@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from '../../vendor/GLTFLoader.js';
 import { DRACOLoader } from '../../vendor/DRACOLoader.js';
+import { DRAGON } from '../core/constants.js';
 
 // 气球 GLB 模型加载/挂载助手。
 // 加载范式复用 rightGun.js / dragonLevel.js：GLTFLoader + 离线 DRACOLoader( vendor/draco/ )。
@@ -68,7 +69,7 @@ export function fitToRadius(obj, radius) {
 // balloon.mesh 是球体(Mesh)：模型作为子节点挂上后隐藏球体材质，碰撞/血条/朝向逻辑都照常。
 // tint：通用身体(基础怪)按类型染色用；专用模型传 null 不打 tint。
 // tuningOverride：可选，覆盖 MODEL_TUNING 中该 url 的 {pos,rot,scale}（用于同一模型不同体型，如盾兵骑士 vs Boss 骑士）。
-export function attachBalloonModel(balloon, url, radius, tint = null, tuningOverride = null) {
+export function attachBalloonModel(balloon, url, radius, tint = null, tuningOverride = null, extraScale = 1) {
   loadBalloonModel(url)
     .then((gltfScene) => {
       // 气球可能在加载期间已被打死/移除：直接释放克隆体，不挂场景
@@ -89,7 +90,7 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
         THREE.MathUtils.degToRad(tune.rot[1]),
         THREE.MathUtils.degToRad(tune.rot[2])
       );
-      clone.scale.multiplyScalar(tune.scale ?? 1.0); // 在 fitToRadius 的贴合缩放之上叠加手动缩放
+      clone.scale.multiplyScalar((tune.scale ?? 1.0) * extraScale); // 在 fitToRadius 贴合缩放之上叠加手动缩放 + 逐段 taper
 
       // 每个气球独立克隆材质，互不影响闪烁/染色
       const modelMats = [];
@@ -113,21 +114,43 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
     });
 }
 
-// 龙身/龙爪专用轻量几何体（龙 Boss 掉帧的核心修复）。
-// 原理：原方案每段克隆 基础怪.glb（48万面），14 段 = 约 677万三角形/帧，直接压垮 PICO GPU。
-// 此处改用逐节独立的低面数二十面体（≈320 面），14 段合计仅约 4500 三角形；
-// 逐节独立几何便于各自 dispose，避免共享几何被提前释放；龙鳞红 + 平面着色呈现鳞片质感。
-// 注意：dragonBody 类型的气球在 balloons.js 构造时同步调用本函数（无异步加载），bodyModel 立即可用。
-export function attachDragonSegment(balloon, radius) {
-  const geo = new THREE.IcosahedronGeometry(radius, 2); // 单位半径烘焙进几何，seg.scale 留作龙身渐细用
+// 龙身/龙爪混合外观装配（龙 Boss 掉帧修复的「外观升级」版）。
+// kind:
+//   'model'    → 挂 NODE_MODEL（基础怪减面版，保留外观辨识度），taper 经 extraScale 应用到缩放
+//   'cylinder' → 程序化黑红圆柱（黑底炭灰 + 红色发光环），沿本地 Z 躺平，像龙脊椎骨节
+// taper：逐段缩放（头粗尾细），由 dragonLevel 按节号传入。
+// 注意：dragonBody/dragonNode 气球在 balloons.js 构造时仅隐藏球体，此处由 dragonLevel._spawnBalloons 显式调用。
+export function attachDragonSegment(balloon, radius, kind = 'cylinder', taper = 1) {
+  if (kind === 'model') {
+    // 模型节点：异步挂 GLB（命中 preload 缓存，几乎无等待）；taper 作为 extraScale 应用到缩放
+    attachBalloonModel(balloon, DRAGON.NODE_MODEL, radius, null, null, taper);
+    balloon._hasModel = true;
+    return;
+  }
+  // 圆柱节点：黑底炭灰 + 红色发光环带，平面着色，呈现「龙脊椎骨节」质感
+  const height = radius * 1.5;
+  const geo = new THREE.CylinderGeometry(radius, radius, height, 18);
+  geo.rotateX(Math.PI / 2); // 默认轴沿 Y → 旋转到沿本地 Z（躺平沿脊柱方向）
   const mat = new THREE.MeshStandardMaterial({
-    color: 0x8b1a1a, roughness: 0.45, metalness: 0.15, flatShading: true,
-    emissive: 0x000000,
+    color: 0x111111, roughness: 0.5, metalness: 0.35, flatShading: true,
   });
   const seg = new THREE.Mesh(geo, mat);
+
+  // 两道红色发光环（头尾各一），强化「骨节」分段感
+  const ringGeo = new THREE.TorusGeometry(radius * 1.04, radius * 0.16, 8, 22);
+  const ringMat = new THREE.MeshStandardMaterial({
+    color: 0x8b1a1a, emissive: 0x8b1a1a, emissiveIntensity: 0.9, roughness: 0.4, metalness: 0.2,
+  });
+  for (const zoff of [-height * 0.32, height * 0.32]) {
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.position.z = zoff;
+    seg.add(ring);
+  }
+
+  seg.scale.setScalar(taper); // 逐段渐细（头粗尾细）
   balloon.mesh.add(seg);
   balloon.mesh.material.visible = false; // 隐藏程序化球体（碰撞仍靠 position）
   balloon.bodyModel = seg;
-  balloon._modelMats = [mat]; // 复用受击闪烁路径
+  balloon._modelMats = [mat, ringMat]; // 复用受击闪烁路径
   balloon._hasModel = true;
 }

@@ -121,8 +121,18 @@ export const ENEMY_TYPES = {
     id: 'dragonBody', name: '龙身',
     hp: 100, speed: 0, radius: 0.5, score: 10,
     behavior: 'basic', selfDamage: 0,
-    dragonSegment: true,  // 触发 balloonModels.attachDragonSegment（轻量几何体，不加载 48万面 GLB）
+    dragonSegment: true,  // 触发 balloonModels.attachDragonSegment（黑红圆柱，不加载 48万面 GLB）
     noHealthBar: true,    // 龙用全局血量池(d.hpPool 显示在手腕 UI)，逐节血条多余
+  },
+
+  // —— 龙身「模型节点」（Boss 专用）：与 dragonBody 同属龙部件，但外观是「完整基础怪模型」（减面版，保留辨识度）——
+  // 龙身 10 段里均匀散落 NODE_COUNT 个此节点，其余段仍是黑红圆柱，形成「模型串 + 圆柱串」混合龙身。
+  dragonNode: {
+    id: 'dragonNode', name: '龙身(模型)',
+    hp: 100, speed: 0, radius: 0.5, score: 10,
+    behavior: 'basic', selfDamage: 0,
+    dragonSegment: true,  // 同样走 balloonModels.attachDragonSegment，但 kind='model' → 挂 NODE_MODEL（减面版基础怪）
+    noHealthBar: true,    // 龙用全局血量池，逐节血条多余
   },
 };
 
