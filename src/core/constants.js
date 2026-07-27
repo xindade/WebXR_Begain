@@ -230,7 +230,7 @@ export const DRAGON = {
   BODY_TYPE: 'dragonBody',               // 龙身「圆柱段」气球类型：黑红程序化几何体（见 enemies.dragonBody）
   CLAW_TYPE: 'dragonBody',               // 龙爪气球类型（同上，黑红圆柱）
   BODY_COUNT: 24,          // ① 龙身总段数（= 圆柱段 + 模型节点 总数；覆盖 JSON 里的 config.bodyCount）
-  BODY_SPACING: 10,        // ① 相邻两段之间的「弧长间距」（越大龙身越长；覆盖 JSON 里的 config.bodySpacing）
+  BODY_SPACING: 15,        // ① 相邻两段之间的「弧长间距」（越大龙身越长；覆盖 JSON 里的 config.bodySpacing）
 
   NODE_TYPE:  'dragonNode',              // ②/③ 模型节点气球类型（见 enemies.dragonNode）
   NODE_MODEL: 'Model/基础怪.glb',        // ②/③ 兜底默认模型（NODE_DEFS 里未写 model 时回退到它）
@@ -242,11 +242,11 @@ export const DRAGON = {
   // —— 默认 6 个节点（≈ pickEvenly(24,6)），全部用基础怪、scale=1、rot=0，保持原外观 ——
   NODE_DEFS: [
     { at: 1,  model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
-    { at: 6,  model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
-    { at: 10, model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
-    { at: 15, model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
+    { at: 6,  model: 'Model/忍者.glb', scale: 1.0, rot: [0, 0, 0] },
+    { at: 10, model: 'Model/幽灵.glb', scale: 1.0, rot: [0, 0, 0] },
+    { at: 15, model: 'Model/骑士.glb', scale: 1.0, rot: [0, 0, 0] },
     { at: 19, model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
-    { at: 24, model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
+    { at: 23, model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
   ],
   // ③ 可选小怪模型清单（把 NODE_DEFS[].model 换掉即可；挑已跟踪的更稳）：
   //    Model/基础怪.glb   （默认，已跟踪）
