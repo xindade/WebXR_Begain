@@ -385,6 +385,13 @@ export class CardDraft {
     it.card.material.opacity = o;
   }
 
+  // 中途清场（不拆除 group，可再次 open 复用）：供 Game.toMenu 清除残留抽卡气球
+  clearCards() {
+    this._clearItems();
+    this._clearLightFx();
+    this.group.visible = false;
+  }
+
   dispose() {
     this._clearLightFx();
     this._clearItems();

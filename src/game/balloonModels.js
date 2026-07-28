@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from '../../vendor/GLTFLoader.js';
 import { DRACOLoader } from '../../vendor/DRACOLoader.js';
+import { DRAGON } from '../core/constants.js';
 
 // 气球 GLB 模型加载/挂载助手。
 // 加载范式复用 rightGun.js / dragonLevel.js：GLTFLoader + 离线 DRACOLoader( vendor/draco/ )。
@@ -24,6 +25,12 @@ export const MODEL_TUNING = {
   'Model/骑士.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 0.5 },
   'Model/盾牌.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
   'Model/龙头.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  // —— 新增怪物模型微调（替换占位；pos/rot/scale 含义同上，按需微调）——
+  'Model/宝箱.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/幽灵.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/心形怪.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/忍者.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/章鱼.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
 };
 
 // 返回缓存的加载 Promise；失败则 reject（调用方兜底保留程序化球体）
@@ -62,7 +69,7 @@ export function fitToRadius(obj, radius) {
 // balloon.mesh 是球体(Mesh)：模型作为子节点挂上后隐藏球体材质，碰撞/血条/朝向逻辑都照常。
 // tint：通用身体(基础怪)按类型染色用；专用模型传 null 不打 tint。
 // tuningOverride：可选，覆盖 MODEL_TUNING 中该 url 的 {pos,rot,scale}（用于同一模型不同体型，如盾兵骑士 vs Boss 骑士）。
-export function attachBalloonModel(balloon, url, radius, tint = null, tuningOverride = null) {
+export function attachBalloonModel(balloon, url, radius, tint = null, tuningOverride = null, extraScale = 1) {
   loadBalloonModel(url)
     .then((gltfScene) => {
       // 气球可能在加载期间已被打死/移除：直接释放克隆体，不挂场景
@@ -83,7 +90,7 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
         THREE.MathUtils.degToRad(tune.rot[1]),
         THREE.MathUtils.degToRad(tune.rot[2])
       );
-      clone.scale.multiplyScalar(tune.scale ?? 1.0); // 在 fitToRadius 的贴合缩放之上叠加手动缩放
+      clone.scale.multiplyScalar((tune.scale ?? 1.0) * extraScale); // 在 fitToRadius 贴合缩放之上叠加手动缩放 + 逐段 taper
 
       // 每个气球独立克隆材质，互不影响闪烁/染色
       const modelMats = [];
@@ -105,4 +112,48 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
       balloon.mesh.material.visible = true;
       console.warn('[BalloonModels] 降级为程序化球体:', url);
     });
+}
+
+// 龙身/龙爪混合外观装配（龙 Boss 掉帧修复的「外观升级」版）。
+// kind:
+//   'model'    → 挂模型节点（默认 DRAGON.NODE_MODEL，可被 modelUrl 覆盖），taper*nodeScale 经 extraScale 应用
+//   'cylinder' → 程序化黑红圆柱（黑底炭灰 + 红色发光环），沿本地 Z 躺平，像龙脊椎骨节
+// taper       ：逐段缩放（头粗尾细），由 dragonLevel 按节号传入。
+// modelUrl    ：仅 kind='model' 时生效，覆盖 NODE_MODEL（指向 NODE_DEFS[].model）。
+// tuningOverride：仅 kind='model' 时生效，传给 attachBalloonModel 的 { pos, rot(度) }，rot 做三轴自身旋转。
+// nodeScale   ：仅 kind='model' 时生效，叠加在 taper 之上的额外缩放（指向 NODE_DEFS[].scale）。
+// 注意：dragonBody/dragonNode 气球在 balloons.js 构造时仅隐藏球体，此处由 dragonLevel._spawnBalloons 显式调用。
+export function attachDragonSegment(balloon, radius, kind = 'cylinder', taper = 1, modelUrl = null, tuningOverride = null, nodeScale = 1) {
+  if (kind === 'model') {
+    // 模型节点：异步挂 GLB（命中 preload 缓存，几乎无等待）；taper*nodeScale 作为 extraScale 应用到缩放
+    attachBalloonModel(balloon, modelUrl || DRAGON.NODE_MODEL, radius, null, tuningOverride, taper * nodeScale);
+    balloon._hasModel = true;
+    return;
+  }
+  // 圆柱节点：黑底炭灰 + 红色发光环带，平面着色，呈现「龙脊椎骨节」质感
+  const height = radius * 1.5;
+  const geo = new THREE.CylinderGeometry(radius, radius, height, 18);
+  geo.rotateX(Math.PI / 2); // 默认轴沿 Y → 旋转到沿本地 Z（躺平沿脊柱方向）
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x111111, roughness: 0.5, metalness: 0.35, flatShading: true,
+  });
+  const seg = new THREE.Mesh(geo, mat);
+
+  // 两道红色发光环（头尾各一），强化「骨节」分段感
+  const ringGeo = new THREE.TorusGeometry(radius * 1.04, radius * 0.16, 8, 22);
+  const ringMat = new THREE.MeshStandardMaterial({
+    color: 0x8b1a1a, emissive: 0x8b1a1a, emissiveIntensity: 0.9, roughness: 0.4, metalness: 0.2,
+  });
+  for (const zoff of [-height * 0.32, height * 0.32]) {
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.position.z = zoff;
+    seg.add(ring);
+  }
+
+  seg.scale.setScalar(taper); // 逐段渐细（头粗尾细）
+  balloon.mesh.add(seg);
+  balloon.mesh.material.visible = false; // 隐藏程序化球体（碰撞仍靠 position）
+  balloon.bodyModel = seg;
+  balloon._modelMats = [mat, ringMat]; // 复用受击闪烁路径
+  balloon._hasModel = true;
 }

@@ -34,9 +34,10 @@ export class World {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0)); // 降采样，知识库要求
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.xr.enabled = true;
-    // 提升头显实际渲染分辨率：默认 1.0 偏低，导致全景天空/整体发糊。
-    // 1.5 显著变清晰（PICO 4 可承受；若实测掉帧可降到 1.25）。
-    this.renderer.xr.setFramebufferScaleFactor(1.5);
+    // 头显实际渲染分辨率倍率。
+    // 原值 1.5 在「龙 Boss 关」（14 段高模 + 70MB EXR 天空）会严重掉帧 → 降到 1.25，
+    // 填充率开销下降约 (1.25/1.5)^2≈31%，PICO 4 帧率更稳；若实测仍不足可再降（1.0）。
+    this.renderer.xr.setFramebufferScaleFactor(1.25);
     this.renderer.toneMapping = THREE.NoToneMapping;
     this.renderer.shadowMap.enabled = false; // VR 关阴影
 
@@ -123,8 +124,9 @@ export class World {
       // 不设 EquirectangularReflectionMapping（那是给环境反射用的，会改采样方式）。
       tex.colorSpace = THREE.SRGBColorSpace;
     }
-    // 各向异性过滤：天空在视野边缘以掠射角显示时仍能保持锐利，减少发糊
-    tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    // 各向异性过滤：天空在视野边缘以掠射角显示时仍能保持锐利，减少发糊。
+    // 上限钳到 4：最大各向异性(常为 16)在 EXR(70MB) 上纹理带宽压力很大，钳制后肉眼差异极小但省带宽。
+    tex.anisotropy = Math.min(4, this.renderer.capabilities.getMaxAnisotropy());
     tex.minFilter = THREE.LinearMipmapLinearFilter;
     tex.magFilter = THREE.LinearFilter;
   }

@@ -218,7 +218,7 @@ export const WRIST_UI = {
 // ============================================================
 export const DRAGON = {
   ANIM_URL:   'Model/dragon-anim.json',   // 运动数据 JSON（相对 index.html；换文件只改这里）
-  HEAD_MODEL: 'Model/龙头.glb',           // 龙头 GLB 模型（项目 Model 目录）
+  HEAD_MODEL: 'Model/龙头.glb',           // 龙头 GLB 模型（本地 Model/ 下已有；若之后换灭世龙头需先把文件放入 Model/ 并改此处）
 
   SCALE: 0.08,                            // 数据坐标 → 世界坐标缩放（越大龙越大；0.08≈体长27m、绕玩家盘旋）
   HOME:  { x: 0, y: 0, z: 0 },           // 龙「包围盒中心」落在：玩家正前方 9m、上方 4m 处（前方为 -Z）。即整条龙的整体位置
@@ -227,8 +227,35 @@ export const DRAGON = {
   ROLL:  0,                               // 整体绕Z旋转(度)：修正龙的「翻滚」偏差
   // ↑ 三轴组成全局刚体旋转，头/身/爪一起绕 HOME 转动；线下手动调这三个值对齐数据系与游戏系
 
-  BODY_TYPE: 'basic',                     // 龙身气球类型（默认敌人气球；后期可换 shield/knight/bomber 等）
-  CLAW_TYPE: 'basic',                     // 龙爪气球类型（同上）
+  BODY_TYPE: 'dragonBody',               // 龙身「圆柱段」气球类型：黑红程序化几何体（见 enemies.dragonBody）
+  CLAW_TYPE: 'dragonBody',               // 龙爪气球类型（同上，黑红圆柱）
+  BODY_COUNT: 24,          // ① 龙身总段数（= 圆柱段 + 模型节点 总数；覆盖 JSON 里的 config.bodyCount）
+  BODY_SPACING: 15,        // ① 相邻两段之间的「弧长间距」（越大龙身越长；覆盖 JSON 里的 config.bodySpacing）
+
+  NODE_TYPE:  'dragonNode',              // ②/③ 模型节点气球类型（见 enemies.dragonNode）
+  NODE_MODEL: 'Model/基础怪.glb',        // ②/③ 兜底默认模型（NODE_DEFS 里未写 model 时回退到它）
+  // ②/③ 特殊模型节点：显式指定「出现在哪一段 + 用哪个模型 + 缩放 + 三轴旋转」
+  //   at   : 节点所在「身体节号」（1..BODY_COUNT，1 = 紧挨龙头那节，BODY_COUNT = 尾节）
+  //   model: 该节点挂载的小怪 GLB（可选模型见本文件末尾注释）
+  //   scale: 相对身体半径的额外缩放（1.0 = 正常贴合；>1 更大，<1 更小）
+  //   rot  : 三轴旋转 [绕X, 绕Y, 绕Z]（度）——模型节点保持竖直、不沿脊柱倾斜，纯做自身朝向微调
+  // —— 默认 6 个节点（≈ pickEvenly(24,6)），全部用基础怪、scale=1、rot=0，保持原外观 ——
+  NODE_DEFS: [
+    { at: 1,  model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
+    { at: 6,  model: 'Model/忍者.glb', scale: 1.0, rot: [0, 0, 0] },
+    { at: 10, model: 'Model/幽灵.glb', scale: 1.0, rot: [0, 0, 0] },
+    { at: 15, model: 'Model/骑士.glb', scale: 1.0, rot: [0, 0, 0] },
+    { at: 19, model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
+    { at: 23, model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
+  ],
+  // ③ 可选小怪模型清单（把 NODE_DEFS[].model 换掉即可；挑已跟踪的更稳）：
+  //    Model/基础怪.glb   （默认，已跟踪）
+  //    Model/召唤师.glb   （MODEL_TUNING.scale = 3.0，挂上会明显更大）
+  //    Model/骑士.glb      （scale = 0.5，偏小）
+  //    Model/心形怪.glb   Model/忍者.glb   Model/宝箱.glb   Model/幽灵.glb   Model/章鱼.glb
+  //    Model/龙头.glb      （谨慎：本身就是龙头，套在身上略怪）
+  //    —— 未跟踪、需先 `git add` 才能加载：Model/魔术师.glb、Model/变脸.glb ——
+  //    —— 不推荐（细长/扁平道具经 fitToRadius 归一化会严重变形）：Ak枪/如来神掌/火焰/扇子/喇叭/魔术棒 ——
   CLAW_NODES: [7, 14],                     // 龙爪生成点（身体节号数组）：每个挂点左右各1爪 → 共4爪；增删挂点只改此数组
 
   HEAD_SCALE: 1.0,                        // 龙头模型额外缩放倍率（模型已按包围盒自动贴合身体尺寸，此项做微调）

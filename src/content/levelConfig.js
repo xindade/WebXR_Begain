@@ -43,8 +43,8 @@ export const BOSSES = {
   },
   // 第12关：龙 Boss（源自 dragonLevel.js + DRAGON 常量）
   dragon: {
-    bodyType: 'basic',
-    clawType: 'basic',
+    bodyType: 'dragonBody',   // 轻量程序化几何体（见 enemies.dragonBody），替代 48万面 基础怪.glb
+    clawType: 'dragonBody',
     bodyCount: 10,        // dragon-anim.json config.bodyCount
     clawNodes: [7, 14],   // DRAGON.CLAW_NODES → 4 爪
     hpMult: 1.0,          // DRAGON.HP_MULT → 血量池 = (10+4)*100*1.0 = 1400
