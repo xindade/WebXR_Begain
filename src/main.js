@@ -199,8 +199,9 @@ async function startLevelAt(idx) {
 const clock = new THREE.Clock();
 world.renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
-  game.update(dt);
-  world.render();
+  // 单帧异常只记录、不向上抛：否则会中断 XR 动画循环的排帧，导致 VR 黑屏
+  try { game.update(dt); } catch (e) { console.error('[主循环] game.update 异常:', e); }
+  try { world.render(); } catch (e) { console.error('[主循环] world.render 异常:', e); }
 });
 
 window.__game = game; // 调试用
