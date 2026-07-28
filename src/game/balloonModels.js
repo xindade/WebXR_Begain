@@ -106,6 +106,9 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
       balloon.mesh.material.visible = false; // 隐藏程序化球体（碰撞仍靠 position）
       balloon.bodyModel = clone;
       balloon._modelMats = modelMats;
+      // 命中球按模型视觉尺寸放大：fitToRadius 让模型 maxDim=2*radius，再叠加 tune.scale/extraScale；
+      // effectiveRadius 已含 mesh.scale，故 hitRadius 可覆盖整个模型（含上半身）
+      balloon.hitRadius = balloon.effectiveRadius * (tune.scale ?? 1.0) * extraScale;
     })
     .catch(() => {
       // 加载失败：恢复程序化球体（笑脸）作为兜底，避免气球不可见

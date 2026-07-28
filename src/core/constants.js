@@ -68,6 +68,24 @@ export const BUDDHA = {            // 如来神掌（大招）
   KILL_RADIUS: 50,
   DAMAGE: 1000,
   FALL_DURATION: 0.5,
+  FALL_START_SCALE: 8,             // 巨掌从天而降的起始缩放（大）
+  FALL_END_SCALE: 1.5,             // 落地的终止缩放（贴近玩家大小）
+};
+
+export const STAFF = {            // 金箍棒（方向伤害技能）
+  DAMAGE: 1000,                   // 前方扇形内敌人受到的伤害（秒杀级）
+  COOLDOWN: 8,                    // 释放冷却 s（与 BUDDHA 对齐）
+  HALF_ANGLE: 45,                 // 扇形半角(°)：45 → 90° 正面扇形 ≈ 四分之一全屏
+  WALL_DUR: 0.6,                  // 前方光墙视觉持续时长 s
+  WALL_WIDTH: 12,                 // 光墙宽 m（覆盖前方扇形）
+  WALL_HEIGHT: 6,                 // 光墙高 m
+  WALL_DIST: 6,                   // 光墙距玩家距离 m
+};
+
+export const FREEZE = {           // 定身咒（暂停所有敌人行动，Boss 减半）
+  DURATION: 5,                    // 小怪定身总时长 s
+  BOSS_FACTOR: 0.5,               // Boss 定身时长系数：0.5 → Boss 只定身 DURATION*0.5 秒
+  COOLDOWN: 8,                    // 释放冷却 s（与 BUDDHA 对齐）
 };
 
 export const WAVE = {

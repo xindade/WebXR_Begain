@@ -37,6 +37,11 @@ export class HUD {
     this.timer = document.createElement('div');
     this.timer.style.cssText = 'position:absolute;top:14px;left:50%;transform:translateX(-50%);font-size:22px;font-weight:bold;text-shadow:0 2px 6px #000;display:none;';
     this.root.appendChild(this.timer);
+
+    // 选中技能 + 冷却（第三关选卡后装备，右手握柄触发）
+    this.skill = document.createElement('div');
+    this.skill.style.cssText = 'position:absolute;top:46px;left:16px;font-size:14px;line-height:1.5;text-shadow:0 1px 3px #000;';
+    this.root.appendChild(this.skill);
   }
 
   onStart(cb) { this._onStart = cb; }
@@ -69,4 +74,11 @@ export class HUD {
     this.timer.style.color = sec <= 10 ? '#e74c3c' : '#fff';
   }
   clearCountdown() { this.timer.style.display = 'none'; this.timer.textContent = ''; }
+
+  // 选中技能与冷却显示：name 为技能中文名（null 表示未装备），remain/total 为冷却剩余/总时长
+  setSkill(name = null, remain = 0, total = 0) {
+    if (!name) { this.skill.textContent = '技能：无'; return; }
+    const bar = total > 0 ? ` ⏳ ${remain.toFixed(1)}/${total}s` : '';
+    this.skill.textContent = `技能：${name}${bar}`;
+  }
 }

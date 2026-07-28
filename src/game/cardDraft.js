@@ -109,30 +109,38 @@ export class CardDraft {
     this._clearItems();
     this._clearLightFx();
 
+    // canAfford 提升为函数级声明：fixedSkills（第三关）分支的 forEach 也要引用它来判定刷新锁，
+    // 否则该分支下访问未声明的 canAfford 会抛 ReferenceError（carddraft.js:169:42）
+    const canAfford = this._getScore() >= this.refreshCost;
+
     const picks = [];
     const atkAttr = ATTR_TYPES.find(a => a.id === 'atk'); // 攻击力（首卡强制紫用）
-    for (let i = 0; i < CARD.COUNT; i++) {
-      // 有覆盖权重时只出属性卡，避免池外品质（如 01 关无紫/金）
-      if (!this._rarity && Math.random() < 0.2 && SKILL_CARDS.length) {
-        const s = SKILL_CARDS[Math.floor(Math.random() * SKILL_CARDS.length)];
-        picks.push({ kind: 'skill', def: s, rarity: s.rarity, label: s.label, sub: s.desc, color: RARITY[s.rarity].color });
-      } else {
+
+    // 固定技能卡模式（第三关）：只出指定技能卡（红色），不随机、不出刷新卡
+    if (this._state.fixedSkills && this._state.fixedSkills.length) {
+      for (const id of this._state.fixedSkills) {
+        const s = SKILL_CARDS.find(c => c.id === id);
+        if (!s) continue;
+        picks.push({ kind: 'skill', def: s, rarity: s.rarity, label: s.label, sub: s.desc, color: s.color });
+      }
+    } else {
+      // 普通关：只出属性卡 + 刷新卡；红技能卡（如来神掌/金箍棒/定身咒/金钟罩）仅第三关 fixedSkills 出现
+      for (let i = 0; i < CARD.COUNT; i++) {
         // 首卡强制攻击紫（02 关首次）：仅 i===0 生效一次
         const forced = this._forceAtkPurple && i === 0 && atkAttr;
         const attr = forced ? atkAttr : ATTR_TYPES[Math.floor(Math.random() * ATTR_TYPES.length)];
         const rar = forced ? 'purple' : rollRarity(this._rarity || undefined);
         picks.push({ kind: 'attr', def: attr, rarity: rar, label: attr.label, sub: `+${attr.values[rar]}`, color: RARITY[rar].color });
       }
+      this._forceAtkPurple = false; // 仅首张卡强制一次（refresh 不再强制）
+      // 刷新卡（第 4 个可射击气球）；积分不足以支付当前刷新费时锁定（不可击中 + 变暗）
+      picks.push({
+        kind: 'refresh',
+        label: '刷新',
+        sub: canAfford ? `${this.refreshCost}分` : '积分不足',
+        color: '#888',
+      });
     }
-    this._forceAtkPurple = false; // 仅首张卡强制一次（refresh 不再强制）
-    // 刷新卡（第 4 个可射击气球）；积分不足以支付当前刷新费时锁定（不可击中 + 变暗）
-    const canAfford = this._getScore() >= this.refreshCost;
-    picks.push({
-      kind: 'refresh',
-      label: '刷新',
-      sub: canAfford ? `${this.refreshCost}分` : '积分不足',
-      color: '#888',
-    });
 
     const N = picks.length;
     const startX = -((N - 1) * CARD.SPACING) / 2;
@@ -338,7 +346,11 @@ export class CardDraft {
 
     // 选项卡：应用强化后进入下一关
     if (sel.pick.kind === 'attr') sel.pick.def.apply(this._state.player, sel.pick.def.values[sel.pick.rarity]);
-    else if (sel.pick.kind === 'skill') sel.pick.def.apply(this._state.player);
+    else if (sel.pick.kind === 'skill') {
+      sel.pick.def.apply(this._state.player);
+      // 金箍棒方向伤害 / 定身咒冻结等需要游戏上下文的技能，由外部回调执行
+      if (this._state.onSkill) this._state.onSkill(sel.pick.def.id);
+    }
 
     this._clearLightFx();
     this.active = false;

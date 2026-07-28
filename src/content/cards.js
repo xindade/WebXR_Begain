@@ -1,6 +1,6 @@
 // 抽卡卡牌配置（知识库「卡片」笔记，已统一两处矛盾）
 // 属性类：攻击力/射速/多重/爆炸/回血/减冷却
-// 技能类（金色）：如来神掌 / 金钟罩 / 金箍棒
+// 技能类（红色）：如来神掌 / 金钟罩 / 金箍棒 / 定身咒
 
 import { SHOOT, BUDDHA } from '../core/constants.js';
 
@@ -38,18 +38,22 @@ export const ATTR_TYPES = [
   },
 ];
 
-// 技能卡（仅金色）
+// 技能卡（红色）：第三关固定三张（buddha/staff/freeze）+ 其余关随机出现其一（含 bell）
 export const SKILL_CARDS = [
   {
-    id: 'buddha', label: '如来神掌', rarity: 'gold', desc: '解锁/刷新大招',
+    id: 'buddha', label: '如来神掌', rarity: 'gold', color: '#ff3b3b', desc: '解锁/刷新大招',
     apply: (p) => { p.buddhaUnlocked = true; p.buddhaTimer = 0; },
   },
   {
-    id: 'bell', label: '金钟罩', rarity: 'gold', desc: '场地护盾 3 秒',
+    id: 'bell', label: '金钟罩', rarity: 'gold', color: '#ff3b3b', desc: '场地护盾 3 秒',
     apply: (p) => { p.shieldTime = Math.max(p.shieldTime, 3); },
   },
   {
-    id: 'staff', label: '金箍棒', rarity: 'gold', desc: '攻击力 +200',
-    apply: (p) => { p.atk += 200; },
+    id: 'staff', label: '金箍棒', rarity: 'gold', color: '#ff3b3b', desc: '前方扇形伤害',
+    apply: () => { /* 实际伤害由 game._castStaff 执行（需场景上下文）*/ },
+  },
+  {
+    id: 'freeze', label: '定身咒', rarity: 'gold', color: '#ff3b3b', desc: '暂停所有敌人行动',
+    apply: () => { /* 冻结由 game._castFreeze 执行 */ },
   },
 ];

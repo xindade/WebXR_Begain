@@ -32,6 +32,7 @@ class Balloon {
     this.speed = t.speed;
     this.radius = t.radius;
     this.effectiveRadius = t.radius * (t.scale || 1); // 碰撞/分离/血条用的实际半径
+    this.hitRadius = this.effectiveRadius;            // 子弹命中球半径（模型加载后按视觉尺寸放大；占位怪构造里再放大）
     this.score = t.score;
     this.behavior = t.behavior;
     this.selfDamage = t.selfDamage !== undefined ? t.selfDamage : BALLOON.DAMAGE;
@@ -118,6 +119,7 @@ class Balloon {
     this.mesh.add(grp);
     this._modelMats = [capMat, eyeMat]; // 复用模型闪烁路径
     this.mesh.material.visible = false;
+    this.hitRadius = this.effectiveRadius * 2.2; // 占位胶囊+眼睛视觉高于球体，放大命中球直到上半身
   }
 
   // 占位怪名牌：半透明底 + 白字，挂在气球上方；Sprite 始终朝向相机，depthTest 关闭永不被遮挡
@@ -337,8 +339,15 @@ export class BalloonManager {
     b.dispose();
   }
 
-  update(dt, target, camera) {
-    for (const b of this.list) b.update(dt, target, camera);
+  update(dt, target, camera, opts = {}) {
+    const freezeNormal = !!opts.freezeNormal;
+    const freezeBoss   = !!opts.freezeBoss;
+    for (const b of this.list) {
+      const isBossBal = b.isBoss || b.isDragonPart;
+      b._frozen = isBossBal ? freezeBoss : freezeNormal;
+      if (b._frozen) continue;           // 冻结：跳过移动/行为，但仍可被击中/受击/死亡（由 game 层独立处理）
+      b.update(dt, target, camera);
+    }
     this._applySeparation();
     this._applyHealAura(dt);
   }
@@ -346,7 +355,7 @@ export class BalloonManager {
   // 心型怪治疗光环：每秒为 healRadius 内的其他敌人恢复 healAura 血量
   _applyHealAura(dt) {
     for (const h of this.list) {
-      if (h.behavior !== 'heal' || !h.alive) continue;
+      if (h.behavior !== 'heal' || !h.alive || h._frozen) continue; // 冻结中的治疗者暂停治疗
       const hr = h.type.healRadius || 6;
       const ha = h.type.healAura || 10;
       for (const o of this.list) {
@@ -364,10 +373,10 @@ export class BalloonManager {
     const list = this.list;
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
-      if (a.controlled) continue;
+      if (a.controlled || a._frozen) continue;
       for (let j = i + 1; j < list.length; j++) {
         const b = list[j];
-        if (b.controlled) continue;
+        if (b.controlled || b._frozen) continue;
         this._sepVec.subVectors(a.mesh.position, b.mesh.position);
         this._sepVec.y = 0;
         const dist = this._sepVec.length();

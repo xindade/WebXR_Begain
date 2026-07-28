@@ -27,7 +27,7 @@ export class InputManager {
     this.shots = []; // 本帧待发射：{position, direction}
 
     this._cooldowns = { desktop: 0, left: 0, right: 0 };
-    this._buddhaQueued = false;
+    this._skillQueued = false;
 
     // handedness -> { controller, prevTrigger, prevGrip, prevAB }
     this._hands = { left: null, right: null };
@@ -42,7 +42,7 @@ export class InputManager {
   _bindDesktop() {
     window.addEventListener('keydown', (e) => {
       this.keys.add(e.code);
-      if (e.code === 'KeyF') this._buddhaQueued = true; // 大招（桌面）
+      if (e.code === 'KeyF') this._skillQueued = true; // 技能（桌面，触发选中技能）
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
 
@@ -228,9 +228,9 @@ export class InputManager {
       const btnA = gp.buttons[4]?.pressed || false; // 右:A / 左:X
       const btnB = gp.buttons[5]?.pressed || false; // 右:B / 左:Y
 
-      // 握柄按下（边缘）→ 如来神掌（任一手）
+      // 握柄按下（边缘）→ 触发选中技能（仅右手；避免双手歧义）
       if (ctrl) {
-        if (grip && !ctrl.userData.prevGrip) this._buddhaQueued = true;
+        if (hand === 'right' && grip && !ctrl.userData.prevGrip) this._skillQueued = true;
         ctrl.userData.prevGrip = grip;
       }
 
@@ -273,6 +273,6 @@ export class InputManager {
   // 取握把（grip，用于挂手腕面板，更贴合手背）
   getGrip(hand) { return this._gripHands[hand]; }
 
-  // 大招触发（桌面 F / VR 握柄）
-  consumeBuddha() { const v = this._buddhaQueued; this._buddhaQueued = false; return v; }
+  // 技能触发（桌面 F / VR 右手握柄）：返回本帧是否请求释放「选中技能」
+  consumeSkill() { const v = this._skillQueued; this._skillQueued = false; return v; }
 }

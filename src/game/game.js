@@ -12,7 +12,7 @@ import { DragonBoss } from './dragonLevel.js';
 import { OpeningModel } from './openingModel.js';
 import { LEVELS, isLaser } from '../content/levels.js';
 import { LEVEL_PLANS } from '../content/spawnPlans.js';
-import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE } from '../core/constants.js';
 
 const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关' };
 const ORIGIN = new THREE.Vector3(0, 0, 0);
@@ -53,6 +53,9 @@ export class Game {
     this._cardState = null;
     this._levelSnapshot = null;  // 关卡开始时的玩家属性+分数快照
     this._explosions = [];       // 爆炸视觉特效列表
+    this.enemyFreeze = 0;        // 定身咒计时(s)：>0 时敌人暂停行动（Boss 仅前 50% 时长）
+    this.selectedSkill = 'buddha'; // 当前装备技能：默认如来神掌（普通关沿用原大招行为）；第三关选卡后改为 staff/freeze/buddha 之一，右手握柄触发
+    this.skillCooldown = 0;      // 技能释放冷却计时(s)：>0 时握柄无效，HUD 显示剩余
 
     this._tmp = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
@@ -192,6 +195,7 @@ export class Game {
     this.wristUI?.update(dt, this, this.input); // 手腕面板（VR 下显示，桌面忽略）
     this.rightGun.update(dt, this.input);        // 右手柄 AK 枪（VR 手持，桌面忽略）
     this._updateBuddhaFx(dt);
+    this._updateStaffFx(dt);
     this._updateExplosions(dt);
 
     if (this.state === 'playing') this._updatePlaying(dt);
@@ -206,9 +210,13 @@ export class Game {
 
     for (const shot of this.input.shots) this.player.fire(shot, this.bullets, this.audio);
 
-    if (this.input.consumeBuddha() && this.player.canBuddha()) {
-      if (this.player.triggerBuddha()) this._doBuddha();
-    }
+    // 选中技能：冷却递减；右手握柄(或桌面 F)请求释放 → 冷却就绪则触发
+    this.skillCooldown = Math.max(0, this.skillCooldown - dt);
+    if (this.input.consumeSkill() && this.selectedSkill && this.skillCooldown <= 0) this._triggerSelectedSkill();
+    const skillLabel = this.selectedSkill === 'buddha' ? '如来神掌'
+                     : this.selectedSkill === 'staff' ? '金箍棒'
+                     : this.selectedSkill === 'freeze' ? '定身咒' : null;
+    this.hud.setSkill(skillLabel, this.skillCooldown, this._skillCdTotal());
 
     // ====== 激光关：无普通敌人，仅激光气球 ======
     if (this.laserMode) {
@@ -217,9 +225,17 @@ export class Game {
     }
 
     // ====== 普通关 ======
+    // 定身咒：冻结期间跳过敌人移动（Boss 仅前 50% 时长冻结）
+    let freezeNormal = false, freezeBoss = false;
+    if (this.enemyFreeze > 0) {
+      this.enemyFreeze = Math.max(0, this.enemyFreeze - dt);
+      freezeNormal = this.enemyFreeze > 0;
+      freezeBoss   = this.enemyFreeze > FREEZE.DURATION * (1 - FREEZE.BOSS_FACTOR);
+    }
     // 气球追踪原点(0,0,0)而非玩家位置
-    this.balloons.update(dt, ORIGIN, this.world.camera);
+    this.balloons.update(dt, ORIGIN, this.world.camera, { freezeNormal, freezeBoss });
     if (this.dragon) {
+      if (freezeBoss) this.dragon.pauseTimer = Math.max(this.dragon.pauseTimer, 0.1); // 定身：龙 Boss 暂停推进
       this.dragon.update(dt, pp);   // 龙 Boss：逐帧接管龙气球位置
     } else {
       this.waves.update(dt);
@@ -316,6 +332,7 @@ export class Game {
       } else {
         this.laser.dispose();
         this.laser = null;
+        this._forceSkillCards = ['buddha', 'staff', 'freeze']; // 第三关固定三张红色技能卡
         this._enterCard();
       }
       return;
@@ -403,7 +420,7 @@ export class Game {
         if (!balloon.alive) continue; // 跳过已隐藏的龙气球（复活前），防重复触发
         // 幽灵怪隐身期间无视子弹（仅蓄力显形时可被击中）
         if (balloon.behavior === 'ghost' && !balloon.revealed) continue;
-        if (b.mesh.position.distanceTo(balloon.mesh.position) < balloon.effectiveRadius + 0.12) {
+        if (b.mesh.position.distanceTo(balloon.mesh.position) < balloon.hitRadius + 0.12) {
           // 盾兵怪：盾牌当前朝向玩家且在挡弹夹角内 → 挡下子弹（不扣血）
           if (balloon.behavior === 'shield') {
             const sb = balloon.getShieldBlock();
@@ -505,6 +522,85 @@ export class Game {
     mesh.position.copy(pp).add(new THREE.Vector3(0, 20, 0));
     this.world.scene.add(mesh);
     this._buddhaFx = { mesh, t: 0 };
+  }
+
+  // ====== 第三关三技能 ======
+  // 选卡：仅「装备」技能到右手握柄，不立即释放（释放由握柄触发 _triggerSelectedSkill）
+  _applySkillCard(id) {
+    this.selectedSkill = id;
+    this.skillCooldown = 0;                 // 装备即就绪，可立即按握柄释放
+    if (id === 'buddha') this.player.buddhaUnlocked = true;
+    const label = id === 'buddha' ? '如来神掌' : id === 'staff' ? '金箍棒' : '定身咒';
+    this.log(`已装备：${label}（按右手握柄释放）`);
+  }
+
+  // 右手握柄/桌面 F 触发：按当前装备技能分发释放，统一冷却由 this.skillCooldown 负责
+  _triggerSelectedSkill() {
+    switch (this.selectedSkill) {
+      case 'buddha':
+        if (!this.player.buddhaUnlocked) { this.log('如来神掌尚未解锁'); return; } // 还原原语义：未解锁不放（return 不进入冷却）
+        this._doBuddha(); break;
+      case 'staff':  this._castStaff(); break;
+      case 'freeze': this._castFreeze(); break;
+    }
+    this.skillCooldown = this._skillCdTotal();
+  }
+  _skillCdTotal() {
+    if (this.selectedSkill === 'buddha') return BUDDHA.COOLDOWN;
+    if (this.selectedSkill === 'staff')  return STAFF.COOLDOWN;
+    if (this.selectedSkill === 'freeze') return FREEZE.COOLDOWN;
+    return 0;
+  }
+
+  // 金箍棒：玩家正前方 90° 扇形（±45°）内敌人受致命伤 ≈ 四分之一全屏
+  _castStaff() {
+    const pp = this._playerPos();
+    const fwd = new THREE.Vector3();
+    this.world.camera.getWorldDirection(fwd); // 玩家看向场景内的方向
+    const COS_HALF = Math.cos(THREE.MathUtils.degToRad(STAFF.HALF_ANGLE));
+    for (const b of [...this.balloons.list]) {
+      const to = b.mesh.position.clone().sub(pp);
+      to.y = 0;
+      const dist = to.length();
+      if (dist < 0.001) continue;
+      to.normalize();
+      if (to.x * fwd.x + to.z * fwd.z >= COS_HALF) { // 落在前方扇形内
+        if (b.takeDamage(STAFF.DAMAGE)) this._onKilled(b);
+      }
+    }
+    this._spawnStaffWall(pp, fwd);
+    this.log('金箍棒！前方扇形伤害');
+  }
+
+  // 定身咒：暂停所有敌人行动；Boss（龙）仅前 50% 时长冻结（由 FREEZE.BOSS_FACTOR 控制）
+  _castFreeze() {
+    this.enemyFreeze = FREEZE.DURATION;
+    this.log('定身咒！敌人暂停行动');
+  }
+
+  // 金箍棒视觉：玩家正前方一道红色光墙
+  _spawnStaffWall(pp, fwd) {
+    const wall = new THREE.Mesh(
+      new THREE.PlaneGeometry(STAFF.WALL_WIDTH, STAFF.WALL_HEIGHT),
+      new THREE.MeshBasicMaterial({ color: 0xff3b3b, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending })
+    );
+    wall.position.copy(pp).add(fwd.clone().multiplyScalar(STAFF.WALL_DIST)).add(new THREE.Vector3(0, STAFF.WALL_HEIGHT / 2, 0));
+    wall.lookAt(pp.x, wall.position.y, pp.z);
+    this.world.scene.add(wall);
+    this._staffFx = { mesh: wall, t: 0 };
+  }
+
+  _updateStaffFx(dt) {
+    if (!this._staffFx) return;
+    this._staffFx.t += dt;
+    const k = Math.min(1, this._staffFx.t / STAFF.WALL_DUR);
+    this._staffFx.mesh.material.opacity = 0.5 * (1 - k);
+    if (k >= 1) {
+      this.world.scene.remove(this._staffFx.mesh);
+      this._staffFx.mesh.geometry.dispose();
+      this._staffFx.mesh.material.dispose();
+      this._staffFx = null;
+    }
   }
 
   _updateBuddhaFx(dt) {
@@ -646,7 +742,11 @@ export class Game {
       // 01/02 关卡片品质覆盖（见 LEVEL_PLANS）；首卡强制攻击紫仅 02 关且本关首次
       rarity: LEVEL_PLANS[LEVELS[this.levelIndex].n]?.cards || null,
       forceAttackPurple: !!(LEVEL_PLANS[LEVELS[this.levelIndex].n]?.firstCardForceAttackPurple && this._firstCardOfLevel),
+      // 第三关激光关：固定弹出三张红色技能卡（如来神掌/金箍棒/定身咒），onSkill 回调执行需场景上下文的技能
+      fixedSkills: this._forceSkillCards || null,
+      onSkill: (id) => this._applySkillCard(id),
     };
+    this._forceSkillCards = null; // 取用后清空
     this._firstCardOfLevel = false; // 翻转：本关仅首张卡强制攻击紫
     this.hud.message('选择强化', '射击对应气球进行选择（刷新气球可重roll，积分不足时锁定）', '#ffd43b');
     this.cards.open(pp, this._fwd.clone(), this._cardState, () => this._onCardDone());
