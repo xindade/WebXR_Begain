@@ -58,7 +58,7 @@ class Balloon {
       this.mesh.material.visible = false;
       // 盾兵怪复用骑士模型但需正常体型（Boss 骑士用 MODEL_TUNING 默认缩小），此处覆盖 scale
       const knightTuning = (t.id === 'shield') ? { scale: 1.0 } : null;
-      attachBalloonModel(this, t.model, t.radius, null, knightTuning);
+      attachBalloonModel(this, t.model, t.radius, null, knightTuning, 1, t.id);
     } else if (t.dragonSegment) {
       // 2b) 龙身/龙爪：外观装配延后到 dragonLevel._spawnBalloons 显式调用 attachDragonSegment，
       //     因为逐段 taper（头粗尾细）在构造时未知，需由外部传入。
@@ -228,16 +228,27 @@ class Balloon {
     // 笑脸/模型朝向玩家（龙部件由 dragonLevel 逐帧接管朝向，跳过以免被 lookAt 覆盖）
     if (!this.isDragonPart) this.mesh.lookAt(target.x, target.y, target.z);
 
-    // 受击闪烁（有模型/占位材质则闪材质，否则闪程序化球体）
+    // DepthSprite 同步：位置跟随气球 + 仅 yaw 朝向玩家（视差基于世界空间相机，XR 逐眼立体）
+    if (this.depthSprite) {
+      this.depthSprite.mesh.position.copy(this.mesh.position);
+      this.depthSprite.faceYaw(target);
+      this.depthSprite.advance(dt); // idle 序列帧推进（多帧 sheet 循环播放）
+    }
+
+    // 受击闪烁（有模型/占位材质则闪材质，否则闪程序化球体；DepthSprite 用 uFlash 白闪）
     if (this._flash > 0) {
       this._flash -= dt;
       const inten = Math.max(0, this._flash * 6);
-      if (this._modelMats) {
+      if (this.depthSprite) {
+        this.depthSprite.setFlash(inten);
+      } else if (this._modelMats) {
         for (const m of this._modelMats) { m.emissive.setRGB(1, 1, 1); m.emissiveIntensity = inten; }
       } else {
         this.mesh.material.emissive = new THREE.Color(0xffffff);
         this.mesh.material.emissiveIntensity = inten;
       }
+    } else if (this.depthSprite) {
+      this.depthSprite.setFlash(0);
     } else if (this._modelMats) {
       for (const m of this._modelMats) m.emissiveIntensity = 0;
     } else if (this.mesh.material.emissiveIntensity) {
@@ -245,6 +256,9 @@ class Balloon {
     }
     // 血条朝向相机
     if (this._hpBar && camera) this._hpBar.lookAt(camera.getWorldPosition(new THREE.Vector3()));
+
+    // DepthSprite 显隐跟随主体（ghost 隐身机制需要：显形时才显示立绘）
+    if (this.depthSprite) this.depthSprite.mesh.visible = this.mesh.visible;
   }
 
   // 各小怪专属行为（占位/盾兵以外的特殊逻辑）
@@ -314,6 +328,11 @@ class Balloon {
       this.label.material.dispose();
       this.label = null;
     }
+    if (this.depthSprite) {
+      this._dsScene?.remove(this.depthSprite.mesh);
+      this.depthSprite.dispose();
+      this.depthSprite = null;
+    }
   }
 }
 
@@ -322,6 +341,7 @@ export class BalloonManager {
     this.scene = scene;
     this.list = [];
     this._sepVec = new THREE.Vector3();
+    this.depthDebug = false; // DepthSprite 深度调试：按 D 切换（中心亮=凸、边缘亮=凹）
   }
 
   spawn(typeId, position) {
@@ -347,6 +367,7 @@ export class BalloonManager {
       b._frozen = isBossBal ? freezeBoss : freezeNormal;
       if (b._frozen) continue;           // 冻结：跳过移动/行为，但仍可被击中/受击/死亡（由 game 层独立处理）
       b.update(dt, target, camera);
+      if (b.depthSprite) b.depthSprite.material.uniforms.uDebugDepth.value = this.depthDebug ? 1 : 0;
     }
     this._applySeparation();
     this._applyHealAura(dt);

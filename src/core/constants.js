@@ -289,3 +289,24 @@ export const DRAGON = {
   PHASE_STEP: 0.55,                       // 每节相位差(弧度)：使波形沿龙身从头流到尾
 };
 
+// ============================================================
+// DepthSprite 开关：用「运行时从 GLB 捕获的 2D 立绘 + 深度图」替 3D GLB 气球
+//   DEPTH_SPRITE_MODE  : 总开关
+//   DEPTH_SPRITE_TYPES : 白名单（先只基础怪）；扩到全类型即 ['basic','ninja','ghost','octopus','shield']
+//   DEPTH_SPRITE_SCALE : 视差强度（沙盒校准值）
+// ============================================================
+export const DEPTH_SPRITE_MODE = true;
+// 白名单：已扩到全部普通小怪（ghost 的隐身已让立绘跟随主体 visible，见 balloons.js）。
+// 想单独压测某类型，把数组缩到该 id 即可。
+export const DEPTH_SPRITE_TYPES = ['basic', 'ninja', 'shield', 'octopus', 'ghost', 'summoner', 'heart', 'chest'];
+// 同屏压测：>0 时关卡启动后额外生成 N 个 basic 立绘同屏阵列（controlled 站定，仍可受击/视差）。
+// 设 30 即「同屏 30 个 DepthSprite」压测；设 0 关闭。
+export const DEPTH_SPRITE_STRESS = 30;
+// 序列帧 idle：GLB 捕获时绕 Y 摆动取 frames 帧拼成 sheet；手绘 sheet 改映射里的 frameCount
+export const DEPTH_SPRITE_FRAMES = 8;
+export const DEPTH_SPRITE_SWING = 0.18; // idle 摆动幅度(弧度)，绕 Y 小幅晃
+// 正式手绘/离线素材映射：填了即走 loadDepthSpriteSheet 替运行时捕获。例：
+// 'Model/基础怪.glb': { albedo:'assets/basic_albedo.png', depth:'assets/basic_depth.png', frameCount:8, cols:8, rows:1 }
+export const DEPTH_SPRITE_HANDPAINTED = {}; // 清空即退回运行时 GLB 多帧捕获（basic 恢复 idle 摆动）
+export const DEPTH_SPRITE_SCALE = 0.08;
+

@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { GLTFLoader } from '../../vendor/GLTFLoader.js';
 import { DRACOLoader } from '../../vendor/DRACOLoader.js';
-import { DRAGON } from '../core/constants.js';
+import { DRAGON, DEPTH_SPRITE_MODE, DEPTH_SPRITE_TYPES, DEPTH_SPRITE_SCALE, DEPTH_SPRITE_FRAMES, DEPTH_SPRITE_SWING, DEPTH_SPRITE_HANDPAINTED } from '../core/constants.js';
+import { DepthSprite } from './depthSprite.js';
+import { captureModelByUrl, loadDepthSpriteSheet } from './glbCapture.js';
 
 // 气球 GLB 模型加载/挂载助手。
 // 加载范式复用 rightGun.js / dragonLevel.js：GLTFLoader + 离线 DRACOLoader( vendor/draco/ )。
@@ -9,6 +11,10 @@ import { DRAGON } from '../core/constants.js';
 // 碰撞是距离判定(game.js)，隐藏球体材质不影响命中。
 
 const _cache = new Map(); // url -> Promise<gltf.scene>
+
+// DepthSprite 捕获需要的 renderer（由 game.js 构造时注入 world.renderer）
+let _renderer = null;
+export function setRenderer(r) { _renderer = r; }
 
 // ===== 各怪物模型「本地位置 / 旋转 / 缩放」微调表（手动修改入口）=====
 // 用途：GLB 模型挂到气球上后，若朝向偏了 / 想抬高、放大，改这里即可，无需碰逻辑代码。
@@ -69,7 +75,29 @@ export function fitToRadius(obj, radius) {
 // balloon.mesh 是球体(Mesh)：模型作为子节点挂上后隐藏球体材质，碰撞/血条/朝向逻辑都照常。
 // tint：通用身体(基础怪)按类型染色用；专用模型传 null 不打 tint。
 // tuningOverride：可选，覆盖 MODEL_TUNING 中该 url 的 {pos,rot,scale}（用于同一模型不同体型，如盾兵骑士 vs Boss 骑士）。
-export function attachBalloonModel(balloon, url, radius, tint = null, tuningOverride = null, extraScale = 1) {
+export function attachBalloonModel(balloon, url, radius, tint = null, tuningOverride = null, extraScale = 1, typeId = null) {
+  // —— DepthSprite 分支（开关 + 白名单）：用 GLB 捕获的 2D 立绘替 3D GLB ——
+  if (DEPTH_SPRITE_MODE && _renderer && typeId && DEPTH_SPRITE_TYPES.includes(typeId)) {
+    const tune = { ...(MODEL_TUNING[url] || { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 }), ...(tuningOverride || {}) };
+    // 数据源：手绘/离线 sheet 优先（DEPTH_SPRITE_HANDPAINTED 映射），否则运行时多帧捕获
+    const hand = DEPTH_SPRITE_HANDPAINTED[url];
+    const srcPromise = hand
+      ? loadDepthSpriteSheet(hand.albedo, hand.depth, { frameCount: hand.frameCount || 1, cols: hand.cols, rows: hand.rows })
+      : captureModelByUrl(_renderer, url, radius, { frames: DEPTH_SPRITE_FRAMES, swing: DEPTH_SPRITE_SWING });
+    srcPromise
+      .then(({ albedo, depth, frameCount, cols, rows }) => {
+        if (!balloon.alive) return; // 加载期间已被打死：不挂
+        const dsSize = radius * 2 * (tune.scale ?? 1) * extraScale;
+        const ds = new DepthSprite({ albedo, depth, frameCount, cols, rows, depthScale: DEPTH_SPRITE_SCALE, size: dsSize });
+        balloon.mesh.parent.add(ds.mesh);   // 挂到 scene（与 balloon.mesh 平级）
+        balloon.depthSprite = ds;
+        balloon._dsScene = balloon.mesh.parent;
+        balloon.mesh.material.visible = false; // 隐藏程序化球体
+        balloon.hitRadius = balloon.effectiveRadius * (tune.scale ?? 1) * extraScale;
+      })
+      .catch(() => { balloon.mesh.material.visible = true; }); // 失败兜底保留程序化球体
+    return;
+  }
   loadBalloonModel(url)
     .then((gltfScene) => {
       // 气球可能在加载期间已被打死/移除：直接释放克隆体，不挂场景

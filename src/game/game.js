@@ -12,7 +12,8 @@ import { DragonBoss } from './dragonLevel.js';
 import { OpeningModel } from './openingModel.js';
 import { LEVELS, isLaser } from '../content/levels.js';
 import { LEVEL_PLANS } from '../content/spawnPlans.js';
-import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE, DEPTH_SPRITE_STRESS } from '../core/constants.js';
+import { setRenderer } from './balloonModels.js';
 
 const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关' };
 const ORIGIN = new THREE.Vector3(0, 0, 0);
@@ -21,6 +22,14 @@ export class Game {
   constructor(world, hud) {
     this.world = world;
     this.hud = hud;
+    setRenderer(world.renderer); // 注入 renderer，供 DepthSprite 离屏捕获 GLB
+
+    // DepthSprite 深度调试：按 D 把立绘切到「深度灰度视图」（中心亮=凸，边缘亮=凹）
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'd' || e.key === 'D') {
+        if (this.balloons) this.balloons.depthDebug = !this.balloons.depthDebug;
+      }
+    });
 
     this.rig = new THREE.Group();
     world.scene.add(this.rig);
@@ -179,6 +188,7 @@ export class Game {
         this.log(`第 ${lv.n} 关 · 龙 Boss：击破龙身/龙爪气球（打爆即复活，血量清零才击杀）`);
       } else {
         this.waves.startLevel(lv);
+        if (DEPTH_SPRITE_STRESS > 0) this._spawnStress(DEPTH_SPRITE_STRESS);
         this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
       }
     }
@@ -187,6 +197,26 @@ export class Game {
   }
 
   _playerPos() { return this.rig.getWorldPosition(this._tmp); }
+
+  // 同屏 DepthSprite 压测：在玩家前方生成 N 个 basic 立绘阵列（controlled 站定）。
+  // 站定后仍执行 lookAt + DepthSprite 视差同步 + 受击白闪，可被子弹击落，
+  // 用于验证「同屏 N 个 2D 立绘」的视觉与性能（N 见 constants.DEPTH_SPRITE_STRESS）。
+  _spawnStress(n) {
+    if (!n || n <= 0) return;
+    const p = this._playerPos();
+    const cols = Math.min(n, 6);
+    const gapX = 1.8, gapY = 1.6, z0 = -9;
+    for (let i = 0; i < n; i++) {
+      const c = i % cols;
+      const r = Math.floor(i / cols);
+      const x = p.x + (c - (cols - 1) / 2) * gapX;
+      const y = 1.3 + (r % 4) * gapY;
+      const z = p.z + z0 - r * gapX;
+      const b = this.balloons.spawn('basic', new THREE.Vector3(x, y, z));
+      b.controlled = true; // 站定：跳过朝玩家移动，但仍 lookAt + 视差同步 + 可受击
+    }
+    this.log(`DepthSprite 压测：已生成 ${n} 个 basic 立绘同屏`);
+  }
 
   update(dt) {
     dt = Math.min(dt, 0.05);
