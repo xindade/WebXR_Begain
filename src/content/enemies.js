@@ -16,7 +16,7 @@ export const ENEMY_TYPES = {
     id: 'basic', name: '基础怪',
     hp: 100, speed: 0.5, radius: 0.5, score: 10,
     behavior: 'basic', selfDamage: 5,
-    model: 'Model/基础怪.glb',
+    model: 'Model/基础怪动画版.glb',
   },
   // —— 02 召唤怪 ——
   summoner: {

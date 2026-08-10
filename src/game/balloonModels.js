@@ -27,6 +27,7 @@ export function setRenderer(r) { _renderer = r; }
 //        盾兵怪在 balloons.js 调用时传入 tuning 覆盖 {scale:1.0} → 约 1.8m 正常体型。
 export const MODEL_TUNING = {
   'Model/基础怪.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 2.0 },
+  'Model/基础怪动画版.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 2.0 }, // 动画版：用骨骼动画捕获立绘
   'Model/召唤师.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 3.0 },
   'Model/骑士.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 0.5 },
   'Model/盾牌.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
@@ -47,7 +48,7 @@ export function loadBalloonModel(url) {
     draco.setDecoderPath('vendor/draco/'); // 离线解码器，相对 index.html
     const loader = new GLTFLoader();
     loader.setDRACOLoader(draco);
-    loader.load(url, (gltf) => resolve(gltf.scene), undefined, (err) => {
+    loader.load(url, (gltf) => resolve({ scene: gltf.scene, animations: gltf.animations || [] }), undefined, (err) => {
       console.error('[BalloonModels] 模型加载失败:', url, err);
       reject(err);
     });
@@ -99,7 +100,7 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
     return;
   }
   loadBalloonModel(url)
-    .then((gltfScene) => {
+    .then(({ scene: gltfScene }) => {
       // 气球可能在加载期间已被打死/移除：直接释放克隆体，不挂场景
       if (!balloon.alive) {
         gltfScene.traverse((o) => {

@@ -52,10 +52,35 @@ function readRT(renderer, rt) {
   return c;
 }
 
+// 把 SkinnedMesh 的 skeleton 重新绑定到「克隆体中的骨骼」：
+// gltfScene.clone(true) 之后，SkinnedMesh.skeleton.bones 仍指向「原体骨骼」，
+// 而 AnimationMixer 驱动的是克隆骨骼 → 立绘捕获不到动画。按名字把骨架重定向到克隆骨骼即可。
+// 模型不含 SkinnedMesh（纯静态 / 变换动画）时本函数直接跳过，无副作用。
+function rebindSkeleton(root) {
+  const boneByName = {};
+  root.traverse((o) => { if (o.isBone) boneByName[o.name] = o; });
+  root.traverse((o) => {
+    if (o.isSkinnedMesh && o.skeleton) {
+      const newBones = [];
+      let ok = true;
+      for (const b of o.skeleton.bones) {
+        const nb = boneByName[b.name];
+        if (!nb) { ok = false; break; }
+        newBones.push(nb);
+      }
+      if (ok && newBones.length === o.skeleton.bones.length) {
+        o.skeleton = new THREE.Skeleton(newBones, o.skeleton.boneInverses);
+        o.bind(o.skeleton, o.bindMatrix);
+      }
+    }
+  });
+}
+
 // 把已加载 GLB 渲染为「多帧 idle sheet」。
-// 模型绕 Y 做 sin 摆动（首尾角度自然衔接，循环播放不跳变）。
+// 若 GLB 自带动画轨道（animations 非空）：用 AnimationMixer 按时间点取样 N 帧 → 立绘播真实动作。
+// 否则：模型绕 Y 做 sin 摆动（首尾角度自然衔接，循环播放不跳变）。
 // 返回 { albedo, depth, frameCount, cols, rows }。失败（捕获为空）时 reject，由调用方回退为可见球体。
-export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.0 }) {
+export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.0, animations = [] }) {
   frames = Math.max(1, frames | 0);
 
   // —— 栅格布局：把 frames 帧排成接近正方形的网格，避免单行超宽（如 8 帧 → 4096 宽）。
@@ -86,6 +111,9 @@ export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.
   obj.position.sub(center2);                             // 把缩放后的几何中心移到原点
   obj.updateMatrixWorld(true);
 
+  // 重建骨骼绑定：让克隆体上的 SkinnedMesh 指向克隆骨骼（动画采样的前提，无骨骼时 no-op）
+  rebindSkeleton(obj);
+
   const capScene = new THREE.Scene();
   capScene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 1.0));
   const dl = new THREE.DirectionalLight(0xffffff, 1.2); dl.position.set(2, 3, 4); capScene.add(dl);
@@ -111,6 +139,17 @@ export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.
   _depthMat.uniforms.uZMin.value = zmin;
   _depthMat.uniforms.uZMax.value = zmax;
 
+  // —— 动画采样：若 GLB 自带骨骼/变换动画，用 AnimationMixer 按时间点取样 N 帧（替代 yaw 摆动）——
+  let mixer = null;
+  let animDuration = 0;
+  if (animations && animations.length) {
+    mixer = new THREE.AnimationMixer(obj);
+    const clip = animations.find((a) => /walk|run|attack|idle|move|atk|act/i.test(a.name)) || animations[0];
+    mixer.clipAction(clip).play();
+    animDuration = clip.duration || 0;
+    console.log(`[glbCapture] 用动画 "${clip.name}"(${animDuration.toFixed(2)}s) 采样 ${frames} 帧`);
+  }
+
   // 单帧 RT（循环复用），结果拼进 sheet canvas（栅格布局）
   const albedoRT = new THREE.WebGLRenderTarget(cap, cap, { format: THREE.RGBAFormat });
   albedoRT.texture.colorSpace = THREE.SRGBColorSpace; // 颜色 pass 输出 sRGB 字节，与真实 GLB 屏幕像素同源
@@ -131,8 +170,14 @@ export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.
 
   let capturedOpaque = false;
   for (let i = 0; i < frames; i++) {
-    // idle 摆动：绕 Y 小幅 sin（i=0 与 i=frames-1 角度接近，循环平滑）
-    obj.rotation.y = swing * Math.sin((2 * Math.PI * i) / frames);
+    if (mixer) {
+      // 在动画时长内均匀取帧：首尾经 clip 循环自然衔接，loop 回 0 帧无缝。
+      const t = animDuration > 0 ? (i / frames) * animDuration : 0;
+      mixer.setTime(t);
+    } else {
+      // idle 摆动：绕 Y 小幅 sin（i=0 与 i=frames-1 角度接近，循环平滑）
+      obj.rotation.y = swing * Math.sin((2 * Math.PI * i) / frames);
+    }
     obj.updateMatrixWorld(true);
 
     // 1) 颜色 pass（透明背景）
@@ -209,7 +254,7 @@ export function captureModelByUrl(renderer, url, radius, opts = {}) {
   const key = `${url}:${frames}:${swing}`;
   if (_capCache.has(key)) return _capCache.get(key);
   const p = loadBalloonModel(url)
-    .then((gltfScene) => captureGLB(renderer, gltfScene, { radius, frames, swing }))
+    .then(({ scene, animations }) => captureGLB(renderer, scene, { radius, frames, swing, animations }))
     .catch((e) => { _capCache.delete(key); throw e; }); // 失败不缓存，便于重试
   _capCache.set(key, p);
   return p;

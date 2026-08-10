@@ -300,10 +300,11 @@ export const DEPTH_SPRITE_MODE = true;
 // 想单独压测某类型，把数组缩到该 id 即可。
 export const DEPTH_SPRITE_TYPES = ['basic', 'ninja', 'shield', 'octopus', 'ghost', 'summoner', 'heart', 'chest'];
 // 同屏压测：>0 时关卡启动后额外生成 N 个 basic 立绘同屏阵列（controlled 站定，仍可受击/视差）。
-// 设 30 即「同屏 30 个 DepthSprite」压测；设 0 关闭。
-export const DEPTH_SPRITE_STRESS = 30;
-// 序列帧 idle：GLB 捕获时绕 Y 摆动取 frames 帧拼成 sheet；手绘 sheet 改映射里的 frameCount
-export const DEPTH_SPRITE_FRAMES = 8;
+// 设 150 即「同屏 150 个 DepthSprite」压测；设 0 关闭。
+export const DEPTH_SPRITE_STRESS = 150;
+// 序列帧 idle：GLB 捕获时绕 Y 摆动取 frames 帧拼成 sheet；手绘 sheet 改映射里的 frameCount。
+// 改 12 让「基础怪动画版」的骨骼动画采样更顺（动画版走 AnimationMixer 采样，非摆动）。
+export const DEPTH_SPRITE_FRAMES = 12;
 export const DEPTH_SPRITE_SWING = 0.18; // idle 摆动幅度(弧度)，绕 Y 小幅晃
 // 正式手绘/离线素材映射：填了即走 loadDepthSpriteSheet 替运行时捕获。例：
 // 'Model/基础怪.glb': { albedo:'assets/basic_albedo.png', depth:'assets/basic_depth.png', frameCount:8, cols:8, rows:1 }
