@@ -311,3 +311,36 @@ export const DEPTH_SPRITE_SWING = 0.18; // idle 摆动幅度(弧度)，绕 Y 小
 export const DEPTH_SPRITE_HANDPAINTED = {}; // 清空即退回运行时 GLB 多帧捕获（basic 恢复 idle 摆动）
 export const DEPTH_SPRITE_SCALE = 0.08;
 
+// ============================================================
+// 正常测试模式（NORMAL_TEST）：覆盖普通关出怪曲线
+//   enabled = true 时，普通关走 _updateNormalTest()（升级式同屏出怪）
+//   enabled = false 时，普通关走原 _updateLevel() 滴流出怪
+//   DDA.enabled = true 时，在 normalTest 模式下由 DifficultyController 接管出怪
+// ============================================================
+export const NORMAL_TEST = {
+  enabled: true,          // 开关：true 时普通关走压测出怪曲线
+  startCount: 5,          // 初始同屏怪数
+  rampInterval: 10,       // 每 N 秒加怪（DDA 关闭时的时间曲线）
+  step: 2,                // 每次加多少
+  peak: 40,               // 上限（DDA 关闭时）
+  stopAt: 120,            // N 秒后停止补怪
+  spawnCooldown: 1.2,     // 出怪间隔 s（DDA 关闭时）
+  distance: 12,            // 出怪距离 m
+  spread: 8,               // 出怪散布 m
+  pool: ['basic', 'ninja', 'octopus', 'shield', 'ghost', 'heart'], // 出怪池
+};
+
+// ============================================================
+// DDA（Dynamic Difficulty Adjustment）动态难度
+//   enabled = true 时，DifficultyController 根据玩家表现实时调整出怪
+//   上限 70 同屏（PICO 4 / Adreno XR2 舒适区）
+// ============================================================
+export const DDA = {
+  enabled: true,          // 开关：true 时由 DifficultyController 接管出怪
+  maxConcurrency: 70,     // 同屏上限
+  minConcurrency: 8,       // 同屏下限
+  difficultyStart: 0.3,   // 初始难度标量 (0..1)
+  killWindow: 10,          // 击杀率滑窗秒数
+  smoothRate: 0.5,         // 难度平滑速率（越大越快跟随目标）
+};
+
