@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { WAVE } from '../core/constants.js';
+import { WAVE, NORMAL_TEST, DDA } from '../core/constants.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { isBoss } from '../content/levels.js';
 import { LEVEL_ENEMY } from '../content/spawnPlans.js';
@@ -11,10 +11,11 @@ const SUMMON_RESPAWN_DELAY   = 1.5; // 小兵死亡后延迟重生间隔(s)：�
 
 // 波次管理：分阶段生成（前→左右→全向），清空后触发抽卡
 export class WaveManager {
-  constructor(scene, balloons, getPlayerPos) {
+  constructor(scene, balloons, getPlayerPos, dda) {
     this.scene = scene;
     this.balloons = balloons;
     this.getPlayerPos = getPlayerPos;
+    this.dda = dda || null;   // 动态难度控制器（DDA）；null 时 normalTest 走原时间曲线
     this.reset();
   }
 
@@ -27,6 +28,8 @@ export class WaveManager {
     this.cleared = false;
     this.bossSpawned = false;
     this.boss = null;
+    this.mode = 'level';       // 'level' = 原配额滴流；'normalTest' = 升级式同屏测试
+    this.spawnTimer = 0;       // 测试模式：两次生成最小间隔计时
   }
 
   // 本关剩余敌人数 = 尚未生成 + 场上存活
@@ -43,6 +46,15 @@ export class WaveManager {
     this.cleared = false;
     this.bossSpawned = false;
     this.boss = null;
+    this.spawnTimer = 0;
+
+    // 正常测试模式：升级式同屏出怪，覆盖普通关原滴流逻辑（激光/Boss 关不走这里）
+    if (NORMAL_TEST.enabled) {
+      this.mode = 'normalTest';
+      this.dda?.reset?.();   // 每关重置难度与击杀窗口，避免上一局残留拉高击杀率
+      return;
+    }
+    this.mode = 'level';
 
     // 需求①：每关单一敌人，从 LEVEL_ENEMY 取本关类型与总数；缺省兜底为基础怪
     const cfg = LEVEL_ENEMY[level.n];
@@ -61,21 +73,24 @@ export class WaveManager {
     return 1;
   }
 
-  _spawnPos(spawnRadius = 0.5) {
+  _spawnPos(spawnRadius = 0.5, opts = null) {
     const GAP = 0.2;
     const MAX_ATTEMPTS = 10;
     let pos, attempts = 0;
+    // 测试/DDA 模式可传入 dist/spread/phase 覆盖默认值
+    const spawnDist = opts?.dist ?? (this.mode === 'normalTest' ? NORMAL_TEST.distance : WAVE.SPAWN_DISTANCE);
+    const spawnSpread = opts?.spread ?? (this.mode === 'normalTest' ? NORMAL_TEST.spread : WAVE.SPAWN_SPREAD);
+    const phaseOverride = opts?.phase;
     do {
-      const phase = this._phase();
+      const phase = phaseOverride ?? this._phase();
       let a;
       if (phase === 1) a = (-40 + Math.random() * 80) * Math.PI / 180;
       else if (phase === 2) a = (-110 + Math.random() * 220) * Math.PI / 180;
       else a = Math.random() * Math.PI * 2;
       // 前方为 -Z
       const dir = new THREE.Vector3(Math.sin(a), 0, -Math.cos(a));
-      // 相对原点(0,0,0)生成，而非 getPlayerPos()
-      pos = new THREE.Vector3(0, 0, 0).addScaledVector(dir, WAVE.SPAWN_DISTANCE);
-      pos.x += (Math.random() - 0.5) * WAVE.SPAWN_SPREAD;
+      pos = new THREE.Vector3(0, 0, 0).addScaledVector(dir, spawnDist);
+      pos.x += (Math.random() - 0.5) * spawnSpread;
       pos.y = 1 + Math.random() * 2.5;
       attempts++;
     } while (attempts < MAX_ATTEMPTS && this._isSpawnTooClose(pos, spawnRadius, GAP));
@@ -106,6 +121,12 @@ export class WaveManager {
   update(dt) {
     if (!this.level || this.cleared) return;
 
+    // 正常测试模式：升级式同屏出怪（boss 关不会走到这里，startLevel 已分流）
+    if (this.mode === 'normalTest') {
+      this._updateNormalTest(dt);
+      return;
+    }
+
     if (isBoss(this.level)) {
       if (!this.bossSpawned) this._spawnBoss();
       // 击杀或撞船移除都算通关，避免撞船后 boss 仍在 list 之外导致卡死
@@ -128,9 +149,57 @@ export class WaveManager {
     this._updateSummoners(dt);
   }
 
+  // ===== 正常测试：升级式同屏出怪 =====
+  // 目标同屏数 = min(startCount + floor(t/rampInterval)*step, peak)
+  _targetConcurrency(t) {
+    return Math.min(
+      NORMAL_TEST.startCount + Math.floor(t / NORMAL_TEST.rampInterval) * NORMAL_TEST.step,
+      NORMAL_TEST.peak
+    );
+  }
+
+  _updateNormalTest(dt) {
+    this.elapsed += dt;
+
+    // 方案 A：DDA 完全接管出怪（数量/种类/位置由难度标量驱动），替换原时间升级曲线
+    if (DDA.enabled && this.dda) {
+      const D = this.dda.update(dt);
+      const plan = this.dda.getPlan();
+      if (this.elapsed < NORMAL_TEST.stopAt) {
+        this.spawnTimer -= dt;
+        if (this.balloons.count < plan.concurrency && this.spawnTimer <= 0) {
+          const type = plan.pickType();
+          this.balloons.spawn(type, this._spawnPos(ENEMY_TYPES[type]?.radius || 0.5,
+            { dist: plan.dist, spread: plan.spread, phase: plan.phase }));
+          this.spawnTimer = plan.cooldown;
+        }
+      }
+      // 停止补怪后场上清空 → 通关
+      if (this.elapsed >= NORMAL_TEST.stopAt && this.balloons.count === 0) {
+        this.cleared = true;
+      }
+      return;
+    }
+
+    // 原时间曲线（DDA 关闭时回退）
+    if (this.elapsed < NORMAL_TEST.stopAt) {
+      this.spawnTimer -= dt;
+      const target = this._targetConcurrency(this.elapsed);
+      if (this.balloons.count < target && this.spawnTimer <= 0) {
+        const type = NORMAL_TEST.pool[(Math.random() * NORMAL_TEST.pool.length) | 0];
+        this.balloons.spawn(type, this._spawnPos(ENEMY_TYPES[type]?.radius || 0.5));
+        this.spawnTimer = NORMAL_TEST.spawnCooldown;
+      }
+    }
+    if (this.elapsed >= NORMAL_TEST.stopAt && this.balloons.count === 0) {
+      this.cleared = true;
+    }
+  }
+
   // 召唤怪：存活期间维持 minionCap 只基础怪；死后由 _onKilled 清场（此处兜底）
   _updateSummoners(dt) {
-    for (const b of [...this.balloons.list]) {
+    for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+      const b = this.balloons.list[i];
       if (b.behavior !== 'summon') continue;
       // 死亡兜底清理（主清理在 game._onKilled）
       if (!b.alive) {

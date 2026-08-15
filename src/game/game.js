@@ -12,8 +12,9 @@ import { DragonBoss } from './dragonLevel.js';
 import { OpeningModel } from './openingModel.js';
 import { LEVELS, isLaser } from '../content/levels.js';
 import { LEVEL_PLANS } from '../content/spawnPlans.js';
-import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE, DEPTH_SPRITE_STRESS } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA } from '../core/constants.js';
 import { setRenderer } from './balloonModels.js';
+import { DifficultyController } from './difficultyController.js';
 
 const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关' };
 const ORIGIN = new THREE.Vector3(0, 0, 0);
@@ -42,7 +43,9 @@ export class Game {
     this.player = new Player(world.scene, this.rig);
     this.balloons = new BalloonManager(world.scene);
     this.bullets = new BulletManager(world.scene);
-    this.waves = new WaveManager(world.scene, this.balloons, () => this.rig.getWorldPosition(new THREE.Vector3()));
+    // DDA：内置战斗监测（每帧由 _ddaMetrics() 读取玩家/场上状态），喂给 WaveManager 调度出怪
+    this.dda = new DifficultyController(() => this._ddaMetrics());
+    this.waves = new WaveManager(world.scene, this.balloons, () => this.rig.getWorldPosition(new THREE.Vector3()), this.dda);
     this.cards = new CardDraft(world.scene);
     this.rightGun = new RightGun(world.scene);   // 右手柄 AK 枪（VR 手持，纯视觉）
 
@@ -67,6 +70,7 @@ export class Game {
     this.skillCooldown = 0;      // 技能释放冷却计时(s)：>0 时握柄无效，HUD 显示剩余
 
     this._tmp = new THREE.Vector3();
+    this._tmp2 = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
   }
 
@@ -141,6 +145,7 @@ export class Game {
 
   _loadLevel(i) {
     const lv = LEVELS[i];
+    this.normalTest = false; // 默认非测试；仅普通关且 NORMAL_TEST.enabled 时被 startLevel 翻为 true
     // 离开上一关时清理激光关实例与玻璃网格
     if (this.laser) { this.laser.dispose(); this.laser = null; }
     if (this.grid) { this.grid.dispose(); this.grid = null; }
@@ -188,7 +193,9 @@ export class Game {
         this.log(`第 ${lv.n} 关 · 龙 Boss：击破龙身/龙爪气球（打爆即复活，血量清零才击杀）`);
       } else {
         this.waves.startLevel(lv);
-        if (DEPTH_SPRITE_STRESS > 0) this._spawnStress(DEPTH_SPRITE_STRESS);
+        // 正常测试模式：覆盖普通关出怪曲线，独占出怪（避免与压测阵列冲突）
+        this.normalTest = (this.waves.mode === 'normalTest');
+        if (DEPTH_SPRITE_STRESS > 0 && !NORMAL_TEST.enabled) this._spawnStress(DEPTH_SPRITE_STRESS);
         this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
       }
     }
@@ -272,7 +279,8 @@ export class Game {
     }
 
     // 聚宝盆等脚本化死亡（寿命到期 → 标记 _pendingKill）在此结算
-    for (const b of [...this.balloons.list]) {
+    for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+      const b = this.balloons.list[i];
       if (b._pendingKill && b.alive) { b.alive = false; this._onKilled(b); }
     }
 
@@ -283,10 +291,12 @@ export class Game {
 
     this.hud.setScore(this.score);
     this.hud.setHp(this.player.hp, this.player.maxHp);
+    // 正常测试：显示"距停止补怪"倒计时，便于观察出怪曲线
+    if (this.normalTest) this.hud.setCountdown(Math.ceil(Math.max(0, NORMAL_TEST.stopAt - this.waves.elapsed)));
 
-    if (!this.player.alive) { this._restartLevel(); return; }
+    if (!this.player.alive) { if (this.normalTest) this._gameOver(); else this._restartLevel(); return; }
     const cleared = this.dragon ? this.dragon.cleared : this.waves.cleared;
-    if (cleared) this._enterCard();
+    if (cleared) { if (this.normalTest) this._testWin(); else this._enterCard(); }
   }
 
   // 激光关主循环：激光动画 + 保持期发光驱动 + 走格子/九宫格阶段分派
@@ -302,7 +312,8 @@ export class Game {
       }
       // 2) 九宫格交互（16–18s 与 18s+ 都生效）
       if (this.flipGrid) {
-        for (const b of [...this.bullets.active]) {
+        for (let i = this.bullets.active.length - 1; i >= 0; i--) {
+          const b = this.bullets.active[i];
           const hit = this.flipGrid.tryHit(b);
           if (hit) {
             this.bullets.release(b);
@@ -444,9 +455,13 @@ export class Game {
   }
 
   _collide() {
-    // 子弹 vs 气球
-    for (const b of [...this.bullets.active]) {
-      for (const balloon of [...this.balloons.list]) {
+    // 子弹 vs 气球（反向遍历子弹：release swap-pop 后索引稳定；内循环命中即 break，无需 spread）
+    const bullets = this.bullets.active;
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const b = bullets[i];
+      const list = this.balloons.list;
+      for (let j = 0; j < list.length; j++) {
+        const balloon = list[j];
         if (!balloon.alive) continue; // 跳过已隐藏的龙气球（复活前），防重复触发
         // 幽灵怪隐身期间无视子弹（仅蓄力显形时可被击中）
         if (balloon.behavior === 'ghost' && !balloon.revealed) continue;
@@ -455,14 +470,14 @@ export class Game {
           if (balloon.behavior === 'shield') {
             const sb = balloon.getShieldBlock();
             if (sb) {
-              const toPlayer = this._playerPos().clone().sub(balloon.mesh.position);
-              toPlayer.y = 0;
-              if (toPlayer.lengthSq() > 1e-6) {
-                toPlayer.normalize();
-                if (toPlayer.dot(sb.dir) > Math.cos(sb.arc)) {
+              this._tmp2.copy(this._playerPos()).sub(balloon.mesh.position);
+              this._tmp2.y = 0;
+              if (this._tmp2.lengthSq() > 1e-6) {
+                this._tmp2.normalize();
+                if (this._tmp2.dot(sb.dir) > Math.cos(sb.arc)) {
                   this.bullets.release(b);
-                  this._spawnExplosionFx(b.mesh.position.clone(), 0.2); // 挡弹火花
-                  continue; // 子弹被盾挡下，气球不受伤
+                  this._spawnExplosionFx(b.mesh.position, 0.2); // 挡弹火花（_spawnExplosionFx 内部 copy，无需 clone）
+                  break; // 子弹被盾挡下，退出内循环（修复原 continue 导致的双释放 bug）
                 }
               }
             }
@@ -478,13 +493,33 @@ export class Game {
     // 气球 vs 飞船碰撞已移除 → 改由 _checkExplosions() 处理
   }
 
+  // DDA 监测信号：每帧由 DifficultyController 调用，读取玩家综合战力 / 船血 与 场上怪物综合战斗数值
+  _ddaMetrics() {
+    const p = this.player;
+    let threat = 0;
+    for (const b of this.balloons.list) {
+      const t = b.type;
+      if (!t) continue;
+      // 威胁分 ≈ 血量 × 速度 × (1+自爆/5)，与 difficultyController 的偏好计算口径一致
+      threat += (t.hp / 100) * Math.max(t.speed || 0, 0.1) * (1 + (t.selfDamage || 0) / 5);
+    }
+    // 玩家综合战力：基础攻击 × (1+多重%) × (1+爆炸半径/50) × (大招解锁?1.5:1)
+    const power = p.atk * (1 + p.multiShotChance / 100) * (1 + p.explosion / 50) * (p.buddhaUnlocked ? 1.5 : 1);
+    return {
+      hpPct: p.hp / p.maxHp,
+      power,
+      onScreen: this.balloons.count,
+      onScreenThreat: threat,
+    };
+  }
+
   _onKilled(balloon) {
     // 龙 Boss 部件：隐藏并由 DragonBoss 管理「1秒复活」，不从这里永久移除（且不再连锁炸其他龙部件）
     if (balloon.isDragonPart) {
       if (this.dragon && !this.dragon.dying) {
         this.score += balloon.score;
         this.audio?.playPop();
-        this._spawnExplosionFx(balloon.mesh.position.clone(), balloon.effectiveRadius);
+        this._spawnExplosionFx(balloon.mesh.position, balloon.effectiveRadius);
         this.dragon.notifyKilled(balloon);
       }
       balloon.alive = false;
@@ -500,6 +535,7 @@ export class Game {
       return;
     }
     this.score += balloon.score;
+    this.dda?.notifyKill();   // DDA：记录一次击杀，用于滑窗击杀率统计
     // 心型怪：击败后为船恢复血量（知识库 30）
     if (balloon.behavior === 'heal') {
       this.player.hp = Math.min(this.player.maxHp, this.player.hp + (balloon.type.shipHealOnDeath || 30));
@@ -523,7 +559,8 @@ export class Game {
     }
     // 爆炸范围伤害
     if (this.player.explosion > 0) {
-      for (const other of [...this.balloons.list]) {
+      for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+        const other = this.balloons.list[i];
         if (other === balloon) continue;
         if (other.isDragonPart) continue; // 不让爆炸连锁白嫖龙部件
         if (other.mesh.position.distanceTo(balloon.mesh.position) < this.player.explosion) {
@@ -538,7 +575,8 @@ export class Game {
     const pp = this._playerPos();
     this.log('如来神掌！');
     // 伤害范围内所有气球
-    for (const b of [...this.balloons.list]) {
+    for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+      const b = this.balloons.list[i];
       if (b.mesh.position.distanceTo(pp) < BUDDHA.KILL_RADIUS) {
         if (b.takeDamage(BUDDHA.DAMAGE)) this._onKilled(b);
       }
@@ -549,7 +587,8 @@ export class Game {
       new THREE.MeshStandardMaterial({ color: 0xffd43b, emissive: 0xffa500, emissiveIntensity: 0.6, transparent: true, opacity: 0.85 })
     );
     mesh.scale.setScalar(BUDDHA.FALL_START_SCALE);
-    mesh.position.copy(pp).add(new THREE.Vector3(0, 20, 0));
+    mesh.position.copy(pp);
+    mesh.position.y += 20;
     this.world.scene.add(mesh);
     this._buddhaFx = { mesh, t: 0 };
   }
@@ -585,20 +624,20 @@ export class Game {
   // 金箍棒：玩家正前方 90° 扇形（±45°）内敌人受致命伤 ≈ 四分之一全屏
   _castStaff() {
     const pp = this._playerPos();
-    const fwd = new THREE.Vector3();
-    this.world.camera.getWorldDirection(fwd); // 玩家看向场景内的方向
+    this.world.camera.getWorldDirection(this._fwd); // 玩家看向场景内的方向
     const COS_HALF = Math.cos(THREE.MathUtils.degToRad(STAFF.HALF_ANGLE));
-    for (const b of [...this.balloons.list]) {
-      const to = b.mesh.position.clone().sub(pp);
-      to.y = 0;
-      const dist = to.length();
+    for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+      const b = this.balloons.list[i];
+      this._tmp2.copy(b.mesh.position).sub(pp);
+      this._tmp2.y = 0;
+      const dist = this._tmp2.length();
       if (dist < 0.001) continue;
-      to.normalize();
-      if (to.x * fwd.x + to.z * fwd.z >= COS_HALF) { // 落在前方扇形内
+      this._tmp2.normalize();
+      if (this._tmp2.x * this._fwd.x + this._tmp2.z * this._fwd.z >= COS_HALF) { // 落在前方扇形内
         if (b.takeDamage(STAFF.DAMAGE)) this._onKilled(b);
       }
     }
-    this._spawnStaffWall(pp, fwd);
+    this._spawnStaffWall(pp, this._fwd);
     this.log('金箍棒！前方扇形伤害');
   }
 
@@ -614,7 +653,8 @@ export class Game {
       new THREE.PlaneGeometry(STAFF.WALL_WIDTH, STAFF.WALL_HEIGHT),
       new THREE.MeshBasicMaterial({ color: 0xff3b3b, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending })
     );
-    wall.position.copy(pp).add(fwd.clone().multiplyScalar(STAFF.WALL_DIST)).add(new THREE.Vector3(0, STAFF.WALL_HEIGHT / 2, 0));
+    wall.position.copy(pp).addScaledVector(fwd, STAFF.WALL_DIST);
+    wall.position.y += STAFF.WALL_HEIGHT / 2;
     wall.lookAt(pp.x, wall.position.y, pp.z);
     this.world.scene.add(wall);
     this._staffFx = { mesh: wall, t: 0 };
@@ -650,19 +690,20 @@ export class Game {
 
   // 检查气球是否进入4×8区域，进入则自爆并伤害飞船
   _checkExplosions() {
-    for (const balloon of [...this.balloons.list]) {
+    for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+      const balloon = this.balloons.list[i];
       if (balloon.controlled) continue; // 龙 Boss 气球：纯靶子，不进入4×8自爆、不伤飞船
       const pos = balloon.mesh.position;
       // 4×8区域 = |x|<=BOUND_X(2), |z|<=BOUND_Z(4)；气球边缘触及区域边界即触发
       const inArea = Math.abs(pos.x) <= (MOVE.BOUND_X + balloon.effectiveRadius)
                   && Math.abs(pos.z) <= (MOVE.BOUND_Z + balloon.effectiveRadius);
       if (inArea) {
-        this._spawnExplosionFx(balloon.mesh.position.clone(), balloon.effectiveRadius);
+        this._spawnExplosionFx(balloon.mesh.position, balloon.effectiveRadius);
         this.balloons.remove(balloon);
         this.audio?.playPop();
         // 气球入侵飞船区域即造成伤害，不依赖玩家与爆炸点的距离；伤害按该气球自身自爆值
         const dead = this.player.takeDamage(balloon.isBoss ? 40 : (balloon.selfDamage ?? BALLOON.DAMAGE));
-        if (dead) { this._restartLevel(); return true; }
+        if (dead) { if (this.normalTest) this._gameOver(); else this._restartLevel(); return true; }
       }
     }
     return false;
@@ -684,7 +725,8 @@ export class Game {
   }
 
   _updateExplosions(dt) {
-    for (const exp of [...this._explosions]) {
+    for (let i = this._explosions.length - 1; i >= 0; i--) {
+      const exp = this._explosions[i];
       exp.t += dt;
       const k = Math.min(1, exp.t / EXPLOSION.DURATION);
       exp.mesh.scale.setScalar(1 + k * EXPLOSION.MAX_SCALE);
@@ -693,8 +735,7 @@ export class Game {
         this.world.scene.remove(exp.mesh);
         exp.mesh.geometry.dispose();
         exp.mesh.material.dispose();
-        const i = this._explosions.indexOf(exp);
-        if (i !== -1) this._explosions.splice(i, 1);
+        this._explosions.splice(i, 1);
       }
     }
   }
@@ -813,6 +854,17 @@ export class Game {
     this.balloons.clear();
     this.bullets.clear();
     this.hud.message('飞船坠落', `得分 ${this.score} · 按「开始游戏」重来`, '#e74c3c');
+    this.hud.showStart();
+  }
+
+  // 正常测试通关：停止补怪后场上清空即达成。与 _gameOver 对称，但为绿色胜利提示。
+  _testWin() {
+    this.state = 'over';
+    this.log('全部消灭，通关！');
+    this.balloons.clear();
+    this.bullets.clear();
+    this.hud.clearCountdown();
+    this.hud.message('通关！', `得分 ${this.score} · 按「开始游戏」重新挑战`, '#2ecc71');
     this.hud.showStart();
   }
 }

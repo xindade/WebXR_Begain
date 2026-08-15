@@ -23,6 +23,12 @@ function faceTexture(hex) {
 
 const COLORS = ['#ff5a5f', '#ffb400', '#ffd166', '#06d6a0', '#118ab2', '#9b5de5', '#f15bb5'];
 
+// 模块级临时量：消除 update 热循环里每怪每帧 new Vector3 / new Color 的 GC 压力
+const _moveDir   = new THREE.Vector3();   // update() 朝玩家方向（每怪复用，调用即消费）
+const _camPos    = new THREE.Vector3();   // update() 血条 lookAt 的相机世界坐标
+const _shieldSp  = new THREE.Vector3();   // getShieldBlock() 盾牌世界坐标
+const _shieldCt  = new THREE.Vector3();   // getShieldBlock() 气球中心世界坐标
+
 class Balloon {
   constructor(typeId) {
     const t = ENEMY_TYPES[typeId] || ENEMY_TYPES.basic;
@@ -97,6 +103,11 @@ class Balloon {
 
     this._flash = 0;
     this._hop = Math.random() * Math.PI * 2;
+    // 立绘气球浮动（破「整齐划一」）：每怪独立的相位/幅度/频率 → 群体不再同步
+    this._bobPhase = Math.random() * Math.PI * 2;
+    this._bobAmp   = (t.radius || 1) * (0.04 + Math.random() * 0.06); // 上下浮动幅度 ≈ 半径的 4%~10%
+    this._bobFreq  = 0.5 + Math.random() * 0.8;                       // 浮动频率(Hz)，个体不同
+    this._bobT = 0;
     this.controlled = false;   // 由外部(如龙Boss)逐帧接管位置时为 true
     this._pendingKill = false; // 聚宝盆超时等脚本化死亡标记
     this.group = this.mesh;
@@ -171,10 +182,9 @@ class Balloon {
   // 供 game._collide 判断「子弹是否被盾挡下」：返回盾牌世界朝向与挡弹半角
   getShieldBlock() {
     if (!this.shieldPivot || !this.shieldModel) return null;
-    const sp = new THREE.Vector3();
-    this.shieldModel.getWorldPosition(sp);
-    const center = this.mesh.getWorldPosition(new THREE.Vector3());
-    const dir = sp.sub(center); dir.y = 0;
+    this.shieldModel.getWorldPosition(_shieldSp);
+    this.mesh.getWorldPosition(_shieldCt);
+    const dir = _shieldSp.sub(_shieldCt); dir.y = 0;
     if (dir.lengthSq() < 1e-6) return null;
     dir.normalize();
     return { dir, arc: this.shieldBlockArc };
@@ -209,11 +219,11 @@ class Balloon {
   update(dt, target, camera) {
     // 朝玩家移动（controlled 气球由外部逐帧设位置，跳过自动移动）
     if (!this.controlled) {
-      const dir = target.clone().sub(this.mesh.position);
-      dir.y = 0;
-      const dist = dir.length();
-      if (dist > 0.001) dir.normalize();
-      this.mesh.position.addScaledVector(dir, this.speed * dt);
+      _moveDir.copy(target).sub(this.mesh.position);
+      _moveDir.y = 0;
+      const dist = _moveDir.length();
+      if (dist > 0.001) _moveDir.normalize();
+      this.mesh.position.addScaledVector(_moveDir, this.speed * dt);
     }
 
     // 盾牌绕骑士旋转（盾兵怪核心机制）
@@ -230,7 +240,10 @@ class Balloon {
 
     // DepthSprite 同步：位置跟随气球 + 仅 yaw 朝向玩家（视差基于世界空间相机，XR 逐眼立体）
     if (this.depthSprite) {
+      this._bobT += dt;
+      // 每帧重置为气球逻辑位置（不累积），再叠加独立上下浮动 → 气球悬浮感
       this.depthSprite.mesh.position.copy(this.mesh.position);
+      this.depthSprite.mesh.position.y += this._bobAmp * Math.sin(this._bobPhase + this._bobT * this._bobFreq);
       this.depthSprite.faceYaw(target);
       this.depthSprite.advance(dt); // idle 序列帧推进（多帧 sheet 循环播放）
     }
@@ -244,7 +257,7 @@ class Balloon {
       } else if (this._modelMats) {
         for (const m of this._modelMats) { m.emissive.setRGB(1, 1, 1); m.emissiveIntensity = inten; }
       } else {
-        this.mesh.material.emissive = new THREE.Color(0xffffff);
+        this.mesh.material.emissive.setRGB(1, 1, 1);
         this.mesh.material.emissiveIntensity = inten;
       }
     } else if (this.depthSprite) {
@@ -255,7 +268,7 @@ class Balloon {
       this.mesh.material.emissiveIntensity = 0;
     }
     // 血条朝向相机
-    if (this._hpBar && camera) this._hpBar.lookAt(camera.getWorldPosition(new THREE.Vector3()));
+    if (this._hpBar && camera) this._hpBar.lookAt(camera.getWorldPosition(_camPos));
 
     // DepthSprite 显隐跟随主体（ghost 隐身机制需要：显形时才显示立绘）
     if (this.depthSprite) this.depthSprite.mesh.visible = this.mesh.visible;
@@ -421,7 +434,7 @@ export class BalloonManager {
   }
 
   clear() {
-    for (const b of [...this.list]) this.remove(b);
+    for (let i = this.list.length - 1; i >= 0; i--) this.remove(this.list[i]);
   }
 
   get count() { return this.list.length; }

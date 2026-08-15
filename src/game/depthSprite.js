@@ -103,6 +103,10 @@ export function createDepthSpriteMaterial({
   return mat;
 }
 
+// 模块级临时量：faceYaw 每帧每立绘调用，避免 new Vector3 的 GC 压力
+const _dsRight = new THREE.Vector3();
+const _dsUp    = new THREE.Vector3();
+
 // DepthSprite —— 一张图（带深度）组成一个可动画、可 yaw 朝向的平面
 export class DepthSprite {
   constructor({
@@ -141,10 +145,10 @@ export class DepthSprite {
     const dz = targetPos.z - m.position.z;
     m.rotation.y = Math.atan2(dx, dz);
     m.updateMatrixWorld();
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(m.quaternion);
-    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(m.quaternion);
-    this.material.uniforms.uPlaneRight.value.copy(right);
-    this.material.uniforms.uPlaneUp.value.copy(up);
+    _dsRight.set(1, 0, 0).applyQuaternion(m.quaternion);
+    _dsUp.set(0, 1, 0).applyQuaternion(m.quaternion);
+    this.material.uniforms.uPlaneRight.value.copy(_dsRight);
+    this.material.uniforms.uPlaneUp.value.copy(_dsUp);
   }
 
   dispose() {
