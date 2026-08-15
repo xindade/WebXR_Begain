@@ -37,6 +37,13 @@ export const MODEL_TUNING = {
   'Model/心形怪.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
   'Model/忍者.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
   'Model/章鱼.glb':   { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  // —— 脸谱 Boss 模型 + 装饰 ——
+  // 蓝/红脸谱绕 Y 逆时针旋转 90°（正 Y = 俯视逆时针；若方向反了改回 -90）
+  'Model/蓝面脸谱.glb': { pos: [0, 0, 0], rot: [0, 90, 0], scale: 1.0 },
+  'Model/红面脸谱.glb': { pos: [0, 0, 0], rot: [0, 90, 0], scale: 1.0 },
+  'Model/黑面脸谱.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/京剧扇子.glb': { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
+  'Model/旗子.glb':     { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 },
 };
 
 // 返回缓存的加载 Promise；失败则 reject（调用方兜底保留程序化球体）
@@ -143,6 +150,32 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
       balloon.mesh.material.visible = true;
       console.warn('[BalloonModels] 降级为程序化球体:', url);
     });
+}
+
+// 脸谱 Boss 专用：移除旧模型并挂载新模型（用于每 10 秒变脸）
+// typeId 传 null 确保走 3D GLB 路径（不走 DepthSprite）
+export function swapBalloonModel(balloon, newUrl, radius) {
+  // 移除并释放旧模型
+  if (balloon.bodyModel) {
+    balloon.mesh.remove(balloon.bodyModel);
+    balloon.bodyModel.traverse((o) => {
+      if (o.isMesh) { o.geometry?.dispose?.(); o.material?.dispose?.(); }
+    });
+    balloon.bodyModel = null;
+    balloon._modelMats = null;
+  }
+  // 挂载新模型（模型已在 _cache 中，克隆很快）
+  attachBalloonModel(balloon, newUrl, radius, null, null, 1, null);
+}
+
+// 预捕获 DepthSprite 数据源：黑阶段留空期提前触发捕获，
+// 利用 _capCache（key=url:frames:swing）使 25 个分身只捕获一次且首帧零成本。
+export function preCaptureDepthSprite(url, radius) {
+  if (!DEPTH_SPRITE_MODE || !_renderer) return Promise.resolve(null);
+  return captureModelByUrl(_renderer, url, radius, {
+    frames: DEPTH_SPRITE_FRAMES,
+    swing: DEPTH_SPRITE_SWING,
+  }).then(() => true).catch(() => false);
 }
 
 // 龙身/龙爪混合外观装配（龙 Boss 掉帧修复的「外观升级」版）。

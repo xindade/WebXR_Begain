@@ -28,6 +28,12 @@ const _tanB = new THREE.Vector3();
 const _tanDir = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const FORWARD_Z = new THREE.Vector3(0, 0, 1); // 圆柱本地 +Z（旋转后对齐脊柱切向）
+// 热路径 _toWorld / _tangent / 龙爪法线 复用量
+const _offTmp = new THREE.Vector3();  // body 循环 base / head 循环 headPos & ahead（均调用即消费）
+const _offA   = new THREE.Vector3();  // _worldOffsetDir 内部 base
+const _offB   = new THREE.Vector3();  // _worldOffsetDir 内部 tip（返回值）
+const _tanTmp = new THREE.Vector3();  // _tangent 返回值（调用方立即消费方向分量）
+const _nRaw   = new THREE.Vector3();  // 龙爪法线 T×up（raw 空间）
 
 // 在 [1..n] 里均匀选 k 个整数下标（用于龙身「模型节点」均匀散落）
 function pickEvenly(n, k) {
@@ -205,22 +211,25 @@ export class DragonBoss {
   }
 
   // 原始坐标(raw) → 世界坐标：以包围盒中心为锚，缩放 → 全局刚体旋转 → 平移到 HOME（+ 暂停晃动）
-  _toWorld(raw) {
-    const off = new THREE.Vector3(
+  // 可选 out 参数：传入则写入 out（避免热循环 new Vector3），省略则 new（向后兼容）
+  _toWorld(raw, out) {
+    if (!out) out = new THREE.Vector3();
+    out.set(
       raw.x - this.center.x,
       raw.y - this.center.y,
       raw.z - this.center.z
     ).multiplyScalar(this.dScale);
-    off.applyQuaternion(this._rigQuat); // 全局刚体旋转（YAW/PITCH/ROLL）
+    out.applyQuaternion(this._rigQuat); // 全局刚体旋转（YAW/PITCH/ROLL）
     _wob.set(0, this._wobbleY, 0);
-    return off.add(this._rigPos).add(_wob);
+    out.add(this._rigPos).add(_wob);
+    return out;
   }
 
   // 取 raw 空间某「单位方向」经全局刚体变换后的世界单位方向（用于龙爪法线方向）
   _worldOffsetDir(baseRaw, unitRaw) {
-    const base = this._toWorld(baseRaw);
-    const tip = this._toWorld({ x: baseRaw.x + unitRaw.x, y: baseRaw.y + unitRaw.y, z: baseRaw.z + unitRaw.z });
-    return tip.sub(base).normalize();
+    this._toWorld(baseRaw, _offA);
+    this._toWorld({ x: baseRaw.x + unitRaw.x, y: baseRaw.y + unitRaw.y, z: baseRaw.z + unitRaw.z }, _offB);
+    return _offB.sub(_offA).normalize();
   }
 
   // 按累计弧长取点：对 loopTotal 取模环绕（龙身/龙爪在循环首尾也连续），含闭合回程段
@@ -269,22 +278,22 @@ export class DragonBoss {
     };
   }
 
-  // 弧长处的单位切向
+  // 弧长处的单位切向（返回模块级 _tanTmp，调用方立即消费方向分量）
   _tangent(arc) {
     const d = Math.max(1, this.total * 0.002);
     const a = this._sample(arc - d);
     const b = this._sample(arc + d);
-    const t = new THREE.Vector3(b.x - a.x, b.y - a.y, b.z - a.z);
-    if (t.lengthSq() < 1e-9) t.set(0, 0, 1);
-    return t.normalize();
+    _tanTmp.set(b.x - a.x, b.y - a.y, b.z - a.z);
+    if (_tanTmp.lengthSq() < 1e-9) _tanTmp.set(0, 0, 1);
+    return _tanTmp.normalize();
   }
 
   // 圆柱沿脊柱躺平：让 mesh 本地 +Z 对齐该处「世界切向」（圆柱几何已预旋转轴到 Z）。
   // 用世界坐标采样点求切向（而非 _tangent 的 raw 坐标），保证方向与可见龙身一致。
   _orientAlongSpine(mesh, arc) {
     const d = Math.max(1, this.total * 0.002);
-    _tanA.copy(this._toWorld(this._sample(arc - d)));
-    _tanB.copy(this._toWorld(this._sample(arc + d)));
+    this._toWorld(this._sample(arc - d), _tanA);
+    this._toWorld(this._sample(arc + d), _tanB);
     _tanDir.subVectors(_tanB, _tanA);
     if (_tanDir.lengthSq() < 1e-9) return; // 退化保底：保持上一帧朝向
     _tanDir.normalize();
@@ -448,11 +457,11 @@ export class DragonBoss {
     const headRaw = this._sample(this.s);
     if (this.headModel) {
       const headBob = 0.06 * Math.sin(this._t * 1.5);
-      const headPos = this._toWorld(headRaw);
+      const headPos = this._toWorld(headRaw, _offTmp);
       headPos.y += headBob;
       this.headGroup.position.copy(headPos);
       const t = this._tangent(this.s);
-      const ahead = this._toWorld({ x: headRaw.x + t.x, y: headRaw.y + t.y, z: headRaw.z + t.z });
+      const ahead = this._toWorld({ x: headRaw.x + t.x, y: headRaw.y + t.y, z: headRaw.z + t.z }, _offTmp);
       ahead.y += headBob;
       this.headGroup.lookAt(ahead);
       this.headGroup.rotateY(D2R(DRAGON.HEAD_YAW)); // 若龙头朝向与前进方向相反，把 HEAD_YAW 改成 180
@@ -463,7 +472,7 @@ export class DragonBoss {
     for (const part of this.bodyParts) {
       if (!part.balloon.alive) continue;
       const arc = this.s - part.i * bodySpacing;   // 负弧长由 _sample 取模环绕 → 循环时龙身连续
-      const base = this._toWorld(this._sample(arc));
+      const base = this._toWorld(this._sample(arc), _offTmp);
       const tan = this._tangent(arc);
       base.add(this._undulate(part.i, tan, amp));
       part.balloon.mesh.position.copy(base);
@@ -478,11 +487,11 @@ export class DragonBoss {
       const nodeArc = this.s - part.node * bodySpacing;   // 取模环绕，与龙身一致
       const nodeRaw = this._sample(nodeArc);
       const t = this._tangent(nodeArc);
-      const Nraw = new THREE.Vector3(-t.z, 0, t.x); // T × up（raw 空间单位法线）
-      if (Nraw.lengthSq() < 1e-9) Nraw.set(1, 0, 0);
-      Nraw.normalize();
-      const Nworld = this._worldOffsetDir(nodeRaw, Nraw); // 经全局刚体旋转后的世界法线
-      const nodeWorld = this._toWorld(nodeRaw);
+      _nRaw.set(-t.z, 0, t.x); // T × up（raw 空间单位法线）
+      if (_nRaw.lengthSq() < 1e-9) _nRaw.set(1, 0, 0);
+      _nRaw.normalize();
+      const Nworld = this._worldOffsetDir(nodeRaw, _nRaw); // 经全局刚体旋转后的世界法线
+      const nodeWorld = this._toWorld(nodeRaw, _offTmp);
       nodeWorld.addScaledVector(Nworld, part.side * clawSpread * this.dScale);
       nodeWorld.add(this._undulate(part.node, t, amp));
       part.balloon.mesh.position.copy(nodeWorld);
@@ -556,7 +565,7 @@ export class DragonBoss {
         this.headGroup.visible = false; // 龙头也炸完 → 消失
         this.cleared = true;            // 触发 game._enterCard（选项卡）
         // 清理残留特效，避免进入选项卡后还残留冻结的爆炸球
-        for (const fx of [...this._deathFx]) {
+        for (const fx of this._deathFx) {
           this.scene.remove(fx.mesh);
           fx.mesh.geometry.dispose();
           fx.mesh.material.dispose();
@@ -583,7 +592,8 @@ export class DragonBoss {
   }
 
   _updateDeathFx(dt) {
-    for (const fx of [...this._deathFx]) {
+    for (let i = this._deathFx.length - 1; i >= 0; i--) {
+      const fx = this._deathFx[i];
       fx.t += dt;
       const k = Math.min(1, fx.t / EXPLOSION.DURATION);
       fx.mesh.scale.setScalar(1 + k * EXPLOSION.MAX_SCALE);
@@ -592,8 +602,7 @@ export class DragonBoss {
         this.scene.remove(fx.mesh);
         fx.mesh.geometry.dispose();
         fx.mesh.material.dispose();
-        const i = this._deathFx.indexOf(fx);
-        if (i !== -1) this._deathFx.splice(i, 1);
+        this._deathFx.splice(i, 1);
       }
     }
   }
@@ -601,11 +610,11 @@ export class DragonBoss {
   dispose() {
     this.dead = true;
     // 移除全部龙气球（避免残留隐藏气球进入下一关的 waves）
-    for (const b of [...this.allParts]) {
+    for (const b of this.allParts) {
       if (b.isDragonPart) this.balloons.remove(b);
     }
     // 清理连爆特效
-    for (const fx of [...this._deathFx]) {
+    for (const fx of this._deathFx) {
       this.scene.remove(fx.mesh);
       fx.mesh.geometry.dispose();
       fx.mesh.material.dispose();

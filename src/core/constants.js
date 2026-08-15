@@ -6,7 +6,7 @@
 // 无条目的关卡走 world.setSkyMood() 的渐变天空。后续加关只需加一行「关号: '路径'」。
 export const SKY_PANORAMA = {
   3:  'Sky/sky-arctic-6k.jpg', // 第3关（激光·搭阵）→ 北极天空 6K
-  12: 'Sky/12.exr',            // 第12关（龙 Boss）→ OpenEXR HDR 全景天空（线性 HDR）
+  12: 'Sky/sky-lake-8k.jpg',   // 第12关（龙 Boss）→ 临时用湖边天空（原 68MB EXR 会冻结 PICO 主线程）
   15: 'Sky/sky-lake-8k.jpg',   // 第15关（激光·九宫格）→ 湖边天空 8K（与第3关对比清晰度）
 };
 
@@ -95,9 +95,9 @@ export const WAVE = {
   MAX_ACTIVE: 10,
   SPAWN_DISTANCE: 15,
   SPAWN_SPREAD: 8,
-  // 分阶段：0s 仅前方；15s 前方+左右；30s 全方向
-  PHASE2_AT: 15,
-  PHASE3_AT: 30,
+  // 分阶段：0s 仅前方；20s 前方+左右；40s 全方向（配合60s关卡时长，各占1/3）
+  PHASE2_AT: 20,
+  PHASE3_AT: 40,
 };
 
 export const EXPLOSION = {        // 气球进入4×8区域自爆特效
@@ -298,15 +298,115 @@ export const DRAGON = {
 export const DEPTH_SPRITE_MODE = true;
 // 白名单：已扩到全部普通小怪（ghost 的隐身已让立绘跟随主体 visible，见 balloons.js）。
 // 想单独压测某类型，把数组缩到该 id 即可。
-export const DEPTH_SPRITE_TYPES = ['basic', 'ninja', 'shield', 'octopus', 'ghost', 'summoner', 'heart', 'chest'];
+export const DEPTH_SPRITE_TYPES = ['basic', 'ninja', 'shield', 'octopus', 'ghost', 'summoner', 'heart', 'chest', 'blackMaskClone'];
 // 同屏压测：>0 时关卡启动后额外生成 N 个 basic 立绘同屏阵列（controlled 站定，仍可受击/视差）。
-// 设 30 即「同屏 30 个 DepthSprite」压测；设 0 关闭。
-export const DEPTH_SPRITE_STRESS = 30;
-// 序列帧 idle：GLB 捕获时绕 Y 摆动取 frames 帧拼成 sheet；手绘 sheet 改映射里的 frameCount
-export const DEPTH_SPRITE_FRAMES = 8;
+// 设 150 即「同屏 150 个 DepthSprite」压测；设 0 关闭。
+export const DEPTH_SPRITE_STRESS = 150;
+// 序列帧 idle：GLB 捕获时绕 Y 摆动取 frames 帧拼成 sheet；手绘 sheet 改映射里的 frameCount。
+// 改 12 让「基础怪动画版」的骨骼动画采样更顺（动画版走 AnimationMixer 采样，非摆动）。
+export const DEPTH_SPRITE_FRAMES = 12;
 export const DEPTH_SPRITE_SWING = 0.18; // idle 摆动幅度(弧度)，绕 Y 小幅晃
 // 正式手绘/离线素材映射：填了即走 loadDepthSpriteSheet 替运行时捕获。例：
 // 'Model/基础怪.glb': { albedo:'assets/basic_albedo.png', depth:'assets/basic_depth.png', frameCount:8, cols:8, rows:1 }
 export const DEPTH_SPRITE_HANDPAINTED = {}; // 清空即退回运行时 GLB 多帧捕获（basic 恢复 idle 摆动）
 export const DEPTH_SPRITE_SCALE = 0.08;
+
+// ============================================================
+// 正常测试模式（NORMAL_TEST）：覆盖普通关出怪曲线
+//   enabled = true 时，普通关走 _updateNormalTest()（升级式同屏出怪）
+//   enabled = false 时，普通关走原 _updateLevel() 滴流出怪
+//   DDA.enabled = true 时，在 normalTest 模式下由 DifficultyController 接管出怪
+// ============================================================
+export const NORMAL_TEST = {
+  enabled: true,          // 开关：true 时普通关走压测出怪曲线
+  startCount: 5,          // 初始同屏怪数
+  rampInterval: 10,       // 每 N 秒加怪（DDA 关闭时的时间曲线）
+  step: 2,                // 每次加多少
+  peak: 40,               // 上限（DDA 关闭时）
+  stopAt: 60,             // N 秒后停止补怪（每关限时1分钟）
+  spawnCooldown: 1.2,     // 出怪间隔 s（DDA 关闭时）
+  distance: 12,            // 出怪距离 m
+  spread: 8,               // 出怪散布 m
+  // 测试期间仅出基础怪；恢复全量改回 ['basic', 'ninja', 'octopus', 'shield', 'ghost', 'heart']
+  pool: ['basic'],
+};
+
+// ============================================================
+// DDA（Dynamic Difficulty Adjustment）动态难度
+//   enabled = true 时，DifficultyController 根据玩家表现实时调整出怪
+//   上限 70 同屏（PICO 4 / Adreno XR2 舒适区）
+// ============================================================
+export const DDA = {
+  enabled: true,          // 开关：true 时由 DifficultyController 接管出怪
+  maxConcurrency: 50,     // 同屏上限（测试期间降到50，仅基础怪）
+  minConcurrency: 15,     // 同屏下限（提高初始出怪量，避免开局稀疏）
+  difficultyStart: 0.5,   // 初始难度标量 (0..1)（提高开局出怪密度）
+  killWindow: 10,          // 击杀率滑窗秒数
+  smoothRate: 0.5,         // 难度平滑速率（越大越快跟随目标）
+};
+
+// ============================================================
+// 脸谱 Boss（第6/18关）— 单 Boss 多阶段循环
+//   单 Boss 3000 HP + 95% 减伤，3 阶段循环（蓝→红→黑→蓝...）直到 HP 归零
+//   每阶段 10s，变脸时换位置（前→左→右→前...）+ 清除子实体
+//   击杀子实体扣 Boss 血量百分比（绕过减伤）
+// ============================================================
+export const FACE_BOSS = {
+  // —— 通用 ——
+  HP: 3000,
+  DAMAGE_REDUCTION: 0.95,   // 直接射击减伤 95%（实际受击 = 伤害 × 5%）
+  PHASE_DURATION: 15,       // 每阶段时长 s（前/中子阶段不变，多余时间给尾段动作）
+  SCALE: 1.5,               // 主 Boss 体型（缩小一半，原 3；碰撞 effective=1.5*1.5=2.25m）
+  RADIUS: 1.5,
+  POSITIONS: [              // facePhase%3：0=蓝·前, 1=红·左, 2=黑·右
+    [0, 2, -12],
+    [-10, 2, 0],
+    [10, 2, 0],
+  ],
+  MODELS: ['Model/蓝面脸谱.glb', 'Model/红面脸谱.glb', 'Model/黑面脸谱.glb'],
+  FAN_MODEL: 'Model/京剧扇子.glb',
+
+  // —— 子实体击杀 → Boss 扣血（× HP，绕过减伤）——
+  KILL_FLAG_HP_PCT:   0.02,  // 旗子 2% = 60HP
+  KILL_CLONE_HP_PCT:  0.01,  // 分身 1% = 30HP
+  KILL_MINION_HP_PCT: 0.02,  // 小怪 2% = 60HP
+
+  // —— 蓝色阶段：召唤小怪（小怪在 Boss 左右两侧生成，避免被身体遮挡）——
+  BLUE_MINION_COUNT: 10,
+  BLUE_MINION_TYPES: ['basic', 'knight'],
+  BLUE_MINION_SPAWN_START: 2,    // 开始召唤 s（前段留空）
+  BLUE_MINION_ACTIVE_START: 4,   // 小怪冲锋 + Boss 摆动 s（中段不变，尾段延至阶段末）
+  BLUE_MINION_SIDE_DIST: 3.5,    // 左右侧距离 m（>Boss 有效半径 2.25m，确保不被身体遮住）
+  BLUE_MINION_SPREAD: 3.0,      // 沿身后方向随机偏移 m
+  BLUE_MINION_Y: [1, 2.5],      // 高度范围
+  BLUE_SWAY_AMP: 1.5,           // Boss 摆动幅度 m
+  BLUE_SWING_FREQ: 0.8,         // 摆动频率 Hz
+
+  // —— 红色阶段：旗子（变大3倍 + 公转半径5m）——
+  RED_FLAG_COUNT: 5,
+  RED_FLAG_SPAWN_START: 2,      // 旗子出现 s（前段留空）
+  RED_FLAG_LAUNCH_START: 6,    // 旗子释放 s（中段不变，尾段延至阶段末）
+  RED_FLAG_LAUNCH_INTERVAL: 1.6,  // 释放间隔 s（5面填满 6→14s，匹配15s阶段）
+  RED_FLAG_ORBIT_RADIUS: 5,    // 公转半径 m（大于 Boss 有效半径，不被遮挡）
+  RED_FLAG_ORBIT_SPEED: 2,    // 公转角速度 rad/s
+  RED_FLAG_Y: 2,
+  RED_FLAG_HP: 200,
+  RED_FLAG_SELF_DAMAGE: 5,
+  RED_FLAG_SPEED: 4,          // 释放后冲向玩家速度
+  RED_FLAG_RADIUS: 1.5,        // 碰撞半径（视觉3倍后同步，原0.5）
+  RED_FLAG_SCALE: 3,          // 旗子视觉缩放（变大3倍，原1）
+
+  // —— 黑色阶段：分身（体型缩小一半，原 scale 2→1）——
+  BLACK_CLONE_MODEL: 'Model/黑面脸谱.glb',
+  BLACK_CLONE_COUNT: 25,
+  BLACK_CLONE_SPAWN_START: 2,
+  BLACK_CLONE_SPAWN_END: 4,
+  BLACK_CLONE_RING_RADIUS: 8, // 圆心(0,0,0) 半径 m
+  BLACK_CLONE_Y: 1.5,
+  BLACK_CLONE_HP: 120,
+  BLACK_CLONE_SELF_DAMAGE: 2,
+  BLACK_CLONE_CHARGE_START: 14,  // 冲锋 s（可击杀窗口延至 4-14s，尾段 14-15s 冲锋）
+  BLACK_CLONE_RADIUS: 1.0,
+  BLACK_CLONE_SCALE: 1,          // 缩小一半（原2）
+};
 

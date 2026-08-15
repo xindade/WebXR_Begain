@@ -38,14 +38,19 @@ export class BulletManager {
 
   release(b) {
     const i = this.active.indexOf(b);
-    if (i !== -1) this.active.splice(i, 1);
+    if (i !== -1) {
+      const last = this.active.length - 1;
+      if (i !== last) this.active[i] = this.active[last]; // swap-pop: O(1) 替代 splice O(n)
+      this.active.pop();
+    }
     b.alive = false;
     this.scene.remove(b.mesh);
     this._pool.push(b);
   }
 
   update(dt) {
-    for (const b of [...this.active]) {
+    for (let i = this.active.length - 1; i >= 0; i--) {
+      const b = this.active[i];
       b.mesh.position.addScaledVector(b.vel, dt);
       b.life -= dt;
       if (b.life <= 0) this.release(b);
@@ -53,6 +58,6 @@ export class BulletManager {
   }
 
   clear() {
-    for (const b of [...this.active]) this.release(b);
+    while (this.active.length > 0) this.release(this.active[this.active.length - 1]);
   }
 }

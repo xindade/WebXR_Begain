@@ -114,6 +114,33 @@ export const ENEMY_TYPES = {
     model: 'Model/骑士.glb',
   },
 
+  // —— 脸谱 Boss（第6/18关专用，非小怪）——
+  // 单 Boss 3000 HP + 95% 减伤，3 阶段循环（蓝→红→黑），变脸换位
+  faceMask: {
+    id: 'faceMask', name: '脸谱Boss',
+    hp: 3000, speed: 0, radius: 1.5, score: 500,
+    behavior: 'basic', selfDamage: 0,
+    scale: 1.5,
+    model: 'Model/蓝面脸谱.glb',  // 初始阶段（阶段0）模型
+  },
+
+  // —— 旗子（红阶段子实体，可被击杀/飞向玩家）——
+  flagMask: {
+    id: 'flagMask', name: '旗子',
+    hp: 200, speed: 0, radius: 0.5, score: 0,
+    behavior: 'basic', selfDamage: 5,
+    scale: 1, model: 'Model/旗子.glb',
+  },
+
+  // —— 黑面分身（黑阶段子实体，DepthSprite 立绘渲染，25 个同屏）——
+  blackMaskClone: {
+    id: 'blackMaskClone', name: '黑面分身',
+    hp: 120, speed: 0, radius: 1.0, score: 0,
+    behavior: 'basic', selfDamage: 2,
+    scale: 1, model: 'Model/黑面脸谱.glb',
+    noHealthBar: true,  // 25 个分身避免血条刷屏
+  },
+
   // —— 龙身/龙爪（Boss 专用，非小怪；由 dragonLevel 逐帧接管位置）——
   // 关键优化：dragonSegment=true → 走 balloonModels.attachDragonSegment 的极轻量程序化几何体，
   // 而非克隆 48万面 基础怪.glb。14 节合计仅约 4500 三角形（原 14×48万≈677万），是龙 Boss 关掉帧的核心修复。
