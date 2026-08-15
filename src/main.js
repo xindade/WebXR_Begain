@@ -23,7 +23,8 @@ const world = new World(canvas);
   const text = document.getElementById('loading-text');
 
   // —— 各加载任务的实时进度（0..1）——
-  const skyUrls = Object.values(SKY_PANORAMA); // ['Sky/sky-arctic-6k.jpg','Sky/12.exr','Sky/sky-lake-8k.jpg']
+  // 过滤 .exr：EXRLoader 在主线程同步解析大文件（68MB），会冻结 rAF 循环导致进度条卡死+兜底超时失效
+  const skyUrls = Object.values(SKY_PANORAMA).filter(u => !u.toLowerCase().endsWith('.exr'));
   const skyFrac = {}; skyUrls.forEach((u) => { skyFrac[u] = 0; });
   const skyTasks = skyUrls.map((u) => world.loadSky(u, (loaded, total) => {
     skyFrac[u] = total ? Math.min(1, loaded / total) : 0;

@@ -6,7 +6,7 @@
 // 无条目的关卡走 world.setSkyMood() 的渐变天空。后续加关只需加一行「关号: '路径'」。
 export const SKY_PANORAMA = {
   3:  'Sky/sky-arctic-6k.jpg', // 第3关（激光·搭阵）→ 北极天空 6K
-  12: 'Sky/12.exr',            // 第12关（龙 Boss）→ OpenEXR HDR 全景天空（线性 HDR）
+  12: 'Sky/sky-lake-8k.jpg',   // 第12关（龙 Boss）→ 临时用湖边天空（原 68MB EXR 会冻结 PICO 主线程）
   15: 'Sky/sky-lake-8k.jpg',   // 第15关（激光·九宫格）→ 湖边天空 8K（与第3关对比清晰度）
 };
 
