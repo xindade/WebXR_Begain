@@ -41,6 +41,7 @@ export class WaveManager {
     this.faceLaunchTimer = 0;
     this._blueSpawnedCount = 0;
     this._redSpawned = false;
+    this._redPlaced = false;      // 红阶段旗子是否已移到 Boss 两侧（公转结束标记）
     this._cloneSpawnedCount = 0;
   }
 
@@ -69,6 +70,7 @@ export class WaveManager {
     this.faceLaunchTimer = 0;
     this._blueSpawnedCount = 0;
     this._redSpawned = false;
+    this._redPlaced = false;
     this._cloneSpawnedCount = 0;
 
     // Boss 关（非龙）：直接走 _spawnBoss 流程，不走 NORMAL_TEST
@@ -164,7 +166,9 @@ export class WaveManager {
     for (const url of FACE_BOSS.MODELS) loadBalloonModel(url);
     loadBalloonModel(FACE_BOSS.FAN_MODEL);
     loadBalloonModel(ENEMY_TYPES.flagMask.model);
-    for (const t of FACE_BOSS.BLUE_MINION_TYPES) loadBalloonModel(ENEMY_TYPES[t].model);
+    // 蓝阶段 3×3 阵型只用 basic（两侧列）与 knight（中心列）
+    loadBalloonModel(ENEMY_TYPES.basic.model);
+    loadBalloonModel(ENEMY_TYPES.knight.model);
 
     // 蓝阶段 = POSITIONS[0] = 前方
     const [x, y, z] = FACE_BOSS.POSITIONS[0];
@@ -223,18 +227,27 @@ export class WaveManager {
     }
   }
 
-  // 蓝色阶段：0-2s 留空 → 2-4s 召唤10小怪(Boss左右两侧) → 4-15s 小怪冲锋+Boss摆动
+  // 蓝色阶段：0-2s 留空 → 2-4s 渐进召唤左右两侧各 3×3（中心格骑士、其余basic） → 4-15s 小怪冲锋 + Boss 摆动 + 子实体上下浮动
   _faceUpdateBlue(dt, t) {
     const b = this.faceBoss;
-    // 2-4s: 渐进召唤小怪（"身后"=从原点指向Boss的方向=远离玩家）
+    const perSide = FACE_BOSS.BLUE_FORMATION_ROWS * FACE_BOSS.BLUE_FORMATION_COLS; // 单侧 9
+    const total = perSide * 2;                                                     // 左右两侧共 18
+    // 2-4s: 渐进召唤（按阵型顺序逐格生成）
     if (t >= FACE_BOSS.BLUE_MINION_SPAWN_START && t < FACE_BOSS.BLUE_MINION_ACTIVE_START) {
       const span = FACE_BOSS.BLUE_MINION_ACTIVE_START - FACE_BOSS.BLUE_MINION_SPAWN_START;
-      const target = Math.floor(((t - FACE_BOSS.BLUE_MINION_SPAWN_START) / span) * FACE_BOSS.BLUE_MINION_COUNT);
-      while (this._blueSpawnedCount < target && this._blueSpawnedCount < FACE_BOSS.BLUE_MINION_COUNT) {
+      const target = Math.floor(((t - FACE_BOSS.BLUE_MINION_SPAWN_START) / span) * total);
+      while (this._blueSpawnedCount < target && this._blueSpawnedCount < total) {
         this._faceSpawnMinion();
       }
     }
-    // 4-10s: 小怪解除 controlled 冲向玩家 + Boss X 轴正弦摆动
+    // 子实体轻微上下摆动（与气球一致的悬浮感，召唤期与冲锋期都生效）
+    const bobAmp = FACE_BOSS.BLUE_MINION_BOB_AMP;
+    const bobFreq = FACE_BOSS.BLUE_MINION_BOB_FREQ;
+    for (const m of this.faceSubEntities) {
+      if (!m.alive || !this.balloons.list.includes(m)) continue;
+      m.mesh.position.y = m._bobBaseY + Math.sin(this.facePhaseTimer * bobFreq + m._bobPhase) * bobAmp;
+    }
+    // 4-15s: 小怪解除 controlled 冲向玩家 + Boss X 轴正弦摆动
     if (t >= FACE_BOSS.BLUE_MINION_ACTIVE_START) {
       for (const m of this.faceSubEntities) {
         if (m.alive && this.balloons.list.includes(m) && m.controlled) m.controlled = false;
@@ -246,36 +259,48 @@ export class WaveManager {
     }
   }
 
-  // 蓝阶段召唤一个小怪（basic/knight 交替，从 Boss 左右两侧生成，避免被身体遮挡）
+  // 蓝阶段生成一个怪：左右两侧各一个 3×3 阵，中心格(第2行第2列)=骑士，其余=basic
+  // 阵型排在 Boss 前方（朝玩家 +Z 递进），左阵居中于 Boss.X - BLUE_SIDE_OFFSET，右阵 +BLUE_SIDE_OFFSET
   _faceSpawnMinion() {
     const i = this._blueSpawnedCount++;
-    const type = FACE_BOSS.BLUE_MINION_TYPES[i % FACE_BOSS.BLUE_MINION_TYPES.length];
+    const rows = FACE_BOSS.BLUE_FORMATION_ROWS;   // 3
+    const cols = FACE_BOSS.BLUE_FORMATION_COLS;   // 3
+    const perSide = rows * cols;                  // 9
+    const sideIdx = Math.floor(i / perSide);      // 0 = 左阵, 1 = 右阵
+    const cell = i % perSide;                     // 0..8 阵内序号
+    const row = Math.floor(cell / cols);          // 0..2
+    const col = cell % cols;                      // 0..2
+    const centerRow = (rows - 1) / 2;             // 1
+    const centerCol = (cols - 1) / 2;             // 1
+    const type = (row === centerRow && col === centerCol) ? 'knight' : 'basic';
     const b = this.faceBoss;
-    // "身后"方向 = 从原点指向 Boss（远离玩家）；左右侧方向 = 其水平垂直向量
-    const back = b.mesh.position.clone();
-    back.y = 0;
-    if (back.lengthSq() < 1e-6) back.set(0, 0, 1);
-    back.normalize();
-    const right = new THREE.Vector3(-back.z, 0, back.x);
-    // 交替左右两侧（侧距 > Boss 有效半径 2.25m，确保不被身体遮住）
-    const side = (i % 2 === 0) ? 1 : -1;
-    const p = b.mesh.position.clone().addScaledVector(right, side * FACE_BOSS.BLUE_MINION_SIDE_DIST);
-    // 沿身后方向小幅随机偏移，避免左右两列完全对称排队
-    p.addScaledVector(back, (Math.random() - 0.5) * FACE_BOSS.BLUE_MINION_SPREAD);
-    p.y = FACE_BOSS.BLUE_MINION_Y[0] + Math.random() * (FACE_BOSS.BLUE_MINION_Y[1] - FACE_BOSS.BLUE_MINION_Y[0]);
+    const s = (sideIdx === 0) ? -1 : 1;           // 左 = -X，右 = +X
+    // 侧阵中心 X：偏离 Boss；中心行基准 Z：Boss 前方一个行距，整体朝玩家递进
+    const cx = b.mesh.position.x + s * FACE_BOSS.BLUE_SIDE_OFFSET;
+    const cz = b.mesh.position.z + FACE_BOSS.BLUE_FORMATION_ROW_GAP;
+    const x = cx + (col - centerCol) * FACE_BOSS.BLUE_FORMATION_COL_GAP;
+    const z = cz + (row - centerRow) * FACE_BOSS.BLUE_FORMATION_ROW_GAP;
+    const y = FACE_BOSS.BLUE_MINION_Y[0] + Math.random() * (FACE_BOSS.BLUE_MINION_Y[1] - FACE_BOSS.BLUE_MINION_Y[0]);
+    const p = new THREE.Vector3(x, y, z);
     const m = this.balloons.spawn(type, p);
-    // knight 默认 scale=3（Boss体型）→ 缩为正常体型
+    // knight 默认按 Boss 体型生成（spawn 时已用 Boss 半径建了超长血条）→ 缩为正常体型，并重建血条匹配新体型
     if (type === 'knight') {
       m.radius = 0.9; m.effectiveRadius = 0.9; m.hitRadius = 0.9;
       m.mesh.scale.setScalar(1);
+      // 重建血条：丢弃 spawn 时按 Boss 体型建的超长血条，改以缩小后的 effectiveRadius(0.9) 重建
+      // → 长度≈体型；扣血偏移 -(1-k)*effectiveRadius 与半宽一致，显示为从右往左缩减
+      if (m._hpBar) { m.mesh.remove(m._hpBar); m._hpBar = null; m._hpFg = null; }
+      m._makeHealthBar(m.effectiveRadius);
     }
     m.controlled = true;           // 召唤阶段受控不动
     m.isFaceSub = true;            // 标记为脸谱 Boss 子实体
     m.faceBossRef = b;             // 指向 Boss（击杀时扣 Boss 血量）
+    m._bobBaseY = y;               // 记录基准高度，供上下摆动
+    m._bobPhase = Math.random() * Math.PI * 2;
     this.faceSubEntities.push(m);
   }
 
-  // 红色阶段：0-2s 留空 → 2-6s 5旗子绕Boss公转(可击杀) → 6-15s 旗子逐个飞向玩家
+  // 红色阶段：0-2s 留空 → 2-6s 旗子绕Boss公转 → 6s 公转结束：旗子移到 Boss 两侧均匀分布 + 自身绕Z轴逆时针转90° → 8-14s 仍逐个飞向玩家
   _faceUpdateRed(dt, t) {
     const b = this.faceBoss;
     // 2-6s: 旗子出现 + 绕 Boss 公转
@@ -303,16 +328,17 @@ export class WaveManager {
         f.faceBossRef = b;
         f._flagAngleOffset = ang;
         f._flagLaunched = false;
+        f._flagPlaced = false;
         this.faceSubEntities.push(f);
         this.faceFlags.push(f);
       }
     }
-    // 公转推进（跳过已释放的旗子）
-    if (this._redSpawned && b && b.alive) {
+    // 公转推进（仅公转阶段、未放置未释放的旗子）
+    if (this._redSpawned && !this._redPlaced && b && b.alive) {
       this.faceOrbitAngle += FACE_BOSS.RED_FLAG_ORBIT_SPEED * dt;
       const r = FACE_BOSS.RED_FLAG_ORBIT_RADIUS;
       for (const f of this.faceFlags) {
-        if (!f.alive || !this.balloons.list.includes(f) || f._flagLaunched) continue;
+        if (!f.alive || !this.balloons.list.includes(f) || f._flagLaunched || f._flagPlaced) continue;
         const a = this.faceOrbitAngle + f._flagAngleOffset;
         f.mesh.position.set(
           b.mesh.position.x + Math.cos(a) * r,
@@ -321,23 +347,60 @@ export class WaveManager {
         );
       }
     }
-    // 6-10s: 每 0.8s 释放一把旗子飞向玩家
+    // 公转结束（t>=RED_FLAG_ORBIT_END）：旗子移到 Boss 左右两侧 1m 间隔排列，并自身绕 Z 轴逆时针转 90°
+    if (this._redSpawned && !this._redPlaced && t >= FACE_BOSS.RED_FLAG_ORBIT_END) {
+      this._redPlaced = true;
+      this.faceFlags.forEach((f, i) => {
+        if (!f.alive || !this.balloons.list.includes(f) || f._flagLaunched) return;
+        this._facePlaceRedFlag(f, i, b);
+      });
+    }
+    // 放置后：Boss 静止，逐帧锁定未释放旗子的两侧站位（展示用）
+    if (this._redPlaced && b && b.alive) {
+      this.faceFlags.forEach((f, i) => {
+        if (!f.alive || !this.balloons.list.includes(f) || f._flagLaunched || !f._flagPlaced) return;
+        this._facePlaceRedFlag(f, i, b);
+      });
+    }
+    // 8s 起：每间隔释放一批(2面)旗子一起飞向玩家
     if (t >= FACE_BOSS.RED_FLAG_LAUNCH_START) {
       this.faceLaunchTimer -= dt;
       if (this.faceLaunchTimer <= 0) {
         this.faceLaunchTimer = FACE_BOSS.RED_FLAG_LAUNCH_INTERVAL;
-        const next = this.faceFlags.find(f => f.alive && this.balloons.list.includes(f) && !f._flagLaunched);
-        if (next) {
-          next._flagLaunched = true;
-          next.controlled = false;
-          next.speed = FACE_BOSS.RED_FLAG_SPEED;
+        let launched = 0;
+        for (const f of this.faceFlags) {
+          if (launched >= FACE_BOSS.RED_FLAG_LAUNCH_BATCH) break;
+          if (f.alive && this.balloons.list.includes(f) && !f._flagLaunched) {
+            f._flagLaunched = true;
+            f.controlled = false;
+            f.speed = FACE_BOSS.RED_FLAG_SPEED;
+            launched++;
+          }
         }
       }
     }
   }
 
+  // 红阶段旗子定位（转圈结束后）：参数集中在 constants.js 的 FACE_BOSS
+  //   · 悬浮位置：Boss 正上方 RED_FLAG_ABOVE_Y 米，沿前后(Z)排列，相邻间隔 RED_FLAG_FB_GAP 米
+  //   · 旋转角度：每个旗子绕 Z 轴转 RED_FLAG_PLACED_ROT_Z 弧度（默认 π/2 = 逆时针 90°）
+  _facePlaceRedFlag(f, i, b) {
+    const fb = (i % 2 === 0) ? 1 : -1;                   // 偶数索引→前(+Z)，奇数→后(-Z)
+    const rank = Math.floor(i / 2);                      // 同向前/后序号 0,1,2...
+    f.mesh.position.set(
+      b.mesh.position.x,
+      b.mesh.position.y + FACE_BOSS.RED_FLAG_ABOVE_Y,    // 悬浮在 Boss 上方 RED_FLAG_ABOVE_Y 米
+      b.mesh.position.z + fb * (rank + 1) * FACE_BOSS.RED_FLAG_FB_GAP  // 前后间隔 RED_FLAG_FB_GAP 米
+    );
+    f.mesh.rotation.z = FACE_BOSS.RED_FLAG_PLACED_ROT_Z; // 绕 Z 轴旋转（默认逆时针 90°）
+    f._flagPlaced = true;
+  }
+
   // 黑色阶段：0-2s 留空(预捕获DepthSprite) → 2-4s 25分身渐进生成(r=8m圆) → 4-14s 可击杀 → 14-15s 剩余冲锋
   _faceUpdateBlack(dt, t) {
+    const b = this.faceBoss;
+    // 黑阶段：开始生成分身后 Boss 自身隐身（仅隐藏 3D 模型 bodyModel，血条保留可见以反馈血量），分身保持可见
+    if (b && b.alive && b.bodyModel && t >= FACE_BOSS.BLACK_CLONE_SPAWN_START) b.bodyModel.visible = false;
     // 2-4s: 渐进生成分身（圆心0,0,0, r=8m, DepthSprite 立绘）
     if (t >= FACE_BOSS.BLACK_CLONE_SPAWN_START && t < FACE_BOSS.BLACK_CLONE_SPAWN_END) {
       const span = FACE_BOSS.BLACK_CLONE_SPAWN_END - FACE_BOSS.BLACK_CLONE_SPAWN_START;
@@ -346,10 +409,13 @@ export class WaveManager {
         this._faceSpawnClone();
       }
     }
-    // 9-10s: 剩余分身解除 controlled 冲向玩家
+    // 阶段末前 2 秒（t>=13）：所有分身统一解除 controlled 并设置冲锋速度撞向玩家
     if (t >= FACE_BOSS.BLACK_CLONE_CHARGE_START) {
       for (const c of this.faceSubEntities) {
-        if (c.alive && this.balloons.list.includes(c) && c.controlled) c.controlled = false;
+        if (c.alive && this.balloons.list.includes(c) && c.controlled) {
+          c.controlled = false;
+          c.speed = FACE_BOSS.BLACK_CLONE_CHARGE_SPEED; // 分身原 speed=0，必须给定才会移动
+        }
       }
     }
   }
@@ -370,6 +436,7 @@ export class WaveManager {
     c.selfDamage = FACE_BOSS.BLACK_CLONE_SELF_DAMAGE;
     c.isFaceSub = true;
     c.faceBossRef = this.faceBoss;
+    // 黑色分身保持可见（隐身的是 Boss 本体，见 _faceUpdateBlack）；分身仍可被击中扣 Boss 血
     this.faceSubEntities.push(c);
   }
 
@@ -381,6 +448,7 @@ export class WaveManager {
     this.faceSubEntities = [];
     this.faceFlags = [];
     this._redSpawned = false;
+    this._redPlaced = false;
     this._blueSpawnedCount = 0;
     this._cloneSpawnedCount = 0;
     this.faceOrbitAngle = 0;

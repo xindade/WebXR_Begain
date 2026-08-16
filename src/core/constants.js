@@ -371,41 +371,50 @@ export const FACE_BOSS = {
   KILL_CLONE_HP_PCT:  0.01,  // 分身 1% = 30HP
   KILL_MINION_HP_PCT: 0.02,  // 小怪 2% = 60HP
 
-  // —— 蓝色阶段：召唤小怪（小怪在 Boss 左右两侧生成，避免被身体遮挡）——
-  BLUE_MINION_COUNT: 10,
-  BLUE_MINION_TYPES: ['basic', 'knight'],
-  BLUE_MINION_SPAWN_START: 2,    // 开始召唤 s（前段留空）
-  BLUE_MINION_ACTIVE_START: 4,   // 小怪冲锋 + Boss 摆动 s（中段不变，尾段延至阶段末）
-  BLUE_MINION_SIDE_DIST: 3.5,    // 左右侧距离 m（>Boss 有效半径 2.25m，确保不被身体遮住）
-  BLUE_MINION_SPREAD: 3.0,      // 沿身后方向随机偏移 m
+  // —— 蓝色阶段：左右两侧各一个 3×3 召唤阵（中心格=骑士，其余=basic；阵型排在 Boss 前方朝玩家）——
+  BLUE_FORMATION_ROWS: 3,       // 每侧阵型的行数（沿 Z 纵深，朝玩家递进）
+  BLUE_FORMATION_COLS: 3,       // 每侧阵型的列数（沿 X 横向）；中心格(第2行第2列) = 骑士怪
+  BLUE_FORMATION_COL_GAP: 2.5,  // 每侧阵型内：列间距(X) m
+  BLUE_FORMATION_ROW_GAP: 2.5,  // 每侧阵型内：行间距(Z) m（朝玩家递进）
+  BLUE_SIDE_OFFSET: 5,          // 左右两个侧阵中心，相对 Boss 的 X 距离 m（左 -X / 右 +X）
+  BLUE_MINION_SPAWN_START: 2,   // 开始召唤 s（前段留空）
+  BLUE_MINION_ACTIVE_START: 4,  // 小怪冲锋 + Boss 摆动 s（中段不变，尾段延至阶段末）
   BLUE_MINION_Y: [1, 2.5],      // 高度范围
   BLUE_SWAY_AMP: 1.5,           // Boss 摆动幅度 m
   BLUE_SWING_FREQ: 0.8,         // 摆动频率 Hz
+  BLUE_MINION_BOB_AMP: 0.2,     // 子实体上下摆动幅度 m（与气球一致的悬浮感）
+  BLUE_MINION_BOB_FREQ: 1.0,    // 子实体上下摆动频率 Hz
 
   // —— 红色阶段：旗子（变大3倍 + 公转半径5m）——
   RED_FLAG_COUNT: 5,
   RED_FLAG_SPAWN_START: 2,      // 旗子出现 s（前段留空）
-  RED_FLAG_LAUNCH_START: 6,    // 旗子释放 s（中段不变，尾段延至阶段末）
-  RED_FLAG_LAUNCH_INTERVAL: 1.6,  // 释放间隔 s（5面填满 6→14s，匹配15s阶段）
+  RED_FLAG_ORBIT_END: 6,        // 公转结束 s → 移到 Boss 上方、沿前后(Z)排列 + 自身绕 Z 轴逆时针转 90°
+  RED_FLAG_LAUNCH_START: 8,     // 定位后开始飞向玩家 s（停在两侧展示 2s）
+  RED_FLAG_LAUNCH_INTERVAL: 0.5,// 每批释放间隔 s
+  RED_FLAG_LAUNCH_BATCH: 1,     // 每次释放的旗子数（两个一起冲）
   RED_FLAG_ORBIT_RADIUS: 5,    // 公转半径 m（大于 Boss 有效半径，不被遮挡）
   RED_FLAG_ORBIT_SPEED: 2,    // 公转角速度 rad/s
+  RED_FLAG_FB_GAP: 3.0,         // 【转圈后·悬浮位置】前后(Z)排列间隔 m：相邻旗子沿 Z 的间距。偶索引→前(+Z)、奇索引→后(-Z)
+  RED_FLAG_ABOVE_Y: 3.0,        // 【转圈后·悬浮位置】悬浮高度 m：旗子位于 Boss 中心上方多少（Y 偏移）
+  RED_FLAG_PLACED_ROT_Z: Math.PI / 4, // 【转圈后·旋转角度】定位后旗子绕 Z 轴旋转弧度(π/2=逆时针90°)；改此即改旗子朝向，无需动代码
   RED_FLAG_Y: 2,
   RED_FLAG_HP: 200,
   RED_FLAG_SELF_DAMAGE: 5,
-  RED_FLAG_SPEED: 4,          // 释放后冲向玩家速度
+  RED_FLAG_SPEED: 8,          // 释放后冲向玩家速度
   RED_FLAG_RADIUS: 1.5,        // 碰撞半径（视觉3倍后同步，原0.5）
   RED_FLAG_SCALE: 3,          // 旗子视觉缩放（变大3倍，原1）
 
   // —— 黑色阶段：分身（体型缩小一半，原 scale 2→1）——
   BLACK_CLONE_MODEL: 'Model/黑面脸谱.glb',
-  BLACK_CLONE_COUNT: 25,
+  BLACK_CLONE_COUNT: 26,
   BLACK_CLONE_SPAWN_START: 2,
   BLACK_CLONE_SPAWN_END: 4,
   BLACK_CLONE_RING_RADIUS: 8, // 圆心(0,0,0) 半径 m
   BLACK_CLONE_Y: 1.5,
   BLACK_CLONE_HP: 120,
   BLACK_CLONE_SELF_DAMAGE: 2,
-  BLACK_CLONE_CHARGE_START: 14,  // 冲锋 s（可击杀窗口延至 4-14s，尾段 14-15s 冲锋）
+  BLACK_CLONE_CHARGE_START: 13,  // 冲锋 s（阶段末前 2 秒：13→15s 统一撞向玩家）
+  BLACK_CLONE_CHARGE_SPEED: 6,   // 冲锋速度 m/s（分身原 speed=0，冲锋时必须给定）
   BLACK_CLONE_RADIUS: 1.0,
   BLACK_CLONE_SCALE: 1,          // 缩小一半（原2）
 };
