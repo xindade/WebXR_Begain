@@ -123,13 +123,15 @@ export const CARD = {
   COUNT: 3,                 // 每次抽卡展示数量
   REFRESH_BASE_COST: 20,    // 刷新基础积分，逐次翻倍
   DURATION: 15,             // 选项卡存在秒数（超时自动随机选）
-  WIDTH: 0.5,
-  HEIGHT: 0.3,
-  SPACING: 0.8,             // 卡片沿 X 轴均匀间距 m
+  // 卡面竖版（PNG 长边 1024，宽 578，aspect ≈ 0.564）
+  WIDTH: 0.4,
+  HEIGHT: 0.71,
+  SPACING: 0.75,            // 卡片沿 X 轴均匀间距 m（卡窄了，略紧）
   // —— 固定世界坐标摆放（射击选卡版）——
   ROW_Z: -4,                // 卡片固定世界 Z（场地底边）
   ROW_Y: 2,                 // 卡片固定世界 Y（比原方案提高 1m）
-  BALLOON_DY: 0.45,         // 气球在卡片上方偏移 m
+  // 卡变高了，气球必须抬高到卡顶之上：HEIGHT/2 + BALLOON_R + 留白 ≈ 0.355+0.18+0.21=0.745
+  BALLOON_DY: 0.75,         // 气球在卡片上方偏移 m
   BALLOON_R: 0.18,          // 气球可被击中半径 m
   BALLOON_BOB: 0.06,        // 气球上下浮动幅度 m
   RESOLVE_DUR: 2,           // 其余卡/气球向上飞走耗时 s
