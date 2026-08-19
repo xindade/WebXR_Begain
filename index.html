@@ -20,6 +20,15 @@
       cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.4);
     }
     #enter-vr-btn:disabled { opacity: .6; cursor: default; }
+
+    /* ── 顶部枪械模式切换按钮（预览界面）── */
+    #gun-mode-btn {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      z-index: 40; padding: 9px 20px; font-size: 14px; font-family: sans-serif; font-weight: 600;
+      border: none; border-radius: 10px; background: #6c5ce7; color: #fff;
+      cursor: pointer; box-shadow: 0 6px 18px rgba(0, 0, 0, .4); white-space: nowrap;
+    }
+    #gun-mode-btn.full { background: #00b894; }
     /* 特殊关居中按钮(3/9/12/15)已移除，全关卡入口统一用右侧 #level-panel 面板 */
     #status-msg {
       position: fixed; bottom: 304px; left: 0; right: 0; text-align: center;
@@ -104,6 +113,7 @@
 </head>
 <body>
   <canvas id="app"></canvas>
+  <button id="gun-mode-btn">🔫 枪支：初始（1弹道 / 2发每秒）</button>
   <div id="status-msg"></div>
   <div id="loading-overlay">
     <div id="loading-text">正在加载天空资源…</div>

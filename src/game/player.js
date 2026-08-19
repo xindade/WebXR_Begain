@@ -1,5 +1,9 @@
 import * as THREE from 'three';
-import { SHOOT, BUDDHA, SHIP } from '../core/constants.js';
+import { SHOOT, BUDDHA, SHIP, GUN_MODES } from '../core/constants.js';
+
+// 模块级复用向量：避免每发子弹分配新对象（契合热循环 GC 优化）
+const _WORLD_UP = new THREE.Vector3(0, 1, 0);
+const _right = new THREE.Vector3();
 
 // 玩家：属性成长、飞船血量、大招（如来神掌）
 export class Player {
@@ -18,10 +22,13 @@ export class Player {
     this.rig.add(this.ship);
   }
 
-  reset() {
+  reset(gunMode = 'preview') {
+    const g = GUN_MODES[gunMode] || GUN_MODES.preview;
     this.atk = 100;
-    this.shootCooldown = SHOOT.COOLDOWN;
-    this.multiShotChance = 0;
+    this.shootCooldown = g.cooldown;   // 射击冷却 ms（实际节流在 input.js，player 仅用于存档快照）
+    this.shotCount = g.shotCount;      // 每发子弹的弹道数（fire 确定性扇形）
+    this.forceSingleShot = false;      // 抽卡等需要精确选靶时强制单发（由外部置位）
+    this.multiShotChance = 0;          // 已弃用：随机多重射击改为 shotCount 确定性
     this.explosion = 0;
     this.maxHp = SHIP.MAX_HP;
     this.hp = SHIP.MAX_HP;
@@ -45,14 +52,24 @@ export class Player {
     if (this.shieldTime > 0) this.shieldTime -= dt;
   }
 
-  // 发射：返回是否真的开了火（供音效）
+  // 发射：按 shotCount 确定性扇形铺开（1=单发，>1=多弹道），返回是否真的开了火（供音效）
   fire(shot, bullets, audio) {
-    bullets.spawn(shot.position, shot.direction, this.atk);
-    if (this.multiShotChance > 0 && Math.random() * 100 < this.multiShotChance) {
-      const d = shot.direction.clone();
-      d.x += (Math.random() - 0.5) * 0.12;
-      d.y += (Math.random() - 0.5) * 0.12;
-      bullets.spawn(shot.position, d, this.atk);
+    const n = this.forceSingleShot ? 1 : (this.shotCount || 1);
+    if (n <= 1) {
+      bullets.spawn(shot.position, shot.direction, this.atk);
+    } else {
+      const spread = SHOOT.SPREAD_ANGLE;
+      const dir = shot.direction.clone().normalize();
+      // 水平向右向量（与瞄准方向垂直、y=0）→ 纯水平扇形，不受俯仰/偏航影响
+      _right.crossVectors(dir, _WORLD_UP);
+      _right.y = 0;
+      if (_right.lengthSq() < 1e-6) _right.set(1, 0, 0); // 瞄正上/正下时退化
+      _right.normalize();
+      for (let k = 0; k < n; k++) {
+        const t = (k / (n - 1)) * 2 - 1; // -1..1 均匀分布
+        const d = dir.clone().addScaledVector(_right, t * spread);
+        bullets.spawn(shot.position, d, this.atk);
+      }
     }
     audio.playShoot();
   }

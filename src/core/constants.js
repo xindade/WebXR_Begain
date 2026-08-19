@@ -25,13 +25,18 @@ export const MOVE = {
 };
 
 export const SHOOT = {
-  COOLDOWN: 150,    // 射击冷却 ms
+  COOLDOWN: 60,     // 射击冷却 ms（60 ≈ 16 发/秒，原 150）
   BULLET_SPEED: 15, // 子弹速度 m/s（子弹飞行速度）
   BULLET_LIFE: 2,   // 子弹存活时间 s
-  BULLET_POOL_SIZE: 20,
+  BULLET_POOL_SIZE: 500, // 同时存在的子弹上限（InstancedMesh 单 Draw Call 承载）
 
   // ===== 子弹外观与出膛（随时可调，改完刷新页面即生效）=====
   BULLET_RADIUS: 0.02,   // 子弹球体半径 m（越大越粗）
+  BULLET_COLOR: 0xffe066, // 子弹颜色（MeshBasicMaterial，发光黄，不吃光照）
+
+  // ===== 多重射击 / 霰弹（player.fire 扇形散射）=====
+  SPREAD_COUNT: 3,    // multiShot 触发时额外发射的扇形子弹数
+  SPREAD_ANGLE: 0.18, // 扇形半角（弧度，约 10°），横向铺开割草
 
   // ===== 右手柄射线 / 子弹方向俯角（VR 手持 AK 枪用）=====
   // 手柄默认瞄准方向是本地 -Z（正前方）。绕 X 轴旋转此角度调整俯仰：
@@ -47,6 +52,13 @@ export const SHOOT = {
   RAY_COLOR: 0xff2222,   // 右手射线颜色（红）
   RAY_LENGTH: 5,         // 射线可见长度 m
   RAY_COLOR_LEFT: 0x66ccff, // 左手射线颜色（青，保持原样）
+};
+
+// 枪械模式（预览界面按钮切换）：preview=初始态，full=满状态（点击按钮进入游戏）
+// shotCount = 每发子弹的弹道数（player.fire 确定性扇形），cooldown = 射击冷却 ms（input.js 节流）
+export const GUN_MODES = {
+  preview: { shotCount: 1, cooldown: 500 },  // 1 弹道 / 2 发每秒
+  full:    { shotCount: 5, cooldown: 100 },  // 5 弹道 / 10 发每秒
 };
 
 export const BALLOON = {

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MOVE, SHOOT } from '../core/constants.js';
+import { MOVE, SHOOT, GUN_MODES } from '../core/constants.js';
 
 // 输入抽象层：一套接口同时支持
 //  - 桌面：WASD/方向键移动 + 鼠标视角(pointer lock) + 左键射击 + F 大招
@@ -27,6 +27,7 @@ export class InputManager {
     this.shots = []; // 本帧待发射：{position, direction}
 
     this._cooldowns = { desktop: 0, left: 0, right: 0 };
+    this._gunCooldown = (GUN_MODES.preview || { cooldown: SHOOT.COOLDOWN }).cooldown; // 射击冷却 ms（由 setGunMode 按枪械模式切换）
     this._skillQueued = false;
 
     // handedness -> { controller, prevTrigger, prevGrip, prevAB }
@@ -198,13 +199,19 @@ export class InputManager {
     outPos.addScaledVector(outDir, SHOOT.SPAWN_OFFSET);
   }
 
+  // 枪械模式切换：preview=初始态, full=满状态（由 game.start 注入，决定射击冷却）
+  setGunMode(mode) {
+    const g = GUN_MODES[mode] || GUN_MODES.preview;
+    if (g) this._gunCooldown = g.cooldown;
+  }
+
   _tryShootDesktop(dt) {
     this._cooldowns.desktop -= dt * 1000;
     if (this.desktopShooting && !this.world.isPresenting && this._cooldowns.desktop <= 0) {
       this.camera.getWorldPosition(_v);
       this._forwardOf(this.camera, _v2);
       this.shots.push({ position: _v.clone(), direction: _v2.clone() });
-      this._cooldowns.desktop = SHOOT.COOLDOWN;
+      this._cooldowns.desktop = this._gunCooldown;
     }
   }
 
@@ -240,7 +247,7 @@ export class InputManager {
           if (ctrl && this._cooldowns.right <= 0) {
             this._rightAim(ctrl, _v, _v2);   // 方向含俯角、出生点含枪口偏移（与红色射线一致）
             this.shots.push({ position: _v.clone(), direction: _v2.clone() });
-            this._cooldowns.right = SHOOT.COOLDOWN;
+            this._cooldowns.right = this._gunCooldown;
           }
         }
         if (ctrl) ctrl.userData.prevTrigger = trigger;

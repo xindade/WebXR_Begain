@@ -50,6 +50,7 @@ export class Game {
     this.rightGun = new RightGun(world.scene);   // 右手柄 AK 枪（VR 手持，纯视觉）
 
     this.state = 'menu';
+    this.gunMode = 'preview';   // 枪械模式：preview=初始态, full=满状态（由预览界面按钮经 start() 注入）
     this.levelIndex = 0;
     this.laser = null;       // 激光关实例（仅第3关）
     this.laserMode = false;  // 当前是否处于激光关
@@ -84,8 +85,10 @@ export class Game {
     this.pageLog?.log(msg);
   }
 
-  start(atIndex = 0) {
-    this.player.reset();
+  start(atIndex = 0, gunMode = 'preview') {
+    this.gunMode = gunMode;
+    this.player.reset(gunMode);
+    this.input?.setGunMode(gunMode);
     this.balloons.clear();
     this.bullets.clear();
     this.score = 0;
@@ -326,6 +329,7 @@ export class Game {
             }
           }
         }
+        this.bullets.sync(); // 九宫格命中释放后刷新实例矩阵
         this.flipGrid.update(dt);
         if (!this.flipGrid.victory && this.flipGrid.checkWin()) this.flipGrid.beginVictory();
         if (this.flipGrid.victoryDone) { this._finishFlipLevel(true); return; }
@@ -466,7 +470,8 @@ export class Game {
         if (!balloon.alive) continue; // 跳过已隐藏的龙气球（复活前），防重复触发
         // 幽灵怪隐身期间无视子弹（仅蓄力显形时可被击中）
         if (balloon.behavior === 'ghost' && !balloon.revealed) continue;
-        if (b.mesh.position.distanceTo(balloon.mesh.position) < balloon.hitRadius + 0.12) {
+        const rr = balloon.hitRadius + 0.12;
+        if (b.pos.distanceToSquared(balloon.mesh.position) < rr * rr) { // 平方距离避免开方
           // 盾兵怪：盾牌当前朝向玩家且在挡弹夹角内 → 挡下子弹（不扣血）
           if (balloon.behavior === 'shield') {
             const sb = balloon.getShieldBlock();
@@ -477,7 +482,7 @@ export class Game {
                 this._tmp2.normalize();
                 if (this._tmp2.dot(sb.dir) > Math.cos(sb.arc)) {
                   this.bullets.release(b);
-                  this._spawnExplosionFx(b.mesh.position, 0.2); // 挡弹火花（_spawnExplosionFx 内部 copy，无需 clone）
+                  this._spawnExplosionFx(b.pos, 0.2); // 挡弹火花（_spawnExplosionFx 内部 copy，无需 clone）
                   break; // 子弹被盾挡下，退出内循环（修复原 continue 导致的双释放 bug）
                 }
               }
@@ -491,6 +496,7 @@ export class Game {
         }
       }
     }
+    this.bullets.sync(); // 碰撞释放后立刻刷新实例矩阵（避免命中子弹滞留一帧）
     // 气球 vs 飞船碰撞已移除 → 改由 _checkExplosions() 处理
   }
 
@@ -817,6 +823,7 @@ export class Game {
     this._clearExplosions();
     this.state = 'card';
     this.bullets.clear(); // 清掉上一波残留子弹，避免误击卡气球
+    this.player.forceSingleShot = true; // 抽卡期间强制单发，避免多重射击扇形误选邻卡
     this.log('波次清空，选择强化');
     const pp = this._playerPos();
     this.world.camera.getWorldDirection(this._fwd);
@@ -846,9 +853,11 @@ export class Game {
     this.bullets.update(dt);
     for (const shot of this.input.shots) this.player.fire(shot, this.bullets, this.audio);
     this.cards.update(dt, this.bullets, this._playerPos().clone());
+    this.bullets.sync(); // 抽卡模式子弹命中后刷新实例矩阵
   }
 
   _onCardDone() {
+    this.player.forceSingleShot = false; // 退出抽卡，恢复枪械模式弹道数
     this.hud.setScore(this.score); // game.score 已由抽卡实时维护
     this.hud.clearMessage();
     this.levelIndex++;

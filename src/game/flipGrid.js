@@ -104,7 +104,7 @@ export class FlipGrid {
     // 先检测重置气球
     if (this.resetBalloon) {
       this.resetBalloon.getWorldPosition(wp);
-      if (bullet.mesh.position.distanceTo(wp) < FLIP.HIT_R) {
+      if (bullet.pos.distanceTo(wp) < FLIP.HIT_R) {
         this._resetPulse = 0.3;  // 触发命中脉冲反馈
         return { reset: true };
       }
@@ -115,7 +115,7 @@ export class FlipGrid {
         if (cell.invincible) continue;
         const m = this._frontMeshOf(cell);
         m.getWorldPosition(wp);
-        if (bullet.mesh.position.distanceTo(wp) < FLIP.HIT_R) {
+        if (bullet.pos.distanceTo(wp) < FLIP.HIT_R) {
           this.flip(r, c);
           return { r, c };
         }
