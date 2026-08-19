@@ -8,6 +8,27 @@ import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
 
 const _up = new THREE.Vector3(0, 1, 0);
 
+// 抽卡 PNG 纹理预加载：返回 {atk,fireRate,multiShot} -> THREE.Texture
+// 卡图为竖版（长边 1024），加载时设置 SRGBColorSpace + 各向异性，避免边缘锐利/色彩偏灰
+// onProgress(loaded, total)：可选回调；PNG 很小（~370KB/张），总耗时 < 1s
+const _cardLoader = new THREE.TextureLoader();
+const CARD_IMAGE_IDS = ['atk', 'fireRate', 'multiShot'];
+export function preloadCardImages(onProgress) {
+  const map = {};
+  let done = 0;
+  return Promise.all(CARD_IMAGE_IDS.map((id) => _cardLoader.loadAsync(`assets/cards/${id}.png`).then((tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.generateMipmaps = true;
+    map[id] = tex;
+    done++;
+    if (onProgress) onProgress(done, CARD_IMAGE_IDS.length);
+    return tex;
+  }))).then(() => map);
+}
+
 function rollRarity(weights) {
   // weights: 形如 {white:60, blue:40} 的覆盖权重（来自 LEVEL_PLANS 的 cards）；缺省用全局 RARITY
   const entries = weights
@@ -20,16 +41,21 @@ function rollRarity(weights) {
 }
 
 function makeCardTexture(title, sub, color) {
+  // 竖版画布（aspect 256/456≈0.561 ≈ CARD.WIDTH/HEIGHT 0.4/0.71≈0.563，文字不会被拉伸）
+  const W = 256, H = 456;
   const cv = document.createElement('canvas');
-  cv.width = 256; cv.height = 160;
+  cv.width = W; cv.height = H;
   const x = cv.getContext('2d');
-  x.fillStyle = '#1b1b2f'; x.fillRect(0, 0, 256, 160);
-  x.strokeStyle = color; x.lineWidth = 8; x.strokeRect(6, 6, 244, 148);
+  x.fillStyle = '#1b1b2f'; x.fillRect(0, 0, W, H);
+  x.strokeStyle = color; x.lineWidth = 8; x.strokeRect(6, 6, W - 12, H - 12);
+  // 文字居中靠上（卡面上 1/3 区域）
   x.fillStyle = color; x.font = 'bold 30px sans-serif'; x.textAlign = 'center';
-  x.fillText(title, 128, 60);
+  x.fillText(title, W / 2, 210);
   x.fillStyle = '#fff'; x.font = '22px sans-serif';
-  x.fillText(sub, 128, 110);
-  return new THREE.CanvasTexture(cv);
+  x.fillText(sub, W / 2, 270);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 // 创建「气球」（球体 + 细绳），作为一个 Group 便于整体移动
@@ -54,11 +80,14 @@ function makeBalloon(colorHex) {
 }
 
 export class CardDraft {
-  constructor(scene) {
+  constructor(scene, cardTextures = {}) {
     this.scene = scene;
     this.group = new THREE.Group();
     this.scene.add(this.group);
     this.group.visible = false;
+    // PNG 卡面纹理表 {atk, fireRate, multiShot} -> THREE.Texture
+    // 未加载完时对应键缺失，_makeCardMesh 自动回落到 canvas 文字卡
+    this.cardTextures = cardTextures;
 
     this.items = [];          // 每项 { holder, card, balloon, pick, invincible, flying, flyVel, exploded, locked }
     this.refreshCost = CARD.REFRESH_BASE_COST;
@@ -82,6 +111,12 @@ export class CardDraft {
     this._lightN = 0;
 
     this._playerPos = new THREE.Vector3(); // 光点飞行目标（玩家位置，触发时记录）
+  }
+
+  // 由 Game.setCardTextures 注入预加载好的 PNG 纹理表
+  // 未注入时 _makeCardMesh 自动回落到 canvas 文字卡（heal/cooldownReduction/refresh/技能卡）
+  setCardTextures(map) {
+    this.cardTextures = map || {};
   }
 
   open(playerPos, forward, state, onDone) {
@@ -121,7 +156,7 @@ export class CardDraft {
       for (const id of this._state.fixedSkills) {
         const s = SKILL_CARDS.find(c => c.id === id);
         if (!s) continue;
-        picks.push({ kind: 'skill', def: s, rarity: s.rarity, label: s.label, sub: s.desc, color: s.color });
+        picks.push({ kind: 'skill', def: s, rarity: s.rarity, label: s.label, sub: s.desc, color: s.color, image: null });
       }
     } else {
       // 普通关：只出属性卡 + 刷新卡；红技能卡（如来神掌/金箍棒/定身咒/金钟罩）仅第三关 fixedSkills 出现
@@ -130,7 +165,10 @@ export class CardDraft {
         const forced = this._forceAtkPurple && i === 0 && atkAttr;
         const attr = forced ? atkAttr : ATTR_TYPES[Math.floor(Math.random() * ATTR_TYPES.length)];
         const rar = forced ? 'purple' : rollRarity(this._rarity || undefined);
-        picks.push({ kind: 'attr', def: attr, rarity: rar, label: attr.label, sub: `+${attr.values[rar]}`, color: RARITY[rar].color });
+        // 图卡（atk/fireRate/multiShot）走 PNG：sub 用 desc 作 fallback 文字；color 给个中性边框色
+        const sub = attr.image ? (attr.desc || '') : `+${attr.values[rar]}`;
+        const color = attr.image ? '#7ed8ff' : RARITY[rar].color;
+        picks.push({ kind: 'attr', def: attr, rarity: rar, label: attr.label, sub, color, image: attr.image || null });
       }
       this._forceAtkPurple = false; // 仅首张卡强制一次（refresh 不再强制）
       // 刷新卡（第 4 个可射击气球）；积分不足以支付当前刷新费时锁定（不可击中 + 变暗）
@@ -139,6 +177,7 @@ export class CardDraft {
         label: '刷新',
         sub: canAfford ? `${this.refreshCost}分` : '积分不足',
         color: '#888',
+        image: null,
       });
     }
 
@@ -152,7 +191,7 @@ export class CardDraft {
       holder.position.set(x, CARD.ROW_Y, CARD.ROW_Z);
       this.group.add(holder);
 
-      const card = this._makeCardMesh(p.label, p.sub, p.color);
+      const card = this._makeCardMesh(p.label, p.sub, p.color, p.image);
       card.position.set(0, 0, 0);
       holder.add(card);              // 必须先挂进 holder，world 坐标才正确
       card.lookAt(0, CARD.ROW_Y, 0); // 再朝向坐标原点（保持竖直可读，正面朝玩家）
@@ -161,10 +200,14 @@ export class CardDraft {
       balloon.position.set(0, CARD.BALLOON_DY, 0); // 相对 holder 上方
       holder.add(balloon);
 
+      // 共享 PNG 纹理标记：_clearItems 据此判断是否可 dispose map
+      // （多张同图卡复用同一个 THREE.Texture，dispose 会破坏后续抽卡）
+      const isSharedMap = !!(p.image && this.cardTextures[p.image]);
       const item = {
         holder, card, balloon, pick: p,
         invincible: false, flying: false, flyVel: 0, exploded: false,
         locked: p.kind === 'refresh' && !canAfford,
+        isSharedMap,
       };
 
       if (item.locked) {
@@ -176,10 +219,12 @@ export class CardDraft {
     });
   }
 
-  _makeCardMesh(title, sub, color) {
+  _makeCardMesh(title, sub, color, imageKey) {
+    // 优先用预加载的 PNG 纹理；缺失则回落到 canvas 文字卡（heal/cooldownReduction/refresh/技能卡）
+    const tex = (imageKey && this.cardTextures[imageKey]) || makeCardTexture(title, sub, color);
     const mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(CARD.WIDTH, CARD.HEIGHT),
-      new THREE.MeshBasicMaterial({ map: makeCardTexture(title, sub, color), transparent: true })
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true })
     );
     return mesh;
   }
@@ -188,7 +233,8 @@ export class CardDraft {
     for (const it of this.items) {
       this.group.remove(it.holder);
       it.card.geometry.dispose();
-      it.card.material.map?.dispose();
+      // 共享 PNG 纹理不能 dispose（其他同图卡还在用）；canvas 独占纹理可以释放
+      if (!it.isSharedMap) it.card.material.map?.dispose();
       it.card.material.dispose();
       it.balloon.traverse((o) => {
         if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }

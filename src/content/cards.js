@@ -1,30 +1,40 @@
-// 抽卡卡牌配置（知识库「卡片」笔记，已统一两处矛盾）
-// 属性类：攻击力/射速/多重/爆炸/回血/减冷却
+// 抽卡卡牌配置（知识库「卡片」笔记）
+// 属性类：攻击力/射速/多重(新图) + 回血/减冷却（保留 4 档稀有度）
 // 技能类（红色）：如来神掌 / 金钟罩 / 金箍棒 / 定身咒
+//
+// atk / fireRate / multiShot 改用新 PNG 卡图（assets/cards/{id}.png），单值效果（不再走 4 档）
+// 爆炸卡已删除（爆炸系统全链路移除）
 
 import { SHOOT, BUDDHA } from '../core/constants.js';
 
 // 每个属性：各稀有度增量 + apply(player)
+// 有 image 字段的条目：用新 PNG 作为卡面纹理，单值效果（rarity 仅用于背景色，不再影响数值）
 export const ATTR_TYPES = [
   {
-    id: 'atk', label: '攻击力', desc: '子弹伤害',
-    values: { white: 10, blue: 20, purple: 50, gold: 100 },
-    apply: (p, v) => { p.atk += v; },
+    id: 'atk',
+    label: '攻击力加倍',
+    desc: '攻击力×2',
+    image: 'atk',  // 对应 assets/cards/atk.png，由 preloadCardImages 预加载
+    values: { white: 0, blue: 0, purple: 0, gold: 0 },
+    apply: (p) => { p.atk *= 2; },
   },
   {
-    id: 'fireRate', label: '射速', desc: '射击更快',
-    values: { white: 20, blue: 40, purple: 100, gold: 200 },
-    apply: (p, v) => { p.shootCooldown = Math.max(SHOOT.COOLDOWN * 0.25, p.shootCooldown - v); },
+    id: 'fireRate',
+    label: '攻击速度加倍',
+    desc: '射速×2',
+    image: 'fireRate',
+    values: { white: 0, blue: 0, purple: 0, gold: 0 },
+    // 冷却减半，封底为原始 COOLDOWN 的 25%（避免无下限卡死）
+    apply: (p) => { p.shootCooldown = Math.max(SHOOT.COOLDOWN * 0.25, p.shootCooldown * 0.5); },
   },
   {
-    id: 'multiShot', label: '多重', desc: '概率额外弹',
-    values: { white: 10, blue: 20, purple: 50, gold: 100 },
-    apply: (p, v) => { p.multiShotChance = Math.min(100, p.multiShotChance + v); },
-  },
-  {
-    id: 'explosion', label: '爆炸', desc: '击杀范围伤害',
-    values: { white: 0.2, blue: 0.4, purple: 1, gold: 2 },
-    apply: (p, v) => { p.explosion = Math.min(3, p.explosion + v); },
+    id: 'multiShot',
+    label: '额外发射一枚子弹',
+    desc: '每发+1子弹',
+    image: 'multiShot',
+    values: { white: 0, blue: 0, purple: 0, gold: 0 },
+    // 确定性 +1（与现 fire() 的水平扇形对齐，可多次叠加）
+    apply: (p) => { p.shotCount = (p.shotCount || 1) + 1; },
   },
   {
     id: 'heal', label: '回血', desc: '恢复并提升上限',

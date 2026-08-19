@@ -28,8 +28,7 @@ export class Player {
     this.shootCooldown = g.cooldown;   // 射击冷却 ms（实际节流在 input.js，player 仅用于存档快照）
     this.shotCount = g.shotCount;      // 每发子弹的弹道数（fire 确定性扇形）
     this.forceSingleShot = false;      // 抽卡等需要精确选靶时强制单发（由外部置位）
-    this.multiShotChance = 0;          // 已弃用：随机多重射击改为 shotCount 确定性
-    this.explosion = 0;
+    this.multiShotChance = 0;          // 已弃用：随机多重射击改为 shotCount 确定性（爆炸系统已删除）
     this.maxHp = SHIP.MAX_HP;
     this.hp = SHIP.MAX_HP;
     this.buddhaUnlocked = false;     // 第 0 波后由游戏默认解锁

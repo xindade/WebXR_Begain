@@ -8,6 +8,7 @@ import { InputManager } from './vr/input.js';
 import { WristUI } from './vr/wrist-ui.js';
 import { Game } from './game/game.js';
 import { LEVELS } from './content/levels.js';
+import { preloadCardImages } from './game/cardDraft.js';
 
 window.__pageLog?.info('[main] 模块开始执行（imports 已解析）');
 
@@ -36,6 +37,12 @@ const world = new World(canvas);
     dragonFrac = 0.1 + 0.9 * (total ? Math.min(1, loaded / total) : 0);
   }).then(() => { dragonFrac = 1; })
     .catch(() => { dragonFrac = 1; });
+
+  // 抽卡 PNG（3 张共 ~1.1MB，太小不进进度条；加载完直接注入 game）
+  // 失败也不影响：CardDraft 自动回落到 canvas 文字卡
+  const cardTask = preloadCardImages()
+    .then((texMap) => { game.setCardTextures(texMap); })
+    .catch(() => {});
 
   // 真实总进度：天空与龙资源各占一半权重
   const realFrac = () => {
@@ -75,7 +82,7 @@ const world = new World(canvas);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
-  Promise.all([...skyTasks, dragonTask]).catch(() => {}); // 触发加载（帧循环独立读取进度）
+  Promise.all([...skyTasks, dragonTask, cardTask]).catch(() => {}); // 触发加载（帧循环独立读取进度）
 })();
 
 const hud = new HUD();

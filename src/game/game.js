@@ -510,8 +510,9 @@ export class Game {
       // 威胁分 ≈ 血量 × 速度 × (1+自爆/5)，与 difficultyController 的偏好计算口径一致
       threat += (t.hp / 100) * Math.max(t.speed || 0, 0.1) * (1 + (t.selfDamage || 0) / 5);
     }
-    // 玩家综合战力：基础攻击 × (1+多重%) × (1+爆炸半径/50) × (大招解锁?1.5:1)
-    const power = p.atk * (1 + p.multiShotChance / 100) * (1 + p.explosion / 50) * (p.buddhaUnlocked ? 1.5 : 1);
+    // 玩家综合战力：基础攻击 × (1+多重%) × (大招解锁?1.5:1)
+    // 爆炸系统已删除（p.explosion 不再存在）
+    const power = p.atk * (1 + p.multiShotChance / 100) * (p.buddhaUnlocked ? 1.5 : 1);
     return {
       hpPct: p.hp / p.maxHp,
       power,
@@ -578,18 +579,7 @@ export class Game {
       for (const m of balloon.minions) if (m.alive) this.balloons.remove(m);
       balloon.minions.length = 0;
     }
-    // 爆炸范围伤害
-    if (this.player.explosion > 0) {
-      for (let i = this.balloons.list.length - 1; i >= 0; i--) {
-        const other = this.balloons.list[i];
-        if (other === balloon) continue;
-        if (other.isDragonPart) continue; // 不让爆炸连锁白嫖龙部件
-        if (!other.alive) continue;      // 已死亡：跳过，防止爆炸链无限递归
-        if (other.mesh.position.distanceTo(balloon.mesh.position) < this.player.explosion) {
-          if (other.takeDamage(this.player.atk * 0.5)) this._onKilled(other);
-        }
-      }
-    }
+    // 爆炸范围伤害已移除（爆炸卡删除）
     this.balloons.remove(balloon);
   }
 
@@ -779,7 +769,6 @@ export class Game {
       atk: p.atk,
       shootCooldown: p.shootCooldown,
       multiShotChance: p.multiShotChance,
-      explosion: p.explosion,
       maxHp: p.maxHp,
       hp: p.hp,
       buddhaUnlocked: p.buddhaUnlocked,
@@ -797,7 +786,6 @@ export class Game {
     p.atk = s.atk;
     p.shootCooldown = s.shootCooldown;
     p.multiShotChance = s.multiShotChance;
-    p.explosion = s.explosion;
     p.maxHp = s.maxHp;
     p.hp = s.hp;
     p.buddhaUnlocked = s.buddhaUnlocked;
