@@ -238,9 +238,9 @@ export class CardDraft {
           const bx = it.holder.position.x;
           const by = it.holder.position.y + CARD.BALLOON_DY;
           const bz = it.holder.position.z;
-          const dx = b.mesh.position.x - bx;
-          const dy = b.mesh.position.y - by;
-          const dz = b.mesh.position.z - bz;
+          const dx = b.pos.x - bx;
+          const dy = b.pos.y - by;
+          const dz = b.pos.z - bz;
           if (dx * dx + dy * dy + dz * dz < (CARD.BALLOON_R + 0.12) ** 2) {
             bullets.release(b);
             this._triggerSelect(it, playerPos);

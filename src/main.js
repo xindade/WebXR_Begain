@@ -90,11 +90,25 @@ const wristUI = new WristUI(); // 手腕面板：右手战斗信息 / 左手日�
 const pageLog = window.__pageLog || null;
 game.setSystems(audio, input, wristUI, pageLog);
 
+// ── 顶部枪械模式切换（预览界面按钮）：未点=初始态，点击=满状态 ──
+let gunFull = false;
+const gunBtn = document.getElementById('gun-mode-btn');
+if (gunBtn) {
+  gunBtn.onclick = () => {
+    gunFull = !gunFull;
+    gunBtn.textContent = gunFull
+      ? '🔫 枪支：满状态（5弹道 / 10发每秒）'
+      : '🔫 枪支：初始（1弹道 / 2发每秒）';
+    gunBtn.classList.toggle('full', gunFull);
+  };
+}
+const gunMode = () => (gunFull ? 'full' : 'preview');
+
 // VR 进入即开局（pendingStartIndex 决定从第几关开始，默认第 1 关）
 let pendingStartIndex = 0;
-world.xr.addEventListener('sessionstart', () => { pageLog?.resumeScroll(); if (game.state === 'menu') game.start(pendingStartIndex); });
+world.xr.addEventListener('sessionstart', () => { pageLog?.resumeScroll(); if (game.state === 'menu') game.start(pendingStartIndex, gunMode()); });
 // 桌面：开始按钮（idx 0=第1关，2=第3关激光测试）
-hud.onStart((idx = 0) => game.start(idx));
+hud.onStart((idx = 0) => game.start(idx, gunMode()));
 
 // ── 自定义 PICO 兼容 VR 进入按钮（参考 vr-controller-kit skill）──
 // 不使用 three 自带 VRButton：改用 requiredFeatures:['local-floor'] + 无参回退，
@@ -177,11 +191,12 @@ function levelShortTag(lv) {
 async function startLevelAt(idx) {
   audio.unlock();
   pendingStartIndex = idx;
+  const mode = gunMode();
   const xrOk = (navigator.xr && navigator.xr.isSessionSupported)
     ? await navigator.xr.isSessionSupported('immersive-vr').catch(() => false)
     : false;
-  if (xrOk) enterVR();      // 头显：进 VR 后 sessionstart 触发 game.start(pendingStartIndex)
-  else game.start(idx);     // 桌面：直接开局预览
+  if (xrOk) enterVR();      // 头显：进 VR 后 sessionstart 触发 game.start(pendingStartIndex, mode)
+  else game.start(idx, mode);     // 桌面：直接开局预览
 }
 (function buildLevelPanel() {
   const panel = document.getElementById('level-panel');
