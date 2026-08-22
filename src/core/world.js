@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MOVE, SKY_BRIGHTNESS, SKY_EXR_BRIGHTNESS } from './constants.js';
+import { MOVE, SKY_BRIGHTNESS, SKY_EXR_BRIGHTNESS, PANO_DOME_YAW } from './constants.js';
 import { makeTextSprite } from './canvasTexture.js';
 import { EXRLoader } from '../../vendor/EXRLoader.js';
 
@@ -157,6 +157,7 @@ export class World {
         this._skydome = new THREE.Mesh(geo, mat);
         this._skydome.renderOrder = -1;           // 最先绘制，作为背景层
         this._skydome.frustumCulled = false;      // 永远填满视野，勿被剔除
+        this._skydome.rotation.y = PANO_DOME_YAW; // 把 360 照片正前(图中心)对齐玩家初始朝向(-Z)
         this.scene.add(this._skydome);
       }
       this._skydome.material.map = tex;
