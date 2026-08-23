@@ -10,9 +10,10 @@ import { FlipGrid } from './flipGrid.js';
 import { RightGun } from '../vr/rightGun.js';
 import { DragonBoss } from './dragonLevel.js';
 import { OpeningModel } from './openingModel.js';
-import { LEVELS, isLaser } from '../content/levels.js';
+import { Portal } from './portal.js';
+import { LEVELS, isLaser, isBoss } from '../content/levels.js';
 import { LEVEL_PLANS } from '../content/spawnPlans.js';
-import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL } from '../core/constants.js';
 import { setRenderer } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 
@@ -61,6 +62,7 @@ export class Game {
     this.flipTimer = 0;      // 180s 倒计时剩余秒
     this.dragon = null;      // 第十二关龙 Boss 实例（boss==='dragon' 时存在）
     this.openingModel = null; // 第3/9/15关开场动画模型（魔术师），10秒后自动移除
+    this._portals = [];        // 小怪关传送门装饰（非 boss、非激光机制关，前后左右各 20m）
     this.score = 0;
     this._buddhaFx = null;
     this._cardState = null;
@@ -118,6 +120,7 @@ export class Game {
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon)   { this.dragon.dispose();   this.dragon = null; }
     if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清开场动画
+    this._clearPortals(); // 清传送门装饰（防跨关/回菜单残留）
     // 清理实体
     this.balloons.clear();
     this.bullets.clear();
@@ -155,6 +158,7 @@ export class Game {
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon) { this.dragon.dispose(); this.dragon = null; }
     if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清上一关残留的开场动画
+    this._clearPortals(); // 清上一关残留的传送门装饰
     this.gridPhase = false;
     this.flipPhase = false; this.flipTimer = 0;
     this._lastCell = 0;
@@ -173,6 +177,8 @@ export class Game {
       this.openingModel = new OpeningModel(this.world.scene, new THREE.Vector3(0, 1.4, -5));
       this.openingModel.start();
     }
+    // 小怪关（非 boss、非激光机制）：场地中心前后左右各 20m 放传送门装饰（自带动画+上下浮动）
+    if (!isBoss(lv) && !isLaser(lv)) this._spawnPortals();
     if (isLaser(lv)) {
       this.laserMode = true;
       // 透传 laserMode：'drive' 为第九关（生成→驱赶→保持原地→走格子），'full' 为第三关（搭阵），'flip' 为第十五关（九宫格）
@@ -207,6 +213,46 @@ export class Game {
     if (!isLaser(lv)) this._snapshotState();
   }
 
+  // 小怪关装饰：场地中心（世界原点）前后左右各 20m 各放一个传送门（前=-Z 后=+Z 左=-X 右=+X）
+  // 位置/朝向/离地高度全部来自 PORTAL 配置（改配置即整体调整，勿在此散落魔法数）
+  _spawnPortals() {
+    const P = PORTAL.DISTANCE_P;
+    const Y = PORTAL.HEIGHT_Y;
+    const R = PORTAL.ROT; // {X:{LEFT,RIGHT}, Y:{LEFT,RIGHT}, Z:{LEFT,RIGHT}} 三轴旋转（弧度）
+    const rotL = { x: R.X.LEFT, y: R.Y.LEFT, z: R.Z.LEFT };   // 左门三轴
+    const rotR = { x: R.X.RIGHT, y: R.Y.RIGHT, z: R.Z.RIGHT }; // 右门三轴
+    const spots = [
+      { pos: new THREE.Vector3(0, Y, -P),        rot: { x: 0, y: 0, z: 0 } }, // 前：无旋转
+      { pos: new THREE.Vector3(0, Y,  P),        rot: { x: 0, y: 0, z: 0 } }, // 后：无旋转
+      { pos: new THREE.Vector3(-P, Y, 0),        rot: rotL },                 // 左
+      { pos: new THREE.Vector3( P, Y, 0),        rot: rotR },                 // 右
+    ];
+    spots.forEach(({ pos, rot }) => {
+      const portal = new Portal(this.world.scene, pos, rot);
+      portal.start();
+      this._portals.push(portal);
+    });
+  }
+
+  // 左手摇杆 → 传送门整体操控（仅小怪关有传送门时消费；Boss/激光关 _portals 为空 → 无副作用）
+  _applyPortalStick(dt) {
+    if (!this._portals.length) return;
+    const s = this.input?.leftStick || { x: 0, y: 0 };
+    if (s.x === 0 && s.y === 0) return;
+    const spd = PORTAL.STICK.SPEED * dt;
+    // 映射（见「方向映射」）：Y 前推(负) → +dy 升高；X 右推(正) → +dr 远离中心。
+    // 若上机手感反了，只需互换下面 dy/dr 的符号，一处改动。
+    const dy = -s.y * spd;
+    const dr =  s.x * spd;
+    this._portals.forEach((p) => p.applyStick(dy, dr));
+  }
+
+  // 清理所有传送门（幂等）：切关、回菜单、游戏结束时调用
+  _clearPortals() {
+    this._portals.forEach((p) => p.dispose());
+    this._portals = [];
+  }
+
   _playerPos() { return this.rig.getWorldPosition(this._tmp); }
 
   // 同屏 DepthSprite 压测：在玩家前方生成 N 个 basic 立绘阵列（controlled 站定）。
@@ -233,6 +279,8 @@ export class Game {
     dt = Math.min(dt, 0.05);
     this.world.update(dt);
     if (this.openingModel) this.openingModel.update(dt); // 开场动画模型：推进动画 + 10秒计时
+    const pp = this._playerPos();                     // 取一次玩家位置，所有门共用（同步读取，无异步滞留）
+    this._portals.forEach((p) => p.update(dt, pp));   // 传送门动画 + 浮动 + 摇杆偏移 + 数值标签
     this.wristUI?.update(dt, this, this.input); // 手腕面板（VR 下显示，桌面忽略）
     this.rightGun.update(dt, this.input);        // 右手柄 AK 枪（VR 手持，桌面忽略）
     this._updateBuddhaFx(dt);
@@ -245,6 +293,7 @@ export class Game {
 
   _updatePlaying(dt) {
     this.input.update(dt);
+    this._applyPortalStick(dt); // 左手摇杆 → 传送门（仅小怪关有门时生效）
     this.player.update(dt);
     this.bullets.update(dt);
     const pp = this._playerPos();

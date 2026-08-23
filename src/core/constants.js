@@ -5,6 +5,7 @@
 // 有条目的关卡用该全景图作 scene.background（并隐藏渐变天空球+星空）；
 // 无条目的关卡走 world.setSkyMood() 的渐变天空。后续加关只需加一行「关号: '路径'」。
 export const SKY_PANORAMA = {
+  1:  'Sky/01关/早晨天空.jpg', // 第1关（黄昏小怪）→ 早晨天空 4K 全景（原 8K PNG 27MB 转 4K JPG 396KB）
   3:  'Sky/sky-arctic-6k.jpg', // 第3关（激光·搭阵）→ 北极天空 6K
   12: 'Sky/sky-lake-8k.jpg',   // 第12关（龙 Boss）→ 临时用湖边天空（原 68MB EXR 会冻结 PICO 主线程）
   15: 'Sky/sky-lake-8k.jpg',   // 第15关（激光·九宫格）→ 湖边天空 8K（与第3关对比清晰度）
@@ -453,4 +454,100 @@ export const FACE_BOSS = {
   BLACK_CLONE_RADIUS: 1.0,
   BLACK_CLONE_SCALE: 1,          // 缩小一半（原2）
 };
+
+// ============================================================
+// 传送门装饰（portal.js / game._spawnPortals 引用）
+//   小怪关在场地中心前后左右各放 4 个传送门，可被左手摇杆整体操控：
+//     左手 Y 轴（前推负）→ 4 门整体升降；左手 X 轴（右推正）→ 4 门整体远近（径向远离/收拢）
+//   TARGET_HEIGHT / HEIGHT_Y 为独立参数：直接写最终值，与缩放倍数无推导关系
+// ============================================================
+export const PORTAL = {
+  // —— 尺寸（独立参数，直接写最终米数；与缩放倍数解耦，可叠加）——
+  TARGET_HEIGHT: 2.2,  // 门整体高度（米）：基准高度，独立参数
+  SCALE: 1,            // 整体缩放倍数：在 TARGET_HEIGHT 基础上再整体放大/缩小（高宽厚一起）
+                       //   1 = 按 TARGET_HEIGHT 原样；2 = 整体再大一倍；0.5 = 整体再小一半
+  HEIGHT_Y: -2.6,      // 门中心离地高度（米）—— 注意：负值=中心在地面以下
+  // 门距场地中心水平距离（米）：前/后门在 Z=±P，左/右门在 X=±P
+  DISTANCE_P:   20,
+  // 左/右门绕 X/Y/Z 三轴朝向（弧度）：模型正面默认朝玩家，侧门旋转面向场内
+  //   左右门可分别指定；前/后门恒为 {x:0,y:0,z:0}
+  ROT: {
+    X: { LEFT: 0, RIGHT: 0 },                         // 绕 X 轴（弧度）
+    Y: { LEFT: 0, RIGHT: 0 },                         // 绕 Y 轴（弧度）
+    Z: { LEFT: Math.PI / 2, RIGHT: -Math.PI / 2 },    // 绕 Z 轴：左门逆时针90°/右门顺时针90°
+  },
+
+  // —— 上下浮动动画（纯装饰；数值标签显示用稳定值，不受浮动影响）——
+  FLOAT_AMP:  0.1,   // 浮动幅度（米）：0.25 过大改轻微
+  FLOAT_FREQ: 1.2,   // 浮动频率（Hz）
+
+  // —— 左手摇杆操控 ——
+  STICK: {
+    SPEED:     3.5,   // 摇杆控制速度（米/秒）：与 MOVE.SPEED 一致的满幅速率
+    HEIGHT_MIN: 2,    // 门中心最低高度（米）：下限防入地
+    HEIGHT_MAX: 18,   // 门中心最高高度（米）：上限防过高仰视丢失
+    DIST_MIN:  5,     // 门距场地中心最近距离（米）
+    DIST_MAX:  40,    // 门距场地中心最远距离（米）
+  },
+
+  // —— 数值标签（3D Sprite，双行：高度 / 距离）——
+  LABEL: {
+    CANVAS:   { w: 512, h: 128 }, // 画布分辨率（像素）：只影响清晰度，不影响物理大小
+    W:        2.4,                // 精灵物理宽（米）
+    H:        0.6,                // 精灵物理高（米）
+    Y_OFFSET: 0.5,                // 相对门中心的上偏（米）：放中心略上方，避免贴超高门顶
+    REFRESH_HZ: 15,               // 刷新节流（次/秒）：~15fps，省算力
+    CHANGE_THRESHOLD: 0.1,        // 数值变化超过此值才重绘（米）：静止时不重绘
+  },
+};
+
+// ============================================================
+// 玩家参数覆盖（userConfig.js）—— 改动后刷新页面即生效
+// 原理：本文件是依赖图叶子模块（无 import 业务模块），此合并先于所有消费方求值。
+// 用户唯一编辑入口：src/core/userConfig.js（只写想改的键，其余保持默认）。
+// ============================================================
+import { USER_CONFIG } from './userConfig.js';
+
+// 递归深合并：patch 为数组 → 整体替换；为对象 → 逐键合并；其余 → 覆盖
+function deepMerge(base, patch) {
+  if (Array.isArray(patch)) return patch;
+  if (patch && typeof patch === 'object') {
+    const out = { ...base };
+    for (const k of Object.keys(patch)) out[k] = deepMerge(base?.[k], patch[k]);
+    return out;
+  }
+  return patch !== undefined ? patch : base;
+}
+
+// 校验键名：拼错静默失效，此处给控制台提示（新增键也提示，忽略即可）
+function _checkKeys(name, base, patch, path) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return;
+  if (!base || typeof base !== 'object') return;
+  for (const k of Object.keys(patch)) {
+    if (!(k in base)) {
+      console.warn(`[userConfig] ${name}.${path ? path + '.' : ''}${k} 不是有效配置键，未生效；请对照 constants.js 的 ${name} 检查拼写。`);
+    } else {
+      _checkKeys(name, base[k], patch[k], path ? `${path}.${k}` : k);
+    }
+  }
+}
+
+// 可覆盖对象白名单：只处理这 6 个；未来要加对象 → 此处加一行 + userConfig.js 加对应键
+const _OVERRIDES = [
+  ['PORTAL',  PORTAL,  USER_CONFIG.PORTAL],
+  ['MOVE',    MOVE,    USER_CONFIG.MOVE],
+  ['SHOOT',   SHOOT,   USER_CONFIG.SHOOT],
+  ['BALLOON', BALLOON, USER_CONFIG.BALLOON],
+  ['GUN',     GUN,     USER_CONFIG.GUN],
+  ['WAVE',    WAVE,    USER_CONFIG.WAVE],
+];
+for (const [name, target, patch] of _OVERRIDES) {
+  if (patch && typeof patch === 'object') {
+    _checkKeys(name, target, patch);
+    Object.assign(target, deepMerge(target, patch));
+  }
+}
+
+// —— PORTAL 尺寸：TARGET_HEIGHT / HEIGHT_Y 为独立参数（与缩放解耦），直接按 userConfig 覆盖结果生效，
+//    无需联动推导（SCALE/BASE_HEIGHT 已移除）。
 

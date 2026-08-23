@@ -24,6 +24,7 @@ export class InputManager {
     this.pitch = 0;
     this.locked = false;
     this.desktopShooting = false;
+    this.leftStick = { x: 0, y: 0 }; // 左手摇杆原始值（x 右推为正；y 前推为负，PICO 约定），每帧在 update 刷新
     this.shots = []; // 本帧待发射：{position, direction}
     this.shotsFired = 0; // 累计开火次数（单调递增，供枪模型后坐力检测「本帧新开了几枪」）
 
@@ -134,18 +135,17 @@ export class InputManager {
   _moveVector() {
     const m = { x: 0, z: 0 };
     if (this.world.isPresenting) {
-      // 右手优先，死区内回退左手
-      for (const hand of ['right', 'left']) {
-        const gp = this._gamepadOf(hand);
-        if (!gp) continue;
+      // 仅右手摇杆负责玩家移动（左手摇杆改用于控制传送门，见 game._applyPortalStick）
+      const gp = this._gamepadOf('right');
+      if (gp) {
         let sx = 0, sy = 0;
         if (gp.axes.length >= 4) { sx = gp.axes[2]; sy = gp.axes[3]; }
         else if (gp.axes.length >= 2) { sx = gp.axes[0]; sy = gp.axes[1]; }
-        if (Math.abs(sx) < MOVE.DEADZONE && Math.abs(sy) < MOVE.DEADZONE) continue;
-        // PICO 前推为负值，取反 → z 前为正推进量，随后映射到本地 -z 前方
-        m.x = sx;
-        m.z = sy; // 保持原始，_applyLocomotion 使用相机前向量已含方向
-        break;
+        if (!(Math.abs(sx) < MOVE.DEADZONE && Math.abs(sy) < MOVE.DEADZONE)) {
+          // PICO 前推为负值，取反 → z 前为正推进量，随后映射到本地 -z 前方
+          m.x = sx;
+          m.z = sy; // 保持原始，_applyLocomotion 使用相机前向量已含方向
+        }
       }
     } else {
       if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) m.z -= 1;
@@ -156,6 +156,22 @@ export class InputManager {
     const len = Math.hypot(m.x, m.z);
     if (len > 1) { m.x /= len; m.z /= len; }
     return m;
+  }
+
+  // 读取左手摇杆原始值（PICO 双摇杆：左手 X/Y = axes[2]/[3]，回退 [0]/[1]）。
+  // 返回 { x, y }：x 右推为正；y 前推为负（PICO 约定）。已做逐轴死区（|v|<DEADZONE → 0）。
+  // 方向语义（升高/远近）由 game._applyPortalStick 消费处定义。
+  _readLeftStick() {
+    const s = { x: 0, y: 0 };
+    if (!this.world.isPresenting) return s; // 桌面无手柄，恒 {0,0}
+    const gp = this._gamepadOf('left');
+    if (!gp) return s;
+    let sx = 0, sy = 0;
+    if (gp.axes.length >= 4) { sx = gp.axes[2]; sy = gp.axes[3]; }
+    else if (gp.axes.length >= 2) { sx = gp.axes[0]; sy = gp.axes[1]; }
+    if (Math.abs(sx) >= MOVE.DEADZONE) s.x = sx;
+    if (Math.abs(sy) >= MOVE.DEADZONE) s.y = sy;
+    return s;
   }
 
   _applyLocomotion(m, dt) {
@@ -270,6 +286,7 @@ export class InputManager {
 
   update(dt) {
     this.shots.length = 0;
+    this.leftStick = this._readLeftStick(); // 每帧刷新左手摇杆（供传送门操控消费）
     this._applyDesktopLook();
     const m = this._moveVector();
     this._applyLocomotion(m, dt);
