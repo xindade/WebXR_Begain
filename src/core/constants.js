@@ -502,6 +502,28 @@ export const PORTAL = {
 };
 
 // ============================================================
+// 出怪光点（waves._queueSpawn 引用）——「怪物从传送门飞出」
+//   普通关（有传送门）：每只怪在真正 spawn 前，从其最近传送门中心飞出一个光点
+//   到出生点，落地后怪物才出现。Boss/激光关无传送门 → _queueSpawn 自动退化为
+//   直接 spawn（视觉无变化）。龙 Boss / _spawnStress 不走此系统。
+// ============================================================
+export const PORTAL_BEAM = {
+  ENABLED: true,          // 总开关：false 时所有 _queueSpawn 直接同步 spawn
+  SPEED: 25,              // 光点飞行速度 m/s（门距出生点 18~32m → 时长 0.72~1.0s，接近 DDA cooldown）
+  DUR_MIN: 0.25,          // 飞行时长下限 s（近门 clamp，防过短闪烁）
+  DUR_MAX: 1.0,           // 飞行时长上限 s（远门 clamp，防节奏拖慢）
+  START_Y_OFFSET: 3,      // 光点出发点相对门中心的上抬高度（米）：让光点从门上方飞出，视觉更明显
+  Y_GAP_MAX: 6,           // 门中心与出生点 y 差距 > 此值(m) → 光点起点 y 向目标收敛（水平进场）
+  COLOR: 0xff8a8a,        // 光点颜色（浅红）
+  SIZE: 0.08,             // 光点球体半径 m
+  OPACITY: 0.95,          // 光点不透明度（AdditiveBlending 叠加发光）
+  // 类型范围开关（全部默认 true = 每只怪一个光点；单项 false = 该来源直接 spawn）
+  // 注意：Boss 关无传送门，Boss 本体/子实体本就走无门兜底；此开关仅在 Boss 关也布门时生效。
+  APPLY_SUMMON: true,     // 召唤怪小兵
+  APPLY_FACE_SUB: true,   // 脸谱 Boss 子实体/旗子/克隆
+};
+
+// ============================================================
 // 玩家参数覆盖（userConfig.js）—— 改动后刷新页面即生效
 // 原理：本文件是依赖图叶子模块（无 import 业务模块），此合并先于所有消费方求值。
 // 用户唯一编辑入口：src/core/userConfig.js（只写想改的键，其余保持默认）。
@@ -540,6 +562,7 @@ const _OVERRIDES = [
   ['BALLOON', BALLOON, USER_CONFIG.BALLOON],
   ['GUN',     GUN,     USER_CONFIG.GUN],
   ['WAVE',    WAVE,    USER_CONFIG.WAVE],
+  ['PORTAL_BEAM', PORTAL_BEAM, USER_CONFIG.PORTAL_BEAM],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

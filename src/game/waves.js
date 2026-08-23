@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { WAVE, NORMAL_TEST, DDA, FACE_BOSS } from '../core/constants.js';
+import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM } from '../core/constants.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { isBoss } from '../content/levels.js';
 import { LEVEL_ENEMY } from '../content/spawnPlans.js';
@@ -10,13 +10,17 @@ const SUMMON_MINION_DISTANCE = 1.5; // 小兵出生在召唤者「身后」的�
 const SUMMON_MINION_SPREAD   = 3.0; // 小兵出生点相对身后的左右/前后随机偏移(m)：调大 → 散布更开
 const SUMMON_RESPAWN_DELAY   = 1.5; // 小兵死亡后延迟重生间隔(s)：调大 → 补怪更慢
 
+// 出怪光点：最近传送门计算用临时量（_nearestPortal 内循环即消费，勿存引用）
+const _portalTmp = new THREE.Vector3();
+
 // 波次管理：分阶段生成（前→左右→全向），清空后触发抽卡
 export class WaveManager {
-  constructor(scene, balloons, getPlayerPos, dda) {
+  constructor(scene, balloons, getPlayerPos, dda, getPortals) {
     this.scene = scene;
     this.balloons = balloons;
     this.getPlayerPos = getPlayerPos;
     this.dda = dda || null;   // 动态难度控制器（DDA）；null 时 normalTest 走原时间曲线
+    this.getPortals = getPortals || null; // () => game._portals；null 视为无门 → 直接 spawn
     this.reset();
   }
 
@@ -43,15 +47,21 @@ export class WaveManager {
     this._redSpawned = false;
     this._redPlaced = false;      // 红阶段旗子是否已移到 Boss 两侧（公转结束标记）
     this._cloneSpawnedCount = 0;
+    this._pendingSpawns = [];   // 出怪光点队列 [{type,pos,from,dur,t,mesh,onSpawn,check,summonOwner,group}]
+    this._bossQueued = false;   // Boss 已在排队（防重复排队刷光点）
   }
 
-  // 本关剩余敌人数 = 尚未生成 + 场上存活
+  // 本关剩余敌人数 = 尚未生成 + 场上存活 + 飞行中的光点（待落地怪）
   get remaining() {
     if (!this.level) return 0;
-    return (this.total - this.spawned) + this.balloons.count;
+    return (this.total - this.spawned) + this._active;
   }
 
+  // 场上存活 + 光点飞行中的待落地怪（所有占用判定用它，防光点未落地就连续补怪）
+  get _active() { return this.balloons.count + this._pendingSpawns.length; }
+
   startLevel(level) {
+    this.clearPending();       // 清残留光点 + _bossQueued（幂等）
     this.level = level;
     this.elapsed = 0;
     this.timer = 0;
@@ -143,19 +153,145 @@ export class WaveManager {
 
   // 出怪类型由 LEVEL_ENEMY 单一指定，不再随机挑选
 
+  // ===== 出怪光点（传送门 → 出生点，「怪物从传送门飞出」）=====
+
+  // 统一出怪入口：有门 → 光点入队；无门/开关关 → 同步直接 spawn（保持原行为，onSpawn 也同步执行）
+  _queueSpawn(type, pos, opts = {}) {
+    // 类型开关关 → 直接 spawn
+    if (opts.effect === false) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn });
+    // 无门 / 总开关关 → 直接 spawn（Boss/激光关自动兜底）
+    const portals = this.getPortals ? this.getPortals() : null;
+    if (!PORTAL_BEAM.ENABLED || !portals || !portals.length) {
+      return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn });
+    }
+    // 最近传送门稳定中心
+    const nearest = this._nearestPortal(portals, pos);
+    if (!nearest) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn });
+    const from = nearest.getWorldPos(new THREE.Vector3());
+    // 出发点相对门中心上抬 START_Y_OFFSET 米（让光点从门上方飞出，视觉更明显）
+    from.y += PORTAL_BEAM.START_Y_OFFSET || 0;
+    // 门升太高 → 起点 y 向目标收敛，保持水平进场（避免纵向跳水）
+    const dy = from.y - pos.y;
+    if (Math.abs(dy) > PORTAL_BEAM.Y_GAP_MAX) from.y = pos.y + Math.sign(dy) * PORTAL_BEAM.Y_GAP_MAX;
+    // 飞行时长 = 距离 / SPEED，clamp
+    const dur = THREE.MathUtils.clamp(
+      from.distanceTo(pos) / PORTAL_BEAM.SPEED,
+      PORTAL_BEAM.DUR_MIN, PORTAL_BEAM.DUR_MAX
+    );
+    const mesh = this._makeBeamMesh();
+    mesh.position.copy(from);
+    this.scene.add(mesh);
+    this._pendingSpawns.push({
+      type, pos: pos.clone(), from: from.clone(), dur, t: dur, mesh,
+      onSpawn: opts.onSpawn || null,
+      check: opts.check || null,
+      summonOwner: opts.summonOwner || null,
+      group: opts.group || null,
+    });
+    return null;   // 已入队，无 balloon 引用
+  }
+
+  // 最近传送门（世界中心稳定值），返回 Portal 实例
+  _nearestPortal(portals, pos) {
+    let best = null, bestD = Infinity;
+    for (const p of portals) {
+      p.getWorldPos(_portalTmp);
+      const d = _portalTmp.distanceToSquared(pos);
+      if (d < bestD) { bestD = d; best = p; }
+    }
+    return best;
+  }
+
+  // 光点 mesh：小球 + AdditiveBlending 发光
+  _makeBeamMesh() {
+    const geo = new THREE.SphereGeometry(PORTAL_BEAM.SIZE, 10, 8);
+    const mat = new THREE.MeshBasicMaterial({
+      color: PORTAL_BEAM.COLOR,
+      transparent: true,
+      opacity: PORTAL_BEAM.OPACITY,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    return new THREE.Mesh(geo, mat);
+  }
+
+  // 落地/兜底：check 通过才真正 spawn；无论走哪条路径都执行 onSpawn（Boss 配置等依赖它）
+  _commitSpawn(item) {
+    if (item.check && !item.check()) {
+      if (item.mesh) this._removeBeam(item.mesh);
+      return null;
+    }
+    if (item.mesh) this._removeBeam(item.mesh);
+    const b = this.balloons.spawn(item.type, item.pos);
+    if (item.onSpawn) item.onSpawn(b);
+    return b;
+  }
+
+  _removeBeam(mesh) {
+    this.scene.remove(mesh);
+    mesh.geometry.dispose();
+    mesh.material.dispose();
+  }
+
+  // 每帧推进光点（放 update() 最顶部，任何模式都执行）
+  _updatePendingSpawns(dt) {
+    for (let i = this._pendingSpawns.length - 1; i >= 0; i--) {
+      const it = this._pendingSpawns[i];
+      it.t -= dt;
+      if (it.t <= 0) {
+        // 落地前补最后一帧位置（贴出生点消失，无跳变感）
+        it.mesh.position.copy(it.pos);
+        this._commitSpawn(it);
+        this._pendingSpawns.splice(i, 1);
+      } else {
+        const k = 1 - it.t / it.dur;
+        const e = k * k * (3 - 2 * k);   // smoothstep（与 cardDraft 一致）
+        it.mesh.position.set(
+          it.from.x + (it.pos.x - it.from.x) * e,
+          it.from.y + (it.pos.y - it.from.y) * e,
+          it.from.z + (it.pos.z - it.from.z) * e
+        );
+      }
+    }
+  }
+
+  // 清理全部光点（切关/回菜单/死亡重开），幂等
+  clearPending() {
+    for (const it of this._pendingSpawns) if (it.mesh) this._removeBeam(it.mesh);
+    this._pendingSpawns = [];
+    this._bossQueued = false;
+  }
+
+  // 批量取消某组光点（脸谱阶段切换/清场用）
+  _cancelPendingGroup(tag) {
+    for (let i = this._pendingSpawns.length - 1; i >= 0; i--) {
+      if (this._pendingSpawns[i].group === tag) {
+        const it = this._pendingSpawns[i];
+        if (it.mesh) this._removeBeam(it.mesh);
+        this._pendingSpawns.splice(i, 1);
+      }
+    }
+  }
+
   _spawnBoss() {
     // 脸谱 Boss（第6/18关 boss='face'）
     if (this.level.boss === 'face') {
       this._spawnFaceBoss();
       return;
     }
-    // 默认：骑士 Boss
-    const b = this.balloons.spawn('knight', this._spawnPos(ENEMY_TYPES.knight.radius));
-    b.maxHp = 3000; b.hp = 3000; b.speed = 0.25; b.radius = 2; b.score = 500;
-    b.mesh.scale.setScalar(4);
-    b.isBoss = true;
-    this.boss = b;
-    this.bossSpawned = true;
+    // 默认：骑士 Boss（排队即占位，_bossQueued 防重复排队）
+    if (this._bossQueued) return;
+    this._bossQueued = true;
+    const pos = this._spawnPos(ENEMY_TYPES.knight.radius);
+    this._queueSpawn('knight', pos, {
+      onSpawn: (b) => {
+        b.maxHp = 3000; b.hp = 3000; b.speed = 0.25; b.radius = 2; b.score = 500;
+        b.mesh.scale.setScalar(4);
+        b.isBoss = true;
+        this.boss = b;
+        this.bossSpawned = true;   // 落地才置位，避免飞行期 cleared 误判
+      },
+    });
   }
 
   // ===== 脸谱 Boss（单 Boss 多阶段循环）=====
@@ -172,24 +308,28 @@ export class WaveManager {
 
     // 蓝阶段 = POSITIONS[0] = 前方
     const [x, y, z] = FACE_BOSS.POSITIONS[0];
-    const b = this.balloons.spawn('faceMask', new THREE.Vector3(x, y, z));
-    b.maxHp = FACE_BOSS.HP;
-    b.hp = FACE_BOSS.HP;
-    b.speed = 0;
-    b.radius = FACE_BOSS.RADIUS;
-    b.score = 500;
-    b.mesh.scale.setScalar(FACE_BOSS.SCALE);
-    b.isBoss = true;
-    b.controlled = true;            // 呆在原地，不自动朝玩家移动
-    b.damageReduction = FACE_BOSS.DAMAGE_REDUCTION;
-    b.isFaceMask = true;
-    this.faceBoss = b;
-    this.bossSpawned = true;
+    this._bossQueued = true;   // 排队即占位（防每帧重入）
+    this._queueSpawn('faceMask', new THREE.Vector3(x, y, z), {
+      onSpawn: (b) => {
+        b.maxHp = FACE_BOSS.HP;
+        b.hp = FACE_BOSS.HP;
+        b.speed = 0;
+        b.radius = FACE_BOSS.RADIUS;
+        b.score = 500;
+        b.mesh.scale.setScalar(FACE_BOSS.SCALE);
+        b.isBoss = true;
+        b.controlled = true;            // 呆在原地，不自动朝玩家移动
+        b.damageReduction = FACE_BOSS.DAMAGE_REDUCTION;
+        b.isFaceMask = true;
+        this.faceBoss = b;
+        this.bossSpawned = true;        // 落地才置位（防飞行期 cleared 误判）
+      },
+    });
   }
 
   // 脸谱 Boss 每帧更新：阶段计时 + 分发到对应颜色阶段处理器
   _updateFaceBoss(dt) {
-    if (!this.bossSpawned) { this._spawnFaceBoss(); return; }
+    if (!this.bossSpawned) { if (!this._bossQueued) this._spawnFaceBoss(); return; }
     const b = this.faceBoss;
 
     // 通关判定：Boss 死亡或被移除
@@ -282,22 +422,28 @@ export class WaveManager {
     const z = cz + (row - centerRow) * FACE_BOSS.BLUE_FORMATION_ROW_GAP;
     const y = FACE_BOSS.BLUE_MINION_Y[0] + Math.random() * (FACE_BOSS.BLUE_MINION_Y[1] - FACE_BOSS.BLUE_MINION_Y[0]);
     const p = new THREE.Vector3(x, y, z);
-    const m = this.balloons.spawn(type, p);
-    // knight 默认按 Boss 体型生成（spawn 时已用 Boss 半径建了超长血条）→ 缩为正常体型，并重建血条匹配新体型
-    if (type === 'knight') {
-      m.radius = 0.9; m.effectiveRadius = 0.9; m.hitRadius = 0.9;
-      m.mesh.scale.setScalar(1);
-      // 重建血条：丢弃 spawn 时按 Boss 体型建的超长血条，改以缩小后的 effectiveRadius(0.9) 重建
-      // → 长度≈体型；扣血偏移 -(1-k)*effectiveRadius 与半宽一致，显示为从右往左缩减
-      if (m._hpBar) { m.mesh.remove(m._hpBar); m._hpBar = null; m._hpFg = null; }
-      m._makeHealthBar(m.effectiveRadius);
-    }
-    m.controlled = true;           // 召唤阶段受控不动
-    m.isFaceSub = true;            // 标记为脸谱 Boss 子实体
-    m.faceBossRef = b;             // 指向 Boss（击杀时扣 Boss 血量）
-    m._bobBaseY = y;               // 记录基准高度，供上下摆动
-    m._bobPhase = Math.random() * Math.PI * 2;
-    this.faceSubEntities.push(m);
+    this._queueSpawn(type, p, {
+      group: 'faceSub',
+      effect: PORTAL_BEAM.APPLY_FACE_SUB,
+      check: () => !!b && b.alive && this.balloons.list.includes(b),
+      onSpawn: (m) => {
+        // knight 默认按 Boss 体型生成（spawn 时已用 Boss 半径建了超长血条）→ 缩为正常体型，并重建血条匹配新体型
+        if (type === 'knight') {
+          m.radius = 0.9; m.effectiveRadius = 0.9; m.hitRadius = 0.9;
+          m.mesh.scale.setScalar(1);
+          // 重建血条：丢弃 spawn 时按 Boss 体型建的超长血条，改以缩小后的 effectiveRadius(0.9) 重建
+          // → 长度≈体型；扣血偏移 -(1-k)*effectiveRadius 与半宽一致，显示为从右往左缩减
+          if (m._hpBar) { m.mesh.remove(m._hpBar); m._hpBar = null; m._hpFg = null; }
+          m._makeHealthBar(m.effectiveRadius);
+        }
+        m.controlled = true;           // 召唤阶段受控不动
+        m.isFaceSub = true;            // 标记为脸谱 Boss 子实体
+        m.faceBossRef = b;             // 指向 Boss（击杀时扣 Boss 血量）
+        m._bobBaseY = y;               // 记录基准高度，供上下摆动
+        m._bobPhase = Math.random() * Math.PI * 2;
+        this.faceSubEntities.push(m);
+      },
+    });
   }
 
   // 红色阶段：0-2s 留空 → 2-6s 旗子绕Boss公转 → 6s 公转结束：旗子移到 Boss 两侧均匀分布 + 自身绕Z轴逆时针转90° → 8-14s 仍逐个飞向玩家
@@ -314,23 +460,29 @@ export class WaveManager {
           FACE_BOSS.RED_FLAG_Y,
           b.mesh.position.z + Math.sin(ang) * FACE_BOSS.RED_FLAG_ORBIT_RADIUS
         );
-        const f = this.balloons.spawn('flagMask', pos);
-        f.maxHp = FACE_BOSS.RED_FLAG_HP;
-        f.hp = FACE_BOSS.RED_FLAG_HP;
-        f.speed = 0;
-        f.radius = FACE_BOSS.RED_FLAG_RADIUS;
-        f.effectiveRadius = FACE_BOSS.RED_FLAG_RADIUS;  // 视觉3倍后同步碰撞
-        f.hitRadius = FACE_BOSS.RED_FLAG_RADIUS;
-        f.mesh.scale.setScalar(FACE_BOSS.RED_FLAG_SCALE);
-        f.controlled = true;
-        f.selfDamage = FACE_BOSS.RED_FLAG_SELF_DAMAGE;
-        f.isFaceSub = true;
-        f.faceBossRef = b;
-        f._flagAngleOffset = ang;
-        f._flagLaunched = false;
-        f._flagPlaced = false;
-        this.faceSubEntities.push(f);
-        this.faceFlags.push(f);
+        this._queueSpawn('flagMask', pos, {
+          group: 'faceSub',
+          effect: PORTAL_BEAM.APPLY_FACE_SUB,
+          check: () => !!b && b.alive && this.balloons.list.includes(b),
+          onSpawn: (f) => {
+            f.maxHp = FACE_BOSS.RED_FLAG_HP;
+            f.hp = FACE_BOSS.RED_FLAG_HP;
+            f.speed = 0;
+            f.radius = FACE_BOSS.RED_FLAG_RADIUS;
+            f.effectiveRadius = FACE_BOSS.RED_FLAG_RADIUS;  // 视觉3倍后同步碰撞
+            f.hitRadius = FACE_BOSS.RED_FLAG_RADIUS;
+            f.mesh.scale.setScalar(FACE_BOSS.RED_FLAG_SCALE);
+            f.controlled = true;
+            f.selfDamage = FACE_BOSS.RED_FLAG_SELF_DAMAGE;
+            f.isFaceSub = true;
+            f.faceBossRef = b;
+            f._flagAngleOffset = ang;
+            f._flagLaunched = false;
+            f._flagPlaced = false;
+            this.faceSubEntities.push(f);
+            this.faceFlags.push(f);
+          },
+        });
       }
     }
     // 公转推进（仅公转阶段、未放置未释放的旗子）
@@ -426,22 +578,30 @@ export class WaveManager {
     const ang = (i / FACE_BOSS.BLACK_CLONE_COUNT) * Math.PI * 2;
     const r = FACE_BOSS.BLACK_CLONE_RING_RADIUS;
     const p = new THREE.Vector3(Math.cos(ang) * r, FACE_BOSS.BLACK_CLONE_Y, Math.sin(ang) * r);
-    const c = this.balloons.spawn('blackMaskClone', p);
-    c.maxHp = FACE_BOSS.BLACK_CLONE_HP;
-    c.hp = FACE_BOSS.BLACK_CLONE_HP;
-    c.speed = 0;
-    c.radius = FACE_BOSS.BLACK_CLONE_RADIUS;
-    c.mesh.scale.setScalar(FACE_BOSS.BLACK_CLONE_SCALE);
-    c.controlled = true;
-    c.selfDamage = FACE_BOSS.BLACK_CLONE_SELF_DAMAGE;
-    c.isFaceSub = true;
-    c.faceBossRef = this.faceBoss;
-    // 黑色分身保持可见（隐身的是 Boss 本体，见 _faceUpdateBlack）；分身仍可被击中扣 Boss 血
-    this.faceSubEntities.push(c);
+    const b = this.faceBoss;
+    this._queueSpawn('blackMaskClone', p, {
+      group: 'faceSub',
+      effect: PORTAL_BEAM.APPLY_FACE_SUB,
+      check: () => !!b && b.alive && this.balloons.list.includes(b),
+      onSpawn: (c) => {
+        c.maxHp = FACE_BOSS.BLACK_CLONE_HP;
+        c.hp = FACE_BOSS.BLACK_CLONE_HP;
+        c.speed = 0;
+        c.radius = FACE_BOSS.BLACK_CLONE_RADIUS;
+        c.mesh.scale.setScalar(FACE_BOSS.BLACK_CLONE_SCALE);
+        c.controlled = true;
+        c.selfDamage = FACE_BOSS.BLACK_CLONE_SELF_DAMAGE;
+        c.isFaceSub = true;
+        c.faceBossRef = b;
+        // 黑色分身保持可见（隐身的是 Boss 本体，见 _faceUpdateBlack）；分身仍可被击中扣 Boss 血
+        this.faceSubEntities.push(c);
+      },
+    });
   }
 
   // 清除所有存活子实体（阶段切换 / Boss 死亡时调用）
   _faceClearSubEntities() {
+    this._cancelPendingGroup('faceSub');   // 取消飞行中的子实体光点（防下阶段残留孤儿怪）
     for (const s of this.faceSubEntities) {
       if (s.alive && this.balloons.list.includes(s)) this.balloons.remove(s);
     }
@@ -456,6 +616,7 @@ export class WaveManager {
   }
 
   update(dt) {
+    this._updatePendingSpawns(dt);   // 光点推进 + 落地 spawn（任何模式都执行）
     if (!this.level || this.cleared) return;
 
     // 正常测试模式：升级式同屏出怪（boss 关不会走到这里，startLevel 已分流）
@@ -476,14 +637,14 @@ export class WaveManager {
       return;
     }
 
-    // 需求②：每关单一敌人、一次只出一个；场上清空（死亡）后才出下一个
+    // 需求②：每关单一敌人、一次只出一个；场上清空（死亡 + 光点落地）后才出下一个
     this.elapsed += dt;
-    if (this.spawned < this.total && this.balloons.count === 0) {
+    if (this.spawned < this.total && this._active === 0) {
       const spawnRadius = ENEMY_TYPES[this.singleType]?.radius || 0.5;
-      this.balloons.spawn(this.singleType, this._spawnPos(spawnRadius));
+      this._queueSpawn(this.singleType, this._spawnPos(spawnRadius));
       this.spawned++;
     }
-    if (this.spawned >= this.total && this.balloons.count === 0) {
+    if (this.spawned >= this.total && this._active === 0) {
       this.cleared = true;
     }
 
@@ -509,21 +670,21 @@ export class WaveManager {
       const plan = this.dda.getPlan();
       if (this.elapsed < NORMAL_TEST.stopAt) {
         this.spawnTimer -= dt;
-        if (this.balloons.count < plan.concurrency && this.spawnTimer <= 0) {
+        if (this._active < plan.concurrency && this.spawnTimer <= 0) {
           // 场上缺口大时批量补充（避免一个个慢慢滴出，体感稀疏）
-          const deficit = plan.concurrency - this.balloons.count;
+          const deficit = plan.concurrency - this._active;
           const burst = deficit > plan.concurrency * 0.5 ? Math.min(3, deficit) : 1;
           for (let s = 0; s < burst; s++) {
-            if (this.balloons.count >= plan.concurrency) break;
+            if (this._active >= plan.concurrency) break;
             const type = plan.pickType();
-            this.balloons.spawn(type, this._spawnPos(ENEMY_TYPES[type]?.radius || 0.5,
+            this._queueSpawn(type, this._spawnPos(ENEMY_TYPES[type]?.radius || 0.5,
               { dist: plan.dist, spread: plan.spread }));
           }
           this.spawnTimer = plan.cooldown;
         }
       }
       // 停止补怪后场上清空 → 通关
-      if (this.elapsed >= NORMAL_TEST.stopAt && this.balloons.count === 0) {
+      if (this.elapsed >= NORMAL_TEST.stopAt && this._active === 0) {
         this.cleared = true;
       }
       return;
@@ -533,13 +694,13 @@ export class WaveManager {
     if (this.elapsed < NORMAL_TEST.stopAt) {
       this.spawnTimer -= dt;
       const target = this._targetConcurrency(this.elapsed);
-      if (this.balloons.count < target && this.spawnTimer <= 0) {
+      if (this._active < target && this.spawnTimer <= 0) {
         const type = NORMAL_TEST.pool[(Math.random() * NORMAL_TEST.pool.length) | 0];
-        this.balloons.spawn(type, this._spawnPos(ENEMY_TYPES[type]?.radius || 0.5));
+        this._queueSpawn(type, this._spawnPos(ENEMY_TYPES[type]?.radius || 0.5));
         this.spawnTimer = NORMAL_TEST.spawnCooldown;
       }
     }
-    if (this.elapsed >= NORMAL_TEST.stopAt && this.balloons.count === 0) {
+    if (this.elapsed >= NORMAL_TEST.stopAt && this._active === 0) {
       this.cleared = true;
     }
   }
@@ -559,20 +720,25 @@ export class WaveManager {
       }
       // 剔除已死小怪
       b.minions = b.minions.filter(m => m.alive && this.balloons.list.includes(m));
-      // 计时到则补满（小怪死后延迟重生）
+      // 计时到则补满（小怪死后延迟重生）；飞行中的光点也计入待补数，防 while 死循环
       b.summonTimer -= dt;
-      if (b.minions.length < b.minionCap && b.summonTimer <= 0) {
+      const pendingM = this._pendingSpawns.filter(it => it.summonOwner === b).length;
+      if (b.minions.length + pendingM < b.minionCap && b.summonTimer <= 0) {
         const pp = this.getPlayerPos();
         const back = b.mesh.position.clone().sub(pp);
         back.y = 0;
         if (back.length() > 0.001) back.normalize(); else back.set(0, 0, 1);
-        while (b.minions.length < b.minionCap) {
+        while (b.minions.length + pendingM < b.minionCap) {
           const mp = b.mesh.position.clone().addScaledVector(back, SUMMON_MINION_DISTANCE);
           mp.x += (Math.random() - 0.5) * SUMMON_MINION_SPREAD;
           mp.z += (Math.random() - 0.5) * SUMMON_MINION_SPREAD;
-          const minion = this.balloons.spawn('basic', mp);
-          minion.owner = b;
-          b.minions.push(minion);
+          const ret = this._queueSpawn('basic', mp, {
+            summonOwner: b,
+            effect: PORTAL_BEAM.APPLY_SUMMON,
+            check: () => b.alive && this.balloons.list.includes(b),  // 召唤者死亡 → 取消
+            onSpawn: (m) => { m.owner = b; b.minions.push(m); },
+          });
+          if (ret === null) pendingM++;   // 入队才算待落地；同步路径 onSpawn 已入 minions
         }
         b.summonTimer = SUMMON_RESPAWN_DELAY; // 死后延迟重生间隔
       }

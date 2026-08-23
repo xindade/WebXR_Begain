@@ -173,6 +173,17 @@ export class Portal {
     );
   }
 
+  // 传送门稳定中心世界坐标（含摇杆偏移，不含 ±FLOAT_AMP 浮动）——供出怪光点起点使用
+  // out 可传入复用 Vector3；root 未加载完成也有效（只用构造时就确定的 base/offsetY/dir）
+  getWorldPos(out) {
+    out = out || new THREE.Vector3();
+    return out.set(
+      this.base.x + this.dir.x * this.distOffset,
+      this.base.y + this.offsetY,
+      this.base.z + this.dir.z * this.distOffset
+    );
+  }
+
   // 幂等释放：移出场景、释放私有几何/材质、停止动画、释放标签纹理
   dispose() {
     if (this._disposed) return;

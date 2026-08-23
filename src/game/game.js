@@ -46,7 +46,7 @@ export class Game {
     this.bullets = new BulletManager(world.scene);
     // DDA：内置战斗监测（每帧由 _ddaMetrics() 读取玩家/场上状态），喂给 WaveManager 调度出怪
     this.dda = new DifficultyController(() => this._ddaMetrics());
-    this.waves = new WaveManager(world.scene, this.balloons, () => this.rig.getWorldPosition(new THREE.Vector3()), this.dda);
+    this.waves = new WaveManager(world.scene, this.balloons, () => this.rig.getWorldPosition(new THREE.Vector3()), this.dda, () => this._portals);
     this.cards = new CardDraft(world.scene);
     this.rightGun = new RightGun(world.scene);   // 右手柄 AK 枪（VR 手持，纯视觉）
 
@@ -121,6 +121,7 @@ export class Game {
     if (this.dragon)   { this.dragon.dispose();   this.dragon = null; }
     if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清开场动画
     this._clearPortals(); // 清传送门装饰（防跨关/回菜单残留）
+    this.waves.clearPending();   // 清出怪光点（防回菜单残留）
     // 清理实体
     this.balloons.clear();
     this.bullets.clear();
@@ -159,6 +160,7 @@ export class Game {
     if (this.dragon) { this.dragon.dispose(); this.dragon = null; }
     if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清上一关残留的开场动画
     this._clearPortals(); // 清上一关残留的传送门装饰
+    this.waves.clearPending();   // 清上一关残留出怪光点（防光点飞到新关卡）
     this.gridPhase = false;
     this.flipPhase = false; this.flipTimer = 0;
     this._lastCell = 0;
