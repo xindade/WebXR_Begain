@@ -25,6 +25,7 @@ export class InputManager {
     this.locked = false;
     this.desktopShooting = false;
     this.shots = []; // 本帧待发射：{position, direction}
+    this.shotsFired = 0; // 累计开火次数（单调递增，供枪模型后坐力检测「本帧新开了几枪」）
 
     this._cooldowns = { desktop: 0, left: 0, right: 0 };
     this._gunCooldown = (GUN_MODES.preview || { cooldown: SHOOT.COOLDOWN }).cooldown; // 射击冷却 ms（由 setGunMode 按枪械模式切换）
@@ -211,6 +212,7 @@ export class InputManager {
       this.camera.getWorldPosition(_v);
       this._forwardOf(this.camera, _v2);
       this.shots.push({ position: _v.clone(), direction: _v2.clone() });
+      this.shotsFired++;
       this._cooldowns.desktop = this._gunCooldown;
     }
   }
@@ -247,6 +249,7 @@ export class InputManager {
           if (ctrl && this._cooldowns.right <= 0) {
             this._rightAim(ctrl, _v, _v2);   // 方向含俯角、出生点含枪口偏移（与红色射线一致）
             this.shots.push({ position: _v.clone(), direction: _v2.clone() });
+            this.shotsFired++;
             this._cooldowns.right = this._gunCooldown;
           }
         }

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from '../../vendor/GLTFLoader.js';
 import { DRACOLoader } from '../../vendor/DRACOLoader.js';
-import { GUN } from '../core/constants.js';
+import { GUN, GUN_MODES } from '../core/constants.js';
 
 // 右手柄 AK 枪模型：加载 Ak枪.glb → 幂等挂到右手柄(grip) → 每帧从 GUN 配置应用变换
 // 纯视觉叠加，不影响射击/碰撞/血量逻辑。
@@ -16,6 +16,9 @@ export class RightGun {
     this.root = new THREE.Group();   // 持有层：GUN 变换作用在此层（模型作为子节点）
     this.model = null;               // 加载完成的 gltf.scene
     this._attached = false;          // 是否已挂到右手柄（幂等）
+    this._recoilZ = 0;               // 当前后坐力：沿本地 +Z 后退位移（米）
+    this._recoilPitch = 0;           // 当前后坐力：绕本地 X 上抬角（弧度，枪口跳）
+    this._lastShots = 0;             // 上一帧记录的开火计数（用于检测本帧新开了几枪）
     this._load();
   }
 
@@ -49,9 +52,46 @@ export class RightGun {
   // 每帧调用：幂等挂到右手柄，并从 GUN 配置实时应用变换（便于控制台/刷新即时调参）
   update(dt, input) {
     this._applyTransform();
+    this._applyRecoil(dt, input);
     if (this._attached) return;
     const anchor = input?.getGrip('right');   // 右手握把空间（手腕面板同此）
     if (anchor) { anchor.add(this.root); this._attached = true; }
+  }
+
+  // 后坐力：在 _applyTransform 把基准变换重置后，叠加一层「后退 + 枪口上跳」，并指数回正。
+  // 仅作用于枪模型本体，不碰射击/碰撞/血量逻辑。
+  _applyRecoil(dt, input) {
+    const R = GUN.RECOIL;
+    if (R.ENABLED && input) {
+      const fired = input.shotsFired || 0;
+      const delta = fired - this._lastShots;   // 本帧新开的枪数（节流下多为 1）
+      this._lastShots = fired;
+      if (delta > 0) {
+        // 射速归一化：preview(500ms)→0(最大幅度)，full(100ms)→1(最小幅度)
+        const norm = this._fireRateNorm(input._gunCooldown);
+        const k = Math.pow(norm, R.CURVE);     // 曲率：快射时幅度掉得更陡
+        this._recoilZ += THREE.MathUtils.lerp(R.MAX_BACK, R.MIN_BACK, k) * delta;
+        this._recoilPitch += THREE.MathUtils.lerp(R.MAX_PITCH, R.MIN_PITCH, k) * delta;
+      }
+    } else if (input) {
+      this._lastShots = input.shotsFired || 0; // 关闭时同步计数，避免重新开启瞬间暴冲
+    }
+    // 帧率无关的指数回正
+    const f = Math.pow(R.DECAY, dt * 60);
+    this._recoilZ *= f;
+    this._recoilPitch *= f;
+    // 叠加到已重置的基准变换之上（本地坐标：+Z 为后退，+X 旋转为枪口上抬）
+    this.root.position.z += this._recoilZ;
+    this.root.rotation.x += this._recoilPitch;
+  }
+
+  // 当前射速归一化：cooldown 越小(越快) → 越接近 1（后坐力幅度越小）
+  _fireRateNorm(cd) {
+    const slow = GUN_MODES.preview.cooldown;  // 500
+    const fast = GUN_MODES.full.cooldown;     // 100
+    if (!(fast < slow)) return 0;
+    const t = (slow - (cd || slow)) / (slow - fast);
+    return THREE.MathUtils.clamp(t, 0, 1);
   }
 
   _applyTransform() {
