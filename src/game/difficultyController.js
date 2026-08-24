@@ -77,9 +77,9 @@ export class DifficultyController {
 
   // 按难度选怪：低难度以 basic 为主，高难度混入更多特种怪
   _pickType(d) {
-    // —— 测试期间：仅出基础怪（骑士 Boss 由 waves._spawnBoss 独立处理）——
+    // —— 测试期间：仅出 基础怪 + 骑士怪(带旋转盾)，便于验证混合渲染/挡弹 ——
     // 恢复全量出怪时删除此 return，启用下方权重表
-    return 'basic';
+    return Math.random() < 0.8 ? 'basic' : 'shield';
 
     /* eslint-disable */
     // 权重表：难度越高，特种怪权重越大（恢复时取消注释）
