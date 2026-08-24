@@ -4,6 +4,7 @@ import { SHOOT, BUDDHA, SHIP, GUN_MODES } from '../core/constants.js';
 // 模块级复用向量：避免每发子弹分配新对象（契合热循环 GC 优化）
 const _WORLD_UP = new THREE.Vector3(0, 1, 0);
 const _right = new THREE.Vector3();
+const _spreadTs = []; // fire 内复用：弹道归一化偏移序列（0=中心，±对称）
 
 // 玩家：属性成长、飞船血量、大招（如来神掌）
 export class Player {
@@ -64,8 +65,19 @@ export class Player {
       _right.y = 0;
       if (_right.lengthSq() < 1e-6) _right.set(1, 0, 0); // 瞄正上/正下时退化
       _right.normalize();
+
+      // 弹道偏移序列：中心固定一条 t=0（精确对准枪口/准星），其余成对对称 ±1,±2...
+      // 修复：旧算法 t=(k/(n-1))*2-1 在偶数弹道时中心是空档（n=2 → -1,+1 无中心弹道）；
+      // 新算法任何 n≥2 都保证恰有一条 t=0 的正中弹道。
+      _spreadTs.length = 0;
+      _spreadTs.push(0);                       // 中心固定弹道
+      for (let i = 1; _spreadTs.length < n; i++) {
+        _spreadTs.push(i);                     // 右侧 +i
+        if (_spreadTs.length < n) _spreadTs.push(-i); // 左侧 -i（成对对称）
+      }
+      const maxT = Math.abs(_spreadTs[_spreadTs.length - 1]) || 1; // 归一化到 ±1
       for (let k = 0; k < n; k++) {
-        const t = (k / (n - 1)) * 2 - 1; // -1..1 均匀分布
+        const t = _spreadTs[k] / maxT;
         const d = dir.clone().addScaledVector(_right, t * spread);
         bullets.spawn(shot.position, d, this.atk);
       }

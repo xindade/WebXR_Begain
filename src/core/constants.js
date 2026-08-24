@@ -382,6 +382,36 @@ export const DDA = {
 };
 
 // ============================================================
+// SPAWN_RING —— 玩家 DPS 基准 + 内外圈出怪调度（替换 DDA 击杀率滑窗）
+//   基础出怪量 baseSpawn = clamp(DPS / DPS_DIVISOR × levelScale/LEVEL_BASE, MIN_BASE, MAX_BASE)
+//   每 CHECK_INTERVAL 秒检查内圈存活数 → 查 RING_TABLE 得内圈系数 → 调整外圈配额
+//   语义：内圈怪越少（玩家清得快）→ 系数越大 → 外圈出更多怪补足压力；放技能时系数=1
+//   内圈 = 距场地中心(世界原点) 9m 圆（紧张区，离玩家近）；外圈 = 15m 圆（轻松区）
+//   关卡常数 levelScale = LEVEL_BASE + (n-1)×LEVEL_INC（随关卡推进，玩家杀怪变快→增怪量）
+//   （精英怪=5×普通：本版本暂不做，仅预留此注释；日后加 ENEMY_TYPES 精英变体即可）
+// ============================================================
+export const SPAWN_RING = {
+  enabled: true,           // 总开关：true → 普通关走新调度；false → 回退现有 DDA/时间曲线
+  INNER_RADIUS: 9,         // 内圈半径 m（紧张区）
+  OUTER_RADIUS: 15,        // 外圈半径 m（轻松区）
+  INNER_SPREAD: 3,         // 内圈出生散布 m（收窄，防怪横跨头顶）
+  OUTER_SPREAD: 8,         // 外圈出生散布 m
+  DPS_DIVISOR: 100,        // baseSpawn = DPS / 此值（调大 → 出怪更少）
+  MIN_BASE: 4,             // baseSpawn 下限
+  MAX_BASE: 40,            // baseSpawn 上限（对齐旧 DDA 同屏舒适区）
+  INNER_RATIO: 0.5,        // 内圈初始配额占比（innerQuota = baseSpawn × 此值）
+  INNER_CAP: 5,            // 内圈配额硬上限（对齐 RING_TABLE 索引 0..5）
+  RING_TABLE: [2, 1.8, 1.6, 1.4, 1.2, 1], // 内圈存活 0..5 → 外圈系数（关卡常数=5 基准）
+  CHECK_INTERVAL: 5,       // 每 N 秒检查一次内圈数量
+  SKILL_CD_THRESHOLD: 3,   // 技能冷却 > 此值 → 判定「最近 5 秒释放过技能」（8-5=3）→ 系数=1
+  REFILL_COOLDOWN: 0.3,    // 补怪滴流间隔 s（避免一次性涌出大量怪/光点）
+  stopAt: 60,              // 停止补怪时间窗 s（对齐 NORMAL_TEST.stopAt；场上清空即通关）
+  LEVEL_BASE: 5,           // 关卡常数基准（RING_TABLE 按此基准给出）
+  LEVEL_INC: 0.5,          // 关卡常数随关卡推进增量：levelScale = LEVEL_BASE + (n-1)×LEVEL_INC
+  pool: ['basic'],         // 出怪类型池（测试期仅基础怪；恢复全量改回 NORMAL_TEST.pool 列表）
+};
+
+// ============================================================
 // 脸谱 Boss（第6/18关）— 单 Boss 多阶段循环
 //   单 Boss 3000 HP + 95% 减伤，3 阶段循环（蓝→红→黑→蓝...）直到 HP 归零
 //   每阶段 10s，变脸时换位置（前→左→右→前...）+ 清除子实体
@@ -563,6 +593,7 @@ const _OVERRIDES = [
   ['GUN',     GUN,     USER_CONFIG.GUN],
   ['WAVE',    WAVE,    USER_CONFIG.WAVE],
   ['PORTAL_BEAM', PORTAL_BEAM, USER_CONFIG.PORTAL_BEAM],
+  ['SPAWN_RING', SPAWN_RING, USER_CONFIG.SPAWN_RING],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

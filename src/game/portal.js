@@ -4,12 +4,12 @@
 // 结构仿 openingModel.js：持有 scene + root + mixer，由 Game 在关卡加载时实例化、
 // update 驱动、切关/回菜单时 dispose。纯视觉装饰，不影响射击/碰撞/出怪。
 // 所有尺寸/速度/范围参数集中在 constants.js 的 PORTAL 配置块。
+// GLB 经共享缓存（glbCache.js）加载：跨关复用，每门 clone 独立实例（dispose 只摘除、不释放共享资源）。
 import * as THREE from 'three';
-import { GLTFLoader } from '../../vendor/GLTFLoader.js';
-import { DRACOLoader } from '../../vendor/DRACOLoader.js';
 import { PORTAL } from '../core/constants.js';
+import { loadGLB, cloneGLBScene } from './glbCache.js';
 
-const MODEL_URL = 'Model/传送门动画.glb';
+export const MODEL_URL = 'Model/传送门动画.glb'; // 单一事实来源（main.js 预加载复用）
 
 export class Portal {
   constructor(scene, position, rotation = null) {
@@ -44,26 +44,15 @@ export class Portal {
   }
 
   // 异步加载并播放；加载失败仅告警、不影响关卡进行
+  // GLB 走共享缓存（glbCache.js）：跨关复用同一 gltf，本门 clone 独立实例 + 独立 mixer
   start() {
-    // 每个传送门独立 new loader：GLTFLoader 文件级缓存只缓存原始数据，
-    // 每次 load 重新 parse 出新对象 → 4 份独立 geometry，dispose 互不冲突。
-    const loader = new GLTFLoader();
-    const draco = new DRACOLoader();
-    draco.setDecoderPath('vendor/draco/');
-    loader.setDRACOLoader(draco);
+    loadGLB(MODEL_URL)
+      .then((gltf) => {
+        // 极少见：关卡已切走（dispose 先发生）→ 不挂场景。
+        // gltf 是共享缓存资源，绝不能释放（由 glbCache 跨关持有）
+        if (this._disposed) return;
 
-    loader.load(
-      MODEL_URL,
-      (gltf) => {
-        // 极少见：关卡已切走（dispose 先发生）→ 释放本次加载的几何/材质，不入场景
-        if (this._disposed) {
-          gltf.scene.traverse((o) => {
-            if (o.isMesh) { o.geometry?.dispose?.(); o.material?.dispose?.(); }
-          });
-          return;
-        }
-
-        this.root = gltf.scene;
+        this.root = cloneGLBScene(gltf); // 克隆：4 个门各自独立实例 + 独立 mixer
 
         // 缩放 = (目标高度/原始高) × 整体倍数：TARGET_HEIGHT 定基准高度，SCALE 再整体放大/缩小。
         // 两者解耦：改高度不影响 SCALE 语义，改 SCALE 高宽厚一起变。
@@ -77,7 +66,7 @@ export class Portal {
         this.root.rotation.set(this._rot.x || 0, this._rot.y || 0, this._rot.z || 0);
         this.scene.add(this.root);
 
-        // 播放第 1 条内嵌动画，循环
+        // 播放第 1 条内嵌动画，循环（mixer 绑定克隆体 root，动画状态独立）
         if (gltf.animations && gltf.animations.length) {
           this.mixer = new THREE.AnimationMixer(this.root);
           const action = this.mixer.clipAction(gltf.animations[0]);
@@ -86,10 +75,8 @@ export class Portal {
         }
 
         this._ready = true;
-      },
-      undefined,
-      (err) => { console.warn('[Portal] 加载失败，跳过传送门:', err); }
-    );
+      })
+      .catch((err) => { console.warn('[Portal] 加载失败，跳过传送门:', err); });
   }
 
   // 创建数值标签（同步，不需等模型加载）。
@@ -206,14 +193,8 @@ export class Portal {
     }
     if (this.root) {
       this.scene.remove(this.root);
-      // 本类每次新建 GLTFLoader 单独加载，root 不与他人共享 → 可整体释放
-      this.root.traverse((o) => {
-        if (o.isMesh) {
-          o.geometry?.dispose?.();
-          if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose());
-          else o.material?.dispose?.();
-        }
-      });
+      // ⚠️ root 是共享 gltf 的 clone：geometry/material/texture 由 glbCache 跨关持有，
+      //    只摘除、绝不 dispose（否则首关后缓存资源被释放，重进关克隆失效）
       this.root = null;
     }
   }

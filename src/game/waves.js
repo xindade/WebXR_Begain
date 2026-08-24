@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM } from '../core/constants.js';
+import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM, SPAWN_RING } from '../core/constants.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { isBoss } from '../content/levels.js';
 import { LEVEL_ENEMY } from '../content/spawnPlans.js';
@@ -15,12 +15,21 @@ const _portalTmp = new THREE.Vector3();
 
 // 波次管理：分阶段生成（前→左右→全向），清空后触发抽卡
 export class WaveManager {
-  constructor(scene, balloons, getPlayerPos, dda, getPortals) {
+  constructor(scene, balloons, getPlayerPos, dda, getPortals, getPlayerDPS = null, getSkillCd = null) {
     this.scene = scene;
     this.balloons = balloons;
     this.getPlayerPos = getPlayerPos;
     this.dda = dda || null;   // 动态难度控制器（DDA）；null 时 normalTest 走原时间曲线
     this.getPortals = getPortals || null; // () => game._portals；null 视为无门 → 直接 spawn
+    this.getPlayerDPS = getPlayerDPS;             // () => number  玩家当前 DPS（game 注入）
+    this.getSkillCd = getSkillCd || (() => 0);    // () => number  技能剩余冷却（>3=最近5秒放过技能）
+    // —— 新调度（DPS 内外圈）状态 ——
+    this.levelScale = SPAWN_RING.LEVEL_BASE; // 关卡常数
+    this.baseSpawn = 0;          // 基础出怪量
+    this.innerQuota = 0;         // 内圈目标配额
+    this.outerQuota = 0;         // 外圈目标配额（每 5s 由内圈系数调整）
+    this.ringTimer = 0;          // 距上次内圈检查的累计秒
+    this._lastCheckInner = 0;    // 上次检查时内圈存活数（调试用）
     this.reset();
   }
 
@@ -47,8 +56,12 @@ export class WaveManager {
     this._redSpawned = false;
     this._redPlaced = false;      // 红阶段旗子是否已移到 Boss 两侧（公转结束标记）
     this._cloneSpawnedCount = 0;
-    this._pendingSpawns = [];   // 出怪光点队列 [{type,pos,from,dur,t,mesh,onSpawn,check,summonOwner,group}]
+    this._pendingSpawns = [];   // 出怪光点队列 [{type,pos,from,dur,t,mesh,onSpawn,check,summonOwner,group,ring}]
     this._bossQueued = false;   // Boss 已在排队（防重复排队刷光点）
+    this.ringTimer = 0;          // DPS 内外圈调度：检查计时
+    this.baseSpawn = 0;          // 基础出怪量
+    this.innerQuota = 0;         // 内圈目标配额
+    this.outerQuota = 0;         // 外圈目标配额
   }
 
   // 本关剩余敌人数 = 尚未生成 + 场上存活 + 飞行中的光点（待落地怪）
@@ -94,6 +107,7 @@ export class WaveManager {
     if (NORMAL_TEST.enabled) {
       this.mode = 'normalTest';
       this.dda?.reset?.();   // 每关重置难度与击杀窗口，避免上一局残留拉高击杀率
+      this._initDpsSpawn(level);   // 新调度：按 DPS + 关卡常数初始化内外圈配额
       return;
     }
     this.mode = 'level';
@@ -187,6 +201,7 @@ export class WaveManager {
       check: opts.check || null,
       summonOwner: opts.summonOwner || null,
       group: opts.group || null,
+      ring: opts.ring || null,   // 'inner' | 'outer'：供 _pendingInRing 统计
     });
     return null;   // 已入队，无 balloon 引用
   }
@@ -661,8 +676,117 @@ export class WaveManager {
     );
   }
 
+  // ===== 新调度：玩家 DPS 基准 + 内外圈（SPAWN_RING）=====
+
+  // 每关开始：以玩家 DPS 为基准算出基础出怪量，平均分配内外圈初始配额
+  // 基础出怪量 = clamp(DPS/DPS_DIVISOR × levelScale/LEVEL_BASE, MIN_BASE, MAX_BASE)
+  // 关卡常数 levelScale = LEVEL_BASE + (n-1)×LEVEL_INC（随关卡推进增加怪量）
+  _initDpsSpawn(level) {
+    const S = SPAWN_RING;
+    const dps = this.getPlayerDPS ? this.getPlayerDPS() : 200; // 兜底预览模式初始 DPS
+    this.levelScale = S.LEVEL_BASE + (level.n - 1) * S.LEVEL_INC;
+    this.baseSpawn = THREE.MathUtils.clamp(
+      Math.round((dps / S.DPS_DIVISOR) * (this.levelScale / S.LEVEL_BASE)),
+      S.MIN_BASE, S.MAX_BASE
+    );
+    // 内圈配额 = baseSpawn×50%，硬上限 INNER_CAP=5（对齐 RING_TABLE 索引 0..5，保证反馈生效）
+    this.innerQuota = Math.min(Math.round(this.baseSpawn * S.INNER_RATIO), S.INNER_CAP);
+    this.outerQuota = Math.round(this.baseSpawn * S.INNER_RATIO); // 初始外圈 = 50%（首查后由内圈系数接管）
+    this.ringTimer = 0;
+    this.spawnTimer = 0;
+    this._lastCheckInner = 0;
+  }
+
+  // 每帧驱动：5s 检查内圈 → 系数调外圈；时间窗内滴流补怪；窗后清空通关
+  _updateDpsSpawn(dt) {
+    const S = SPAWN_RING;
+    this.ringTimer += dt;
+
+    // 每 CHECK_INTERVAL 秒：检查内圈存活 → 算系数 → 调外圈配额
+    if (this.ringTimer >= S.CHECK_INTERVAL) {
+      this.ringTimer = 0;
+      this._ringCheck();
+    }
+
+    // 停止补怪时间窗内：滴流补怪到配额
+    if (this.elapsed < S.stopAt) this._refillDrip(dt);
+
+    // 时间窗结束且场上清空（含飞行光点）→ 通关
+    if (this.elapsed >= S.stopAt && this._active === 0) this.cleared = true;
+  }
+
+  // 每 5 秒检查：内圈存活数 → RING_TABLE → 内圈系数 → 外圈目标
+  // 语义：内圈怪越少（玩家清得快）→ 系数越大 → 外圈出更多怪补足压力；放过技能 → 系数恒 1
+  _ringCheck() {
+    const S = SPAWN_RING;
+    const inner = this._countInRing(S.INNER_RADIUS);   // 只统计已落地存活怪（不计 pending 光点）
+    this._lastCheckInner = inner;
+    let coeff = 1;
+    if (!(this.getSkillCd() > S.SKILL_CD_THRESHOLD)) { // 最近 5 秒未放技能 → 用系数表
+      const idx = Math.min(Math.max(inner, 0), S.RING_TABLE.length - 1); // clamp 0..5
+      coeff = S.RING_TABLE[idx];
+    }
+    // 释放过技能 → 系数恒为 1（不追加外圈压力）
+    this.outerQuota = Math.round(this.baseSpawn * coeff);
+    this.innerQuota = Math.min(Math.round(this.baseSpawn * S.INNER_RATIO), S.INNER_CAP);
+  }
+
+  // 每帧滴流补怪：按内外圈缺口大小，优先补缺口大的环，一次一只，受 REFILL_COOLDOWN 节流
+  _refillDrip(dt) {
+    const S = SPAWN_RING;
+    this.spawnTimer -= dt;
+    if (this.spawnTimer > 0) return;
+
+    const innerAlive  = this._countInRing(S.INNER_RADIUS);
+    const outerAlive  = this.balloons.count - innerAlive;  // 内圈以外均算外圈（含 9~15m 过渡带）
+    const pendInner   = this._pendingInRing('inner');
+    const pendOuter   = this._pendingInRing('outer');
+    const innerNeed   = this.innerQuota - (innerAlive + pendInner); // 含飞行光点防超量排队
+    const outerNeed   = this.outerQuota - (outerAlive + pendOuter);
+    if (innerNeed <= 0 && outerNeed <= 0) { this.spawnTimer = 0.1; return; }
+
+    const type = S.pool[(Math.random() * S.pool.length) | 0] || 'basic';
+    const radius = ENEMY_TYPES[type]?.radius || 0.5;
+    const spawnInner = () => this._queueSpawn(type,
+      this._spawnPos(radius, { dist: S.INNER_RADIUS, spread: S.INNER_SPREAD }), { ring: 'inner' });
+    const spawnOuter = () => this._queueSpawn(type,
+      this._spawnPos(radius, { dist: S.OUTER_RADIUS, spread: S.OUTER_SPREAD }), { ring: 'outer' });
+
+    if (innerNeed >= outerNeed) {
+      if (innerNeed > 0) spawnInner(); else if (outerNeed > 0) spawnOuter();
+    } else {
+      if (outerNeed > 0) spawnOuter(); else if (innerNeed > 0) spawnInner();
+    }
+    this.spawnTimer = S.REFILL_COOLDOWN;
+  }
+
+  // 统计：距场地中心（世界原点）水平距离 < maxDist 的存活怪数
+  _countInRing(maxDist) {
+    let n = 0;
+    const r2 = maxDist * maxDist;
+    for (const b of this.balloons.list) {
+      if (!b.alive) continue;
+      const x = b.mesh.position.x, z = b.mesh.position.z;
+      if (x * x + z * z < r2) n++;
+    }
+    return n;
+  }
+
+  // 统计：飞行中的光点里属于某环的数量
+  _pendingInRing(ring) {
+    let n = 0;
+    for (const it of this._pendingSpawns) if (it.ring === ring) n++;
+    return n;
+  }
+
   _updateNormalTest(dt) {
     this.elapsed += dt;
+
+    // 新调度（DPS 基准内外圈）：SPAWN_RING.enabled=true 时完全接管，替换下方 DDA 分支
+    if (SPAWN_RING.enabled) {
+      this._updateDpsSpawn(dt);
+      return;
+    }
 
     // 方案 A：DDA 完全接管出怪（数量/种类/位置由难度标量驱动），替换原时间升级曲线
     if (DDA.enabled && this.dda) {

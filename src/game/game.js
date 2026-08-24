@@ -13,7 +13,7 @@ import { OpeningModel } from './openingModel.js';
 import { Portal } from './portal.js';
 import { LEVELS, isLaser, isBoss } from '../content/levels.js';
 import { LEVEL_PLANS } from '../content/spawnPlans.js';
-import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES } from '../core/constants.js';
 import { setRenderer } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 
@@ -46,7 +46,14 @@ export class Game {
     this.bullets = new BulletManager(world.scene);
     // DDA：内置战斗监测（每帧由 _ddaMetrics() 读取玩家/场上状态），喂给 WaveManager 调度出怪
     this.dda = new DifficultyController(() => this._ddaMetrics());
-    this.waves = new WaveManager(world.scene, this.balloons, () => this.rig.getWorldPosition(new THREE.Vector3()), this.dda, () => this._portals);
+    this.waves = new WaveManager(
+      world.scene, this.balloons,
+      () => this.rig.getWorldPosition(new THREE.Vector3()),
+      this.dda,
+      () => this._portals,
+      () => this._playerDPS(),     // 新：玩家 DPS（内外圈调度基准）
+      () => this.skillCooldown     // 新：技能剩余冷却（>3 = 最近5秒放过技能 → 内圈系数=1）
+    );
     this.cards = new CardDraft(world.scene);
     this.rightGun = new RightGun(world.scene);   // 右手柄 AK 枪（VR 手持，纯视觉）
 
@@ -347,7 +354,10 @@ export class Game {
     this.hud.setScore(this.score);
     this.hud.setHp(this.player.hp, this.player.maxHp);
     // 正常测试：显示"距停止补怪"倒计时，便于观察出怪曲线
-    if (this.normalTest) this.hud.setCountdown(Math.ceil(Math.max(0, NORMAL_TEST.stopAt - this.waves.elapsed)));
+    if (this.normalTest) {
+      const stopAt = SPAWN_RING.enabled ? SPAWN_RING.stopAt : NORMAL_TEST.stopAt;
+      this.hud.setCountdown(Math.ceil(Math.max(0, stopAt - this.waves.elapsed)));
+    }
 
     if (!this.player.alive) { this._restartLevel(); return; }
     const cleared = this.dragon ? this.dragon.cleared : this.waves.cleared;
@@ -549,6 +559,16 @@ export class Game {
     }
     this.bullets.sync(); // 碰撞释放后立刻刷新实例矩阵（避免命中子弹滞留一帧）
     // 气球 vs 飞船碰撞已移除 → 改由 _checkExplosions() 处理
+  }
+
+  // 玩家 DPS = 攻击力 × 多重弹道 × 射速(发/秒)。
+  // 射速取 input._gunCooldown（真实节流，随枪械模式切换）；fallback 到 GUN_MODES。
+  // 若日后 fireRate 卡修复为同步 input._gunCooldown，此处自动反映。
+  _playerDPS() {
+    const p = this.player;
+    const g = GUN_MODES[this.gunMode] || GUN_MODES.preview;
+    const rate = 1000 / (this.input?._gunCooldown || g.cooldown);
+    return (p?.atk || 100) * (p?.shotCount || 1) * rate;
   }
 
   // DDA 监测信号：每帧由 DifficultyController 调用，读取玩家综合战力 / 船血 与 场上怪物综合战斗数值

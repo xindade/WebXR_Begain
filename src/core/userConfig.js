@@ -117,4 +117,28 @@ export const USER_CONFIG = {
     APPLY_SUMMON: true,   // 召唤怪小兵也走光点
     APPLY_FACE_SUB: true, // 脸谱 Boss 子实体走光点（Boss 关无门时无实际效果）
   },
+
+  // ==================== DPS 基准内外圈出怪 ====================
+  // 普通关出怪调度：基础出怪量由玩家 DPS 决定，内外圈分布；
+  // 每 CHECK_INTERVAL 秒检查内圈存活数 → 内圈系数 → 调整外圈配额（内圈空→外圈多出）。
+  SPAWN_RING: {
+    enabled: true,        // 总开关：false → 回退原 DDA/时间曲线出怪
+    INNER_RADIUS: 9,      // 内圈半径（米）：紧张区，离玩家近
+    OUTER_RADIUS: 15,     // 外圈半径（米）：轻松区，离玩家远
+    INNER_SPREAD: 3,      // 内圈出生散布（米）：小 → 更贴 9m 圈
+    OUTER_SPREAD: 8,      // 外圈出生散布（米）
+    DPS_DIVISOR: 100,     // 基础出怪量 = 玩家DPS / 此值（调大 → 出怪更少）
+    MIN_BASE: 4,          // 基础出怪量下限
+    MAX_BASE: 40,         // 基础出怪量上限（PICO 同屏舒适区）
+    INNER_RATIO: 0.5,     // 内圈初始配额占比（50% = 内外圈平均分布）
+    INNER_CAP: 5,         // 内圈配额硬上限（与系数表索引对齐）
+    RING_TABLE: [2, 1.8, 1.6, 1.4, 1.2, 1], // 内圈存活 0..5 → 外圈出怪系数
+    CHECK_INTERVAL: 5,    // 每 N 秒检查一次内圈数量
+    SKILL_CD_THRESHOLD: 3, // 技能冷却 > 此值 = 最近 5 秒放过技能 → 系数=1（不追加外圈压力）
+    REFILL_COOLDOWN: 0.3, // 补怪滴流间隔（秒）
+    stopAt: 60,           // 停止补怪时间窗（秒）：之后场上清空即通关
+    LEVEL_BASE: 5,        // 关卡常数基准
+    LEVEL_INC: 0.5,       // 关卡常数推进增量（每关 +0.5）
+    pool: ['basic'],      // 出怪类型池
+  },
 };

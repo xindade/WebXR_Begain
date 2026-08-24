@@ -9,6 +9,9 @@ import { WristUI } from './vr/wrist-ui.js';
 import { Game } from './game/game.js';
 import { LEVELS } from './content/levels.js';
 import { preloadCardImages } from './game/cardDraft.js';
+import { preloadGLB } from './game/glbCache.js';
+import { MODEL_URL as PORTAL_MODEL_URL } from './game/portal.js';
+import { MODEL_URL as OPENING_MODEL_URL } from './game/openingModel.js';
 
 window.__pageLog?.info('[main] 模块开始执行（imports 已解析）');
 
@@ -38,16 +41,27 @@ const world = new World(canvas);
   }).then(() => { dragonFrac = 1; })
     .catch(() => { dragonFrac = 1; });
 
+  // 传送门 + 开场动画 GLB（2.4MB + 3.2MB）：下载+DRACO 解码+parse 一次性完成，
+  // 进小怪关 / 3·9·15 关零等待（glbCache 命中，零重复加载）。两文件各占一半进度。
+  const glbParts = [0, 0];
+  const glbTasks = [PORTAL_MODEL_URL, OPENING_MODEL_URL].map((u, i) =>
+    preloadGLB(u, (loaded, total) => {
+      glbParts[i] = total ? Math.min(1, loaded / total) : 0;
+    }).then(() => { glbParts[i] = 1; })
+  );
+  const glbTask = Promise.all(glbTasks);
+
   // 抽卡 PNG（3 张共 ~1.1MB，太小不进进度条；加载完直接注入 game）
   // 失败也不影响：CardDraft 自动回落到 canvas 文字卡
   const cardTask = preloadCardImages()
     .then((texMap) => { game.setCardTextures(texMap); })
     .catch(() => {});
 
-  // 真实总进度：天空与龙资源各占一半权重
+  // 真实总进度：天空 / 龙资产 / 传送门+开场动画 各占三分之一
   const realFrac = () => {
     const sky = skyUrls.reduce((s, u) => s + skyFrac[u], 0) / skyUrls.length;
-    return (sky + dragonFrac) / 2;
+    const glb = (glbParts[0] + glbParts[1]) / 2;
+    return (sky + dragonFrac + glb) / 3;
   };
 
   // —— 分段节奏（毫秒）——
@@ -82,7 +96,7 @@ const world = new World(canvas);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
-  Promise.all([...skyTasks, dragonTask, cardTask]).catch(() => {}); // 触发加载（帧循环独立读取进度）
+  Promise.all([...skyTasks, dragonTask, cardTask, glbTask]).catch(() => {}); // 触发加载（帧循环独立读取进度）
 })();
 
 const hud = new HUD();
