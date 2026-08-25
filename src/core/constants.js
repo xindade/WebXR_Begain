@@ -60,6 +60,9 @@ export const SHOOT = {
   RAY_COLOR: 0xff2222,   // 右手射线颜色（红）
   RAY_LENGTH: 5,         // 射线可见长度 m
   RAY_COLOR_LEFT: 0x66ccff, // 左手射线颜色（青，保持原样）
+
+  HIT_PAD: 0.05,       // 命中判定球相对怪物可见半径的填充（米）：越小越贴合可见球体，0.12→擦边误判、0.05→仅真穿中才命中
+  HIT_SLAB_DEPTH: 0.4, // 2D立绘(DepthSprite)命中板厚（米）：立绘无厚度，3D 球沿纵深(朝相机)伸出会误判；薄板仅给极小纵深容差（斜射时的轻微宽容）
 };
 
 // 枪械模式（预览界面按钮切换）：preview=初始态，full=满状态（点击按钮进入游戏）
@@ -67,6 +70,17 @@ export const SHOOT = {
 export const GUN_MODES = {
   preview: { shotCount: 1, cooldown: 500 },  // 1 弹道 / 2 发每秒
   full:    { shotCount: 5, cooldown: 100 },  // 5 弹道 / 10 发每秒
+};
+
+// 积分散射技能（前期默认技能）：消耗积分，从枪口喷出 COUNT 弹头，轴向 DIST 米处铺成半径 RADIUS 圆盘
+export const SCATTER = {
+  COST: 500,          // 释放消耗积分（积分 <COST 时不释放、不进冷却）
+  COUNT: 50,          // 弹头数量
+  DIST: 9,            // 轴向距离（米）：弹头圆盘中心在枪口前方此距离处
+  RADIUS: 3,          // 圆盘半径（米）：9 米轴向处铺成此半径圆盘
+  COOLDOWN: 0.5,      // 释放后冷却（秒）
+  DAMAGE: 0,          // 每发伤害（0=复用 player.atk）
+  SPREAD_DISC: true,  // true=实心圆盘(面积均匀)；false=仅圆周
 };
 
 export const BALLOON = {
@@ -511,23 +525,19 @@ export const PORTAL = {
   FLOAT_AMP:  0.1,   // 浮动幅度（米）：0.25 过大改轻微
   FLOAT_FREQ: 1.2,   // 浮动频率（Hz）
 
-  // —— 左手摇杆操控 ——
-  STICK: {
-    SPEED:     3.5,   // 摇杆控制速度（米/秒）：与 MOVE.SPEED 一致的满幅速率
-    HEIGHT_MIN: 2,    // 门中心最低高度（米）：下限防入地
-    HEIGHT_MAX: 18,   // 门中心最高高度（米）：上限防过高仰视丢失
-    DIST_MIN:  5,     // 门距场地中心最近距离（米）
-    DIST_MAX:  40,    // 门距场地中心最远距离（米）
+  // —— 每关传送门方向与数量（仅非 boss、非激光机制关生成；见 game._spawnPortals）——
+  // 方向键：FRONT(前,-Z) BACK(后,+Z) LEFT(左,-X) RIGHT(右,+X)
+  // 前几关固定布局；其余非机制/非Boss关从 RANDOM.POOL 随机抽 RANDOM.COUNT 个方向
+  LEVEL_DIRS: {
+    1: ['FRONT'],                     // 第1关：仅前门
+    2: ['FRONT', 'LEFT'],             // 第2关：前+左
+    4: ['FRONT', 'RIGHT'],            // 第4关：前+右
+    5: ['FRONT', 'LEFT', 'RIGHT'],    // 第5关：前+左+右
+    // 3/6/9/12/15/18 为激光或Boss关，由 isLaser/isBoss 跳过；其余关随机
   },
-
-  // —— 数值标签（3D Sprite，双行：高度 / 距离）——
-  LABEL: {
-    CANVAS:   { w: 512, h: 128 }, // 画布分辨率（像素）：只影响清晰度，不影响物理大小
-    W:        2.4,                // 精灵物理宽（米）
-    H:        0.6,                // 精灵物理高（米）
-    Y_OFFSET: 0.5,                // 相对门中心的上偏（米）：放中心略上方，避免贴超高门顶
-    REFRESH_HZ: 15,               // 刷新节流（次/秒）：~15fps，省算力
-    CHANGE_THRESHOLD: 0.1,        // 数值变化超过此值才重绘（米）：静止时不重绘
+  RANDOM: {
+    COUNT: 3,                         // 随机关传送门数量
+    POOL: ['FRONT', 'BACK', 'LEFT', 'RIGHT'], // 随机抽选方向池
   },
 };
 

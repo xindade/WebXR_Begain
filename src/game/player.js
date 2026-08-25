@@ -27,6 +27,7 @@ export class Player {
     const g = GUN_MODES[gunMode] || GUN_MODES.preview;
     this.atk = 100;
     this.shootCooldown = g.cooldown;   // 射击冷却 ms（实际节流在 input.js，player 仅用于存档快照）
+    this.fireRateMul = 1;              // 射速倍率快照（1=原速；射速卡减半为 0.5；真实节流在 input._gunCooldown）
     this.shotCount = g.shotCount;      // 每发子弹的弹道数（fire 确定性扇形）
     this.forceSingleShot = false;      // 抽卡等需要精确选靶时强制单发（由外部置位）
     this.multiShotChance = 0;          // 已弃用：随机多重射击改为 shotCount 确定性（爆炸系统已删除）

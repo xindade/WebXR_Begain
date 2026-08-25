@@ -26,7 +26,7 @@ export class BulletManager {
   _obtain() {
     let b = this._pool.pop();
     if (!b) {
-      b = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, dmg: 0, alive: false };
+      b = { pos: new THREE.Vector3(), prevPos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, dmg: 0, alive: false };
     }
     b.alive = true;
     this.active.push(b);
@@ -40,6 +40,7 @@ export class BulletManager {
     }
     const b = this._obtain();
     b.pos.copy(position);
+    b.prevPos.copy(position); // 本帧线段起点 = 出生点（首帧线段退化为点，不误判）
     b.vel.copy(direction).normalize().multiplyScalar(SHOOT.BULLET_SPEED);
     b.life = SHOOT.BULLET_LIFE;
     b.dmg = dmg;
@@ -69,6 +70,7 @@ export class BulletManager {
   update(dt) {
     for (let i = this.active.length - 1; i >= 0; i--) {
       const b = this.active[i];
+      b.prevPos.copy(b.pos); // 线段判定起点 = 上一帧位置
       b.pos.addScaledVector(b.vel, dt);
       b.life -= dt;
       if (b.life <= 0) this.release(b);

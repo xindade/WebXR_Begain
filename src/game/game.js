@@ -13,12 +13,41 @@ import { OpeningModel } from './openingModel.js';
 import { Portal } from './portal.js';
 import { LEVELS, isLaser, isBoss } from '../content/levels.js';
 import { LEVEL_PLANS } from '../content/spawnPlans.js';
-import { BALLOON, BUDDHA, SHIP, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER } from '../core/constants.js';
 import { setRenderer } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 
 const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关' };
 const ORIGIN = new THREE.Vector3(0, 0, 0);
+const _WORLD_UP = new THREE.Vector3(0, 1, 0);
+
+// 线段 a-b 上离点 p 最近点的距离平方（命中判定用：子弹本帧轨迹 vs 怪物球心）
+// 退化（a≈b）时回退为点到点距离，不会误判。
+const _segAB = new THREE.Vector3();
+const _segAP = new THREE.Vector3();
+const _segClosest = new THREE.Vector3();
+const _segN = new THREE.Vector3(); // 2D立绘命中板法线(朝相机)
+function _pointSegDistSq(p, a, b) {
+  _segAB.copy(b).sub(a);
+  const ab2 = _segAB.lengthSq();
+  if (ab2 < 1e-12) return p.distanceToSquared(a);
+  _segAP.copy(p).sub(a);
+  let t = _segAP.dot(_segAB) / ab2;
+  if (t < 0) t = 0; else if (t > 1) t = 1;
+  _segClosest.copy(a).addScaledVector(_segAB, t);
+  return _segClosest.distanceToSquared(p);
+}
+
+// 线段 a→b 上离点 p 最近的点写入 out（复用 _segAB/_segAP 临时量）
+function _closestPointOnSeg(out, p, a, b) {
+  _segAB.copy(b).sub(a);
+  const ab2 = _segAB.lengthSq();
+  if (ab2 < 1e-12) { out.copy(a); return; }
+  _segAP.copy(p).sub(a);
+  let t = _segAP.dot(_segAB) / ab2;
+  if (t < 0) t = 0; else if (t > 1) t = 1;
+  out.copy(a).addScaledVector(_segAB, t);
+}
 
 export class Game {
   constructor(world, hud) {
@@ -76,12 +105,13 @@ export class Game {
     this._levelSnapshot = null;  // 关卡开始时的玩家属性+分数快照
     this._explosions = [];       // 爆炸视觉特效列表
     this.enemyFreeze = 0;        // 定身咒计时(s)：>0 时敌人暂停行动（Boss 仅前 50% 时长）
-    this.selectedSkill = 'buddha'; // 当前装备技能：默认如来神掌（普通关沿用原大招行为）；第三关选卡后改为 staff/freeze/buddha 之一，右手握柄触发
+    this.selectedSkill = 'scatter'; // 当前装备技能：前期默认「积分散射」；第三关选卡后可替换为 staff/freeze/buddha，右手握柄触发
     this.skillCooldown = 0;      // 技能释放冷却计时(s)：>0 时握柄无效，HUD 显示剩余
 
     this._tmp = new THREE.Vector3();
     this._tmp2 = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
+    this._camPos = new THREE.Vector3(); // 每帧刷新相机世界坐标，供 2D 立绘薄板命中(法线=朝相机)
   }
 
   setSystems(audio, input, wristUI = null, pageLog = null) {
@@ -98,6 +128,7 @@ export class Game {
     this.gunMode = gunMode;
     this.player.reset(gunMode);
     this.input?.setGunMode(gunMode);
+    this.player.input = this.input; // 让射速卡能触达真实节流源（input.setFireRateMul）
     this.balloons.clear();
     this.bullets.clear();
     this.score = 0;
@@ -186,8 +217,8 @@ export class Game {
       this.openingModel = new OpeningModel(this.world.scene, new THREE.Vector3(0, 1.4, -5));
       this.openingModel.start();
     }
-    // 小怪关（非 boss、非激光机制）：场地中心前后左右各 20m 放传送门装饰（自带动画+上下浮动）
-    if (!isBoss(lv) && !isLaser(lv)) this._spawnPortals();
+    // 小怪关（非 boss、非激光机制）：按本关方向表生成传送门装饰（自带动画+上下浮动）
+    if (!isBoss(lv) && !isLaser(lv)) this._spawnPortals(lv);
     if (isLaser(lv)) {
       this.laserMode = true;
       // 透传 laserMode：'drive' 为第九关（生成→驱赶→保持原地→走格子），'full' 为第三关（搭阵），'flip' 为第十五关（九宫格）
@@ -222,39 +253,41 @@ export class Game {
     if (!isLaser(lv)) this._snapshotState();
   }
 
-  // 小怪关装饰：场地中心（世界原点）前后左右各 20m 各放一个传送门（前=-Z 后=+Z 左=-X 右=+X）
-  // 位置/朝向/离地高度全部来自 PORTAL 配置（改配置即整体调整，勿在此散落魔法数）
-  _spawnPortals() {
-    const P = PORTAL.DISTANCE_P;
-    const Y = PORTAL.HEIGHT_Y;
-    const R = PORTAL.ROT; // {X:{LEFT,RIGHT}, Y:{LEFT,RIGHT}, Z:{LEFT,RIGHT}} 三轴旋转（弧度）
+  // 小怪关装饰：按本关方向表在场地中心四周生成传送门（FRONT=-Z BACK=+Z LEFT=-X RIGHT=+X）
+  // 方向→位置/朝向全部来自 PORTAL 配置（改配置即整体调整，勿在此散落魔法数）
+  // 固定布局见 PORTAL.LEVEL_DIRS；其余非机制/非Boss关从 PORTAL.RANDOM.POOL 随机抽 COUNT 个
+  _spawnPortals(lv) {
+    const P = PORTAL.DISTANCE_P;   // 距场地中心水平距离（米）
+    const Y = PORTAL.HEIGHT_Y;     // 门中心离地高度（米）
+    const R = PORTAL.ROT;          // {X/Y/Z:{LEFT,RIGHT}} 三轴旋转（弧度）
     const rotL = { x: R.X.LEFT, y: R.Y.LEFT, z: R.Z.LEFT };   // 左门三轴
     const rotR = { x: R.X.RIGHT, y: R.Y.RIGHT, z: R.Z.RIGHT }; // 右门三轴
-    const spots = [
-      { pos: new THREE.Vector3(0, Y, -P),        rot: { x: 0, y: 0, z: 0 } }, // 前：无旋转
-      { pos: new THREE.Vector3(0, Y,  P),        rot: { x: 0, y: 0, z: 0 } }, // 后：无旋转
-      { pos: new THREE.Vector3(-P, Y, 0),        rot: rotL },                 // 左
-      { pos: new THREE.Vector3( P, Y, 0),        rot: rotR },                 // 右
-    ];
-    spots.forEach(({ pos, rot }) => {
-      const portal = new Portal(this.world.scene, pos, rot);
+    const DIR = {
+      FRONT: { pos: new THREE.Vector3(0,  Y, -P), rot: { x: 0, y: 0, z: 0 } }, // 前：无旋转
+      BACK:  { pos: new THREE.Vector3(0,  Y,  P), rot: { x: 0, y: 0, z: 0 } }, // 后：无旋转
+      LEFT:  { pos: new THREE.Vector3(-P, Y, 0),  rot: rotL },                 // 左
+      RIGHT: { pos: new THREE.Vector3( P, Y, 0),  rot: rotR },                 // 右
+    };
+    // 选方向：本关固定表优先；否则随机抽 COUNT 个（Fisher–Yates 洗牌后取前 COUNT）
+    let dirs = PORTAL.LEVEL_DIRS[lv.n];
+    if (!dirs) {
+      const pool = PORTAL.RANDOM.POOL.slice();
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+      dirs = pool.slice(0, PORTAL.RANDOM.COUNT);
+    }
+    dirs.forEach((k) => {
+      const d = DIR[k];
+      if (!d) return;
+      const portal = new Portal(this.world.scene, d.pos, d.rot);
       portal.start();
       this._portals.push(portal);
     });
   }
 
-  // 左手摇杆 → 传送门整体操控（仅小怪关有传送门时消费；Boss/激光关 _portals 为空 → 无副作用）
-  _applyPortalStick(dt) {
-    if (!this._portals.length) return;
-    const s = this.input?.leftStick || { x: 0, y: 0 };
-    if (s.x === 0 && s.y === 0) return;
-    const spd = PORTAL.STICK.SPEED * dt;
-    // 映射（见「方向映射」）：Y 前推(负) → +dy 升高；X 右推(正) → +dr 远离中心。
-    // 若上机手感反了，只需互换下面 dy/dr 的符号，一处改动。
-    const dy = -s.y * spd;
-    const dr =  s.x * spd;
-    this._portals.forEach((p) => p.applyStick(dy, dr));
-  }
+  // 左手摇杆 → 传送门整体操控已移除（测试确认不需要，见 2026-08-25 改动）
 
   // 清理所有传送门（幂等）：切关、回菜单、游戏结束时调用
   _clearPortals() {
@@ -302,7 +335,6 @@ export class Game {
 
   _updatePlaying(dt) {
     this.input.update(dt);
-    this._applyPortalStick(dt); // 左手摇杆 → 传送门（仅小怪关有门时生效）
     this.player.update(dt);
     this.bullets.update(dt);
     const pp = this._playerPos();
@@ -314,7 +346,8 @@ export class Game {
     if (this.input.consumeSkill() && this.selectedSkill && this.skillCooldown <= 0) this._triggerSelectedSkill();
     const skillLabel = this.selectedSkill === 'buddha' ? '如来神掌'
                      : this.selectedSkill === 'staff' ? '金箍棒'
-                     : this.selectedSkill === 'freeze' ? '定身咒' : null;
+                     : this.selectedSkill === 'freeze' ? '定身咒'
+                     : this.selectedSkill === 'scatter' ? '积分散射' : null;
     this.hud.setSkill(skillLabel, this.skillCooldown, this._skillCdTotal());
 
     // ====== 激光关：无普通敌人，仅激光气球 ======
@@ -523,6 +556,7 @@ export class Game {
   _collide() {
     // 子弹 vs 气球（反向遍历子弹：release swap-pop 后索引稳定；内循环命中即 break，无需 spread）
     const bullets = this.bullets.active;
+    this.world.camera.getWorldPosition(this._camPos); // 供 2D 立绘薄板命中(法线=朝相机)使用
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i];
       const list = this.balloons.list;
@@ -531,8 +565,24 @@ export class Game {
         if (!balloon.alive) continue; // 跳过已隐藏的龙气球（复活前），防重复触发
         // 幽灵怪隐身期间无视子弹（仅蓄力显形时可被击中）
         if (balloon.behavior === 'ghost' && !balloon.revealed) continue;
-        const rr = balloon.hitRadius + 0.12;
-        if (b.pos.distanceToSquared(balloon.mesh.position) < rr * rr) { // 平方距离避免开方
+        const rr = balloon.hitRadius + SHOOT.HIT_PAD; // 命中球 ≈ 怪物可见半径
+        // 命中判定分两类：
+        //  a) 普通 3D 模型 → 线段-球心最近距离（轨迹真正穿过可见球体才命中，擦边/高速穿透不再误判）。
+        //  b) 2D 立绘(DepthSprite，永远朝相机的扁平 billboard) → 改用「薄板」：立绘无厚度，3D 球会沿纵深(朝相机)
+        //     伸出 rr，导致子弹在卡片正前方 rr 米(还没飞到)就误判命中；薄板仅当子弹在卡片平面内横向最近距
+        //     < rr 且 纵深偏移 < HIT_SLAB_DEPTH 才命中（板厚仅给斜射时的极小微宽容）。
+        let _hit = false;
+        if (balloon.depthSprite) {
+          _closestPointOnSeg(_segClosest, balloon.mesh.position, b.prevPos, b.pos); // 轨迹上离中心最近点
+          _segAB.copy(_segClosest).sub(balloon.mesh.position);                      // 最近点→中心
+          _segN.copy(this._camPos).sub(balloon.mesh.position).normalize();          // 卡片法线(朝相机)
+          const _depth = _segAB.dot(_segN);                                         // 纵深分量(沿法线)
+          const _inPlaneSq = Math.max(0, _segAB.lengthSq() - _depth * _depth);       // 平面内横向分量²
+          if (_inPlaneSq < rr * rr && Math.abs(_depth) < SHOOT.HIT_SLAB_DEPTH) _hit = true;
+        } else {
+          if (_pointSegDistSq(balloon.mesh.position, b.prevPos, b.pos) < rr * rr) _hit = true;
+        }
+        if (_hit) {
           // 盾兵怪：盾牌当前朝向玩家且在挡弹夹角内 → 挡下子弹（不扣血）
           if (balloon.behavior === 'shield') {
             const sb = balloon.getShieldBlock();
@@ -694,6 +744,9 @@ export class Game {
         this._doBuddha(); break;
       case 'staff':  this._castStaff(); break;
       case 'freeze': this._castFreeze(); break;
+      case 'scatter':
+        if (!this._castScatter()) return; // 积分不足 → 不进入冷却，可立即重试
+        break;
     }
     this.skillCooldown = this._skillCdTotal();
   }
@@ -701,7 +754,34 @@ export class Game {
     if (this.selectedSkill === 'buddha') return BUDDHA.COOLDOWN;
     if (this.selectedSkill === 'staff')  return STAFF.COOLDOWN;
     if (this.selectedSkill === 'freeze') return FREEZE.COOLDOWN;
+    if (this.selectedSkill === 'scatter') return SCATTER.COOLDOWN;
     return 0;
+  }
+
+  // 积分散射：消耗积分，从枪口喷出 COUNT 弹头，轴向 DIST 米铺成半径 RADIUS 圆盘（实心/环）
+  _castScatter() {
+    if (this.score < SCATTER.COST) { this.log(`积分不足（需${SCATTER.COST}）`); return false; }
+    this.score -= SCATTER.COST;
+    this.hud.setScore(this.score);
+    const muzzle = new THREE.Vector3();
+    const dir = new THREE.Vector3();
+    this.input.getMuzzle(muzzle, dir); // 右手柄位姿（无则回退相机）
+    // 以瞄准方向 dir 为轴建正交基：right ⊥ dir（水平），up = right × dir
+    const right = new THREE.Vector3().crossVectors(dir, _WORLD_UP).normalize();
+    const up = new THREE.Vector3().crossVectors(right, dir).normalize();
+    const dmg = SCATTER.DAMAGE > 0 ? SCATTER.DAMAGE : this.player.atk;
+    for (let i = 0; i < SCATTER.COUNT; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const r = SCATTER.SPREAD_DISC ? Math.sqrt(Math.random()) * SCATTER.RADIUS : SCATTER.RADIUS; // 实心=面积均匀，环=等半径
+      // 9 米轴向处铺成半径 R 圆盘：bdir = dir*DIST + (right*cosθ + up*sinθ)*r
+      const bx = dir.x * SCATTER.DIST + (right.x * Math.cos(theta) + up.x * Math.sin(theta)) * r;
+      const by = dir.y * SCATTER.DIST + (right.y * Math.cos(theta) + up.y * Math.sin(theta)) * r;
+      const bz = dir.z * SCATTER.DIST + (right.z * Math.cos(theta) + up.z * Math.sin(theta)) * r;
+      const bdir = new THREE.Vector3(bx, by, bz).normalize();
+      this.bullets.spawn(muzzle, bdir, dmg);
+    }
+    this.log(`积分散射！消耗${SCATTER.COST}积分，喷出${SCATTER.COUNT}弹头`);
+    return true;
   }
 
   // 金箍棒：玩家正前方 90° 扇形（±45°）内敌人受致命伤 ≈ 四分之一全屏

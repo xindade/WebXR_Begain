@@ -24,12 +24,13 @@ export class InputManager {
     this.pitch = 0;
     this.locked = false;
     this.desktopShooting = false;
-    this.leftStick = { x: 0, y: 0 }; // 左手摇杆原始值（x 右推为正；y 前推为负，PICO 约定），每帧在 update 刷新
     this.shots = []; // 本帧待发射：{position, direction}
     this.shotsFired = 0; // 累计开火次数（单调递增，供枪模型后坐力检测「本帧新开了几枪」）
 
     this._cooldowns = { desktop: 0, left: 0, right: 0 };
     this._gunCooldown = (GUN_MODES.preview || { cooldown: SHOOT.COOLDOWN }).cooldown; // 射击冷却 ms（由 setGunMode 按枪械模式切换）
+    this._baseGunCooldown = this._gunCooldown; // 基线冷却（射速卡在此之上乘倍率）
+    this._fireRateMul = 1;                    // 射速倍率（1=原速；射速卡减半为 0.5）
     this._skillQueued = false;
 
     // handedness -> { controller, prevTrigger, prevGrip, prevAB }
@@ -135,7 +136,7 @@ export class InputManager {
   _moveVector() {
     const m = { x: 0, z: 0 };
     if (this.world.isPresenting) {
-      // 仅右手摇杆负责玩家移动（左手摇杆改用于控制传送门，见 game._applyPortalStick）
+      // 仅右手摇杆负责玩家移动
       const gp = this._gamepadOf('right');
       if (gp) {
         let sx = 0, sy = 0;
@@ -158,21 +159,7 @@ export class InputManager {
     return m;
   }
 
-  // 读取左手摇杆原始值（PICO 双摇杆：左手 X/Y = axes[2]/[3]，回退 [0]/[1]）。
-  // 返回 { x, y }：x 右推为正；y 前推为负（PICO 约定）。已做逐轴死区（|v|<DEADZONE → 0）。
-  // 方向语义（升高/远近）由 game._applyPortalStick 消费处定义。
-  _readLeftStick() {
-    const s = { x: 0, y: 0 };
-    if (!this.world.isPresenting) return s; // 桌面无手柄，恒 {0,0}
-    const gp = this._gamepadOf('left');
-    if (!gp) return s;
-    let sx = 0, sy = 0;
-    if (gp.axes.length >= 4) { sx = gp.axes[2]; sy = gp.axes[3]; }
-    else if (gp.axes.length >= 2) { sx = gp.axes[0]; sy = gp.axes[1]; }
-    if (Math.abs(sx) >= MOVE.DEADZONE) s.x = sx;
-    if (Math.abs(sy) >= MOVE.DEADZONE) s.y = sy;
-    return s;
-  }
+  // 左手摇杆读取已移除（测试确认不需要，见 2026-08-25 改动）
 
   _applyLocomotion(m, dt) {
     if (m.x === 0 && m.z === 0) return;
@@ -219,7 +206,25 @@ export class InputManager {
   // 枪械模式切换：preview=初始态, full=满状态（由 game.start 注入，决定射击冷却）
   setGunMode(mode) {
     const g = GUN_MODES[mode] || GUN_MODES.preview;
-    if (g) this._gunCooldown = g.cooldown;
+    if (g) {
+      this._baseGunCooldown = g.cooldown; // 刷新基线（每关切回原速，清掉上关射速卡倍率）
+      this._fireRateMul = 1;              // 倍率重置
+      this._gunCooldown = g.cooldown;
+    }
+  }
+
+  // 射速倍率：射速卡调用（mul<1=更快）。真实改写节流源 _gunCooldown，使 DPS/实际射速随之变化
+  setFireRateMul(mul) {
+    this._fireRateMul = mul;
+    this._gunCooldown = this._baseGunCooldown * mul;
+  }
+
+  // 枪口位姿：取右手柄世界位置 + 瞄准方向（含俯角，与红射线/子弹一致）；无右手柄（桌面）回退相机
+  getMuzzle(outPos, outDir) {
+    const ctrl = this._hands['right'];
+    if (ctrl) { this._rightAim(ctrl, outPos, outDir); return; }
+    this.camera.getWorldPosition(outPos);
+    this._forwardOf(this.camera, outDir);
   }
 
   _tryShootDesktop(dt) {
@@ -286,7 +291,6 @@ export class InputManager {
 
   update(dt) {
     this.shots.length = 0;
-    this.leftStick = this._readLeftStick(); // 每帧刷新左手摇杆（供传送门操控消费）
     this._applyDesktopLook();
     const m = this._moveVector();
     this._applyLocomotion(m, dt);

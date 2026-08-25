@@ -24,8 +24,13 @@ export const ATTR_TYPES = [
     desc: '射速×2',
     image: 'fireRate',
     values: { white: 0, blue: 0, purple: 0, gold: 0 },
-    // 冷却减半，封底为原始 COOLDOWN 的 25%（避免无下限卡死）
-    apply: (p) => { p.shootCooldown = Math.max(SHOOT.COOLDOWN * 0.25, p.shootCooldown * 0.5); },
+    // 冷却减半，封底为原始 COOLDOWN 的 25%（避免无下限卡死）。
+    // 改 player.shootCooldown 只是存档快照——真实节流在 input._gunCooldown，必须调 input.setFireRateMul 才生效。
+    apply: (p) => {
+      p.fireRateMul = Math.max(0.25, (p.fireRateMul ?? 1) * 0.5);
+      p.shootCooldown = Math.max(SHOOT.COOLDOWN * 0.25, p.shootCooldown * 0.5); // 存档快照
+      p.input?.setFireRateMul(p.fireRateMul); // 落到真实节流源：选卡后射速真正翻倍
+    },
   },
   {
     id: 'multiShot',
