@@ -61,8 +61,13 @@ export const SHOOT = {
   RAY_LENGTH: 5,         // 射线可见长度 m
   RAY_COLOR_LEFT: 0x66ccff, // 左手射线颜色（青，保持原样）
 
-  HIT_PAD: 0.05,       // 命中判定球相对怪物可见半径的填充（米）：越小越贴合可见球体，0.12→擦边误判、0.05→仅真穿中才命中
-  HIT_SLAB_DEPTH: 0.4, // 2D立绘(DepthSprite)命中板厚（米）：立绘无厚度，3D 球沿纵深(朝相机)伸出会误判；薄板仅给极小纵深容差（斜射时的轻微宽容）
+  // —— 命中判定几何（仅 DepthSprite 2D立绘怪生效；3D模型怪走真实包围球，不受这两项影响）——
+  // 立绘怪是永远朝相机的扁平卡片，命中体积是一个「竖薄板盒子」：
+  //   范围大小(左右=上下半径) = effectiveRadius × tune.scale × extraScale × DEPTH_SPRITE_HIT_MUL + HIT_PAD
+  //   前后(朝相机方向)         = HIT_SLAB_DEPTH（卡片正前+正后各这么多米的容差）
+  //   整体命中盒 = 宽=2×范围半径，高=2×范围半径，厚=2×HIT_SLAB_DEPTH
+  HIT_PAD: 0.05,       // 【上下/左右】命中半径额外填充（米）：叠加在「范围半径」之外的容差；调小→更贴合，0=完全贴合
+  HIT_SLAB_DEPTH: 0.4, // 【前后】2D立绘命中板厚（米）：卡片朝相机方向正前+正后各容差；调小→收紧前后误判
 };
 
 // 枪械模式（预览界面按钮切换）：preview=初始态，full=满状态（点击按钮进入游戏）
@@ -360,6 +365,11 @@ export const DEPTH_SPRITE_SWING = 0.18; // idle 摆动幅度(弧度)，绕 Y 小
 // 'Model/基础怪.glb': { albedo:'assets/basic_albedo.png', depth:'assets/basic_depth.png', frameCount:8, cols:8, rows:1 }
 export const DEPTH_SPRITE_HANDPAINTED = {}; // 清空即退回运行时 GLB 多帧捕获（basic 恢复 idle 摆动）
 export const DEPTH_SPRITE_SCALE = 0.08;
+// 立绘命中系数（范围大小的主旋钮）：captureGLB 用 45° 相机渲染，模型只占画幅 62.5%（相机距离按 0.8/tan(22.5°) 取景），
+// 立绘纹理其余是透明留边。但命中半径按「整张贴图半幅」算，导致命中范围≈可见角色的 1/0.625≈1.6 倍。
+// 这里把立绘命中半径 ×0.625（≈用户说的"缩小0.6倍"），折算取景留边，使命中等同可见角色。3D 模型怪不受影响。
+// 用 let 以便 userConfig.DEPTH_SPRITE.HIT_MUL 单独覆盖（见文件末尾）。
+export let DEPTH_SPRITE_HIT_MUL = 0.6;
 
 // ============================================================
 // 正常测试模式（NORMAL_TEST）：覆盖普通关出怪曲线
@@ -610,6 +620,12 @@ for (const [name, target, patch] of _OVERRIDES) {
     _checkKeys(name, target, patch);
     Object.assign(target, deepMerge(target, patch));
   }
+}
+
+// 立绘命中系数：允许在 userConfig.DEPTH_SPRITE.HIT_MUL 单独覆盖（它是独立常量，不入上面的对象白名单）
+if (USER_CONFIG?.DEPTH_SPRITE?.HIT_MUL !== undefined) {
+  DEPTH_SPRITE_HIT_MUL = USER_CONFIG.DEPTH_SPRITE.HIT_MUL;
+  console.log('[userConfig] DEPTH_SPRITE.HIT_MUL 覆盖为', DEPTH_SPRITE_HIT_MUL);
 }
 
 // —— PORTAL 尺寸：TARGET_HEIGHT / HEIGHT_Y 为独立参数（与缩放解耦），直接按 userConfig 覆盖结果生效，

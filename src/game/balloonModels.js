@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from '../../vendor/GLTFLoader.js';
 import { DRACOLoader } from '../../vendor/DRACOLoader.js';
-import { DRAGON, DEPTH_SPRITE_MODE, DEPTH_SPRITE_TYPES, DEPTH_SPRITE_SCALE, DEPTH_SPRITE_FRAMES, DEPTH_SPRITE_SWING, DEPTH_SPRITE_HANDPAINTED } from '../core/constants.js';
+import { DRAGON, DEPTH_SPRITE_MODE, DEPTH_SPRITE_TYPES, DEPTH_SPRITE_SCALE, DEPTH_SPRITE_FRAMES, DEPTH_SPRITE_SWING, DEPTH_SPRITE_HANDPAINTED, DEPTH_SPRITE_HIT_MUL } from '../core/constants.js';
 import { DepthSprite } from './depthSprite.js';
 import { captureModelByUrl, loadDepthSpriteSheet } from './glbCapture.js';
 
@@ -100,7 +100,9 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
         balloon.depthSprite = ds;
         balloon._dsScene = balloon.mesh.parent;
         balloon.mesh.material.visible = false; // 隐藏程序化球体
-        balloon.hitRadius = balloon.effectiveRadius * (tune.scale ?? 1) * extraScale;
+        // 命中半径折算取景留边：captureGLB 模型只占画幅 62.5%，立绘纹理其余为透明边；
+        // 不乘系数则命中按整张半幅算，比可见角色大 ~1.6 倍。×DEPTH_SPRITE_HIT_MUL(0.6) 修正。
+        balloon.hitRadius = balloon.effectiveRadius * (tune.scale ?? 1) * extraScale * DEPTH_SPRITE_HIT_MUL;
       })
       .catch(() => { balloon.mesh.material.visible = true; }); // 失败兜底保留程序化球体
     return;
