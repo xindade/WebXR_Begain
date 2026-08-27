@@ -27,8 +27,11 @@ export class Player {
     const g = GUN_MODES[gunMode] || GUN_MODES.preview;
     this.atk = 100;
     this.shootCooldown = g.cooldown;   // 射击冷却 ms（实际节流在 input.js，player 仅用于存档快照）
-    this.fireRateMul = 1;              // 射速倍率快照（1=原速；射速卡减半为 0.5；真实节流在 input._gunCooldown）
+    this.fireRate = 2;                 // 射速基线（发/秒）：笔记 2 发/秒，卡 +2/次，上限 14（真实节流在 input）
     this.shotCount = g.shotCount;      // 每发子弹的弹道数（fire 确定性扇形）
+    this.skillCost = 500;              // 技能消耗积分（笔记默认 500，卡 -100/次，下限 100）
+    this.skillDamageMul = 1;           // 技能伤害倍率（笔记默认 ×1，卡 +1/次，上限 ×5）
+    this.regen = 0;                    // 自我修复 %/s（笔记默认 0，卡 +2/次，上限 10%）
     this.forceSingleShot = false;      // 抽卡等需要精确选靶时强制单发（由外部置位）
     this.multiShotChance = 0;          // 已弃用：随机多重射击改为 shotCount 确定性（爆炸系统已删除）
     this.maxHp = SHIP.MAX_HP;
@@ -51,6 +54,10 @@ export class Player {
   update(dt) {
     if (this.buddhaTimer > 0) this.buddhaTimer -= dt;
     if (this.shieldTime > 0) this.shieldTime -= dt;
+    // 自我修复：每秒回血 regen%（占上限比例），不超过上限
+    if (this.regen > 0 && this.hp < this.maxHp) {
+      this.hp = Math.min(this.maxHp, this.hp + this.maxHp * this.regen / 100 * dt);
+    }
   }
 
   // 发射：按 shotCount 确定性扇形铺开（1=单发，>1=多弹道），返回是否真的开了火（供音效）

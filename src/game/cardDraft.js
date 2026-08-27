@@ -4,7 +4,7 @@ import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
 
 // 抽卡：固定世界坐标 (Z=-4, Y=1) 均匀排开的 3D 卡牌，每张卡上方绑一个可射击气球。
 // 选卡方式 = 射击对应气球：气球爆炸 → 该卡化为光点飞向玩家；其余卡/气球无敌上飞到 10m（2s）后消失。
-// 刷新保留为第 4 个可射击气球，击中后旧卡飞走并重新随机生成 3 张可射击卡。
+// 每次抽 3 张不重复（来自 game 注入的卡池 pool，或固定技能卡 fixedSkills），无刷新卡。
 
 const _up = new THREE.Vector3(0, 1, 0);
 
@@ -144,12 +144,7 @@ export class CardDraft {
     this._clearItems();
     this._clearLightFx();
 
-    // canAfford 提升为函数级声明：fixedSkills（第三关）分支的 forEach 也要引用它来判定刷新锁，
-    // 否则该分支下访问未声明的 canAfford 会抛 ReferenceError（carddraft.js:169:42）
-    const canAfford = this._getScore() >= this.refreshCost;
-
     const picks = [];
-    const atkAttr = ATTR_TYPES.find(a => a.id === 'atk'); // 攻击力（首卡强制紫用）
 
     // 固定技能卡模式（第三关）：只出指定技能卡（红色），不随机、不出刷新卡
     if (this._state.fixedSkills && this._state.fixedSkills.length) {
@@ -159,26 +154,22 @@ export class CardDraft {
         picks.push({ kind: 'skill', def: s, rarity: s.rarity, label: s.label, sub: s.desc, color: s.color, image: null });
       }
     } else {
-      // 普通关：只出属性卡 + 刷新卡；红技能卡（如来神掌/金箍棒/定身咒/金钟罩）仅第三关 fixedSkills 出现
-      for (let i = 0; i < CARD.COUNT; i++) {
-        // 首卡强制攻击紫（02 关首次）：仅 i===0 生效一次
-        const forced = this._forceAtkPurple && i === 0 && atkAttr;
-        const attr = forced ? atkAttr : ATTR_TYPES[Math.floor(Math.random() * ATTR_TYPES.length)];
-        const rar = forced ? 'purple' : rollRarity(this._rarity || undefined);
-        // 图卡（atk/fireRate/multiShot）走 PNG：sub 用 desc 作 fallback 文字；color 给个中性边框色
-        const sub = attr.image ? (attr.desc || '') : `+${attr.values[rar]}`;
-        const color = attr.image ? '#7ed8ff' : RARITY[rar].color;
-        picks.push({ kind: 'attr', def: attr, rarity: rar, label: attr.label, sub, color, image: attr.image || null });
+      // 普通/Boss/机制关：从卡池抽 3 张不重复的属性卡（无刷新卡）
+      const pool = (this._state.pool || ATTR_TYPES.map(a => a.id))
+        .map(id => ATTR_TYPES.find(a => a.id === id))
+        .filter(Boolean);
+      // 洗牌取前 3（不重复）
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
       }
-      this._forceAtkPurple = false; // 仅首张卡强制一次（refresh 不再强制）
-      // 刷新卡（第 4 个可射击气球）；积分不足以支付当前刷新费时锁定（不可击中 + 变暗）
-      picks.push({
-        kind: 'refresh',
-        label: '刷新',
-        sub: canAfford ? `${this.refreshCost}分` : '积分不足',
-        color: '#888',
-        image: null,
-      });
+      const chosen = pool.slice(0, Math.min(CARD.COUNT, pool.length));
+      for (const attr of chosen) {
+        picks.push({
+          kind: 'attr', def: attr, rarity: 'gold',
+          label: attr.label, sub: attr.desc, color: attr.color, image: attr.image || null,
+        });
+      }
     }
 
     const N = picks.length;
@@ -206,7 +197,7 @@ export class CardDraft {
       const item = {
         holder, card, balloon, pick: p,
         invincible: false, flying: false, flyVel: 0, exploded: false,
-        locked: p.kind === 'refresh' && !canAfford,
+        locked: false, // 刷新卡已移除，所有卡均可击中
         isSharedMap,
       };
 
@@ -391,12 +382,14 @@ export class CardDraft {
     }
 
     // 选项卡：应用强化后进入下一关
-    if (sel.pick.kind === 'attr') sel.pick.def.apply(this._state.player, sel.pick.def.values[sel.pick.rarity]);
+    if (sel.pick.kind === 'attr') sel.pick.def.apply(this._state.player);
     else if (sel.pick.kind === 'skill') {
       sel.pick.def.apply(this._state.player);
-      // 金箍棒方向伤害 / 定身咒冻结等需要游戏上下文的技能，由外部回调执行
+      // 需要游戏上下文的技能（如来神掌/激光剑/散射强化），由外部回调执行
       if (this._state.onSkill) this._state.onSkill(sel.pick.def.id);
     }
+    // 本局收集：记录所选卡 id，供第18关汇总展示
+    if (this._state.onCollect) this._state.onCollect(sel.pick.def.id);
 
     this._clearLightFx();
     this.active = false;

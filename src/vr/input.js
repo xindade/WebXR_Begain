@@ -28,9 +28,10 @@ export class InputManager {
     this.shotsFired = 0; // 累计开火次数（单调递增，供枪模型后坐力检测「本帧新开了几枪」）
 
     this._cooldowns = { desktop: 0, left: 0, right: 0 };
-    this._gunCooldown = (GUN_MODES.preview || { cooldown: SHOOT.COOLDOWN }).cooldown; // 射击冷却 ms（由 setGunMode 按枪械模式切换）
-    this._baseGunCooldown = this._gunCooldown; // 基线冷却（射速卡在此之上乘倍率）
-    this._fireRateMul = 1;                    // 射速倍率（1=原速；射速卡减半为 0.5）
+    this._gunCooldown = (GUN_MODES.preview || { cooldown: SHOOT.COOLDOWN }).cooldown; // 射击冷却 ms（由 setGunMode/setFireRate 设置）
+    this._baseGunCooldown = this._gunCooldown; // 基线冷却
+    this._fireRateMul = 1;                    // 射速倍率（旧模型遗留，保留兼容）
+    this._fireRate = 2;                       // 当前射速（发/秒）：默认 2，卡 +2/上限14，切关由 game 用 player.fireRate 复位
     this._skillQueued = false;
 
     // handedness -> { controller, prevTrigger, prevGrip, prevAB }
@@ -203,17 +204,22 @@ export class InputManager {
     outPos.addScaledVector(outDir, SHOOT.SPAWN_OFFSET);
   }
 
-  // 枪械模式切换：preview=初始态, full=满状态（由 game.start 注入，决定射击冷却）
+  // 枪械模式切换：preview=初始态, full=满状态（由 game.start 注入）
+  // 仅复位射速基线（发/秒模型），弹道数 shotCount 由 player 维护；game 切关会再调用 setFireRate(player.fireRate)
   setGunMode(mode) {
     const g = GUN_MODES[mode] || GUN_MODES.preview;
-    if (g) {
-      this._baseGunCooldown = g.cooldown; // 刷新基线（每关切回原速，清掉上关射速卡倍率）
-      this._fireRateMul = 1;              // 倍率重置
-      this._gunCooldown = g.cooldown;
-    }
+    this.setFireRate(this._fireRate || 2); // 冷却基线复位为默认 2 发/秒（清掉上关射速卡叠加）
   }
 
-  // 射速倍率：射速卡调用（mul<1=更快）。真实改写节流源 _gunCooldown，使 DPS/实际射速随之变化
+  // 射速（发/秒）模型：卡牌/切关设置。真实改写节流源 _gunCooldown，使实际射速随之变化（2 发/秒 → 冷却 500ms）
+  setFireRate(shotsPerSec) {
+    this._fireRate = shotsPerSec;
+    const cd = shotsPerSec > 0 ? 1000 / shotsPerSec : 1000; // 冷却 ms
+    this._baseGunCooldown = cd;
+    this._gunCooldown = cd;
+  }
+
+  // 射速倍率（旧模型遗留，保留兼容）：mul<1=更快
   setFireRateMul(mul) {
     this._fireRateMul = mul;
     this._gunCooldown = this._baseGunCooldown * mul;
