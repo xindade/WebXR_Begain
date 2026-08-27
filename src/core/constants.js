@@ -1,15 +1,29 @@
 // 核心常量速查表 —— 数据来自 ima 知识库「WebXR 肉鸽打气球」
 // 所有可调参数集中在此，方便平衡性调整。
 
-// 全景天空：按关卡号 lv.n 映射本地 360° 全景图（equirectangular，2:1）。
-// 有条目的关卡用该全景图作 scene.background（并隐藏渐变天空球+星空）；
-// 无条目的关卡走 world.setSkyMood() 的渐变天空。后续加关只需加一行「关号: '路径'」。
+// 全景天空：按关卡号 lv.n 映射本地 360° 全景图（equirectangular，2:1，4096x2048 JPG）。
+// 全部 18 关均用对应编号全景图作天空盒（替代原渐变天空），进关即懒加载（world.setSkyPanorama）。
+// 图片均由原始 8K PNG 离线压缩为 4K JPG（Sky/sky-01.jpg ~ sky-18.jpg），单张 0.5~1.5MB，远省带宽/显存。
+// 朝向偏航由 PANO_DOME_YAW 统一控制（默认 π/2：把 360 照片正前(图中心 u=0.5)对齐玩家初始朝向 -Z）。
 export const SKY_PANORAMA = {
-  1:  'Sky/01关/早晨天空.jpg', // 第1关（黄昏小怪）→ 早晨天空 4K 全景（原 8K PNG 27MB 转 4K JPG 396KB）
-  3:  'Sky/sky-arctic-4k.jpg', // 第3关（激光·搭阵）→ 北极天空 4K（原 6K 太费带宽，符合项目 8K→4K 规则）
-  12: 'Sky/sky-lake-8k.jpg',   // 第12关（龙 Boss）→ 临时用湖边天空（原 68MB EXR 会冻结 PICO 主线程）
-  15: 'Sky/sky-lake-8k.jpg',   // 第15关（激光·九宫格）→ 湖边天空 8K（与第3关对比清晰度）
-  18: 'Sky/18关/空中堡垒.jpg', // 第18关（脸谱Boss）→ 用户提供的 360 空中堡垒全景（Plan A 烘焙失败后的替代方案）。JPG 为离线转出的 4K 版本；若缺失则回退到 空中堡垒.png
+  1:  'Sky/sky-01.jpg',  // 第1关（清晨小怪）
+  2:  'Sky/sky-02.jpg',  // 第2关（微光夜晚·危机）
+  3:  'Sky/sky-03.jpg',  // 第3关（机制·激光）
+  4:  'Sky/sky-04.jpg',  // 第4关（双马白天）
+  5:  'Sky/sky-05.jpg',  // 第5关（极光夜晚·危机）
+  6:  'Sky/sky-06.jpg',  // 第6关（水墨·脸谱Boss）
+  7:  'Sky/sky-07.jpg',  // 第7关（巨鲲白天）
+  8:  'Sky/sky-08.jpg',  // 第8关（巨型月夜晚·危机）
+  9:  'Sky/sky-09.jpg',  // 第9关（机制·激光）
+  10: 'Sky/sky-10.jpg',  // 第10关（彩虹白天）
+  11: 'Sky/sky-11.jpg',  // 第11关（雷云闪电·危机）
+  12: 'Sky/sky-12.jpg',  // 第12关（晴空环形云·龙Boss）
+  13: 'Sky/sky-13.jpg',  // 第13关（棉花糖）
+  14: 'Sky/sky-14.jpg',  // 第14关（台风黑夜·危机）
+  15: 'Sky/sky-15.jpg',  // 第15关（机制·激光九宫格）
+  16: 'Sky/sky-16.jpg',  // 第16关（天梯白天）
+  17: 'Sky/sky-17.jpg',  // 第17关（天梯夜晚·危机）
+  18: 'Sky/sky-18.jpg',  // 第18关（空中堡垒·脸谱Boss）
 };
 
 // 全景穹顶球绕 Y 的偏航（弧度）：让 360 照片的"正前(图中心 u=0.5)"对齐玩家初始朝向(-Z)。
@@ -24,10 +38,7 @@ export const RENDER = { FRAMEBUFFER_SCALE: 1.0 };
 
 // 全景天空亮度倍率（天地朝向已确认正确，只调亮度用）。
 // 1.0 = 原样；<1 = 变暗；>1 = 变亮。改完刷新页面即生效。
-export const SKY_BRIGHTNESS     = 1.0; // JPG 全景（第3/15关）亮度倍率
-export const SKY_EXR_BRIGHTNESS = 0.6; // EXR(HDR) 全景（第12关）亮度倍率。
-                                        // 第12关 EXR 是线性 HDR，渲染器 NoToneMapping 下易过曝，
-                                        // 建议从 0.3~0.7 之间按体感下调；调到 1.0 会明显偏亮。
+export const SKY_BRIGHTNESS = 1.0; // 全景天空亮度倍率（JPG 等距柱状全景）。1.0=原样；<1 变暗；>1 变亮。刷新即生效。
 
 export const MOVE = {
   SPEED: 3.5,        // 摇杆/键鼠 移动速度 m/s

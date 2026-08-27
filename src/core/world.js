@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MOVE, SKY_BRIGHTNESS, SKY_EXR_BRIGHTNESS, PANO_DOME_YAW, RENDER } from './constants.js';
+import { MOVE, SKY_BRIGHTNESS, PANO_DOME_YAW, RENDER } from './constants.js';
 import { makeTextSprite } from './canvasTexture.js';
 import { EXRLoader } from '../../vendor/EXRLoader.js';
 
@@ -149,7 +149,6 @@ export class World {
   }
 
   setSkyPanorama(url) {
-    const isEXR = url.toLowerCase().endsWith('.exr');
     const apply = (tex) => {
       if (!this._skydome) {
         const geo = new THREE.SphereGeometry(90, 64, 48);
@@ -162,8 +161,7 @@ export class World {
       }
       this._skydome.material.map = tex;
       // 亮度倍率：skydome 为 MeshBasicMaterial，color 会与贴图相乘 → 实现整体变暗/变亮。
-      // EXR(线性HDR) 与 JPG 用各自参数，天地朝向不受影响。
-      this._skydome.material.color.setScalar(isEXR ? SKY_EXR_BRIGHTNESS : SKY_BRIGHTNESS);
+      this._skydome.material.color.setScalar(SKY_BRIGHTNESS);
       this._skydome.material.needsUpdate = true;
       this._skydome.visible = true;
 

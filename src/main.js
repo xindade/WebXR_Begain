@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { World } from './core/world.js';
-import { SKY_PANORAMA, LASER_SWORD, CIRCUS } from './core/constants.js';
+import { LASER_SWORD, CIRCUS } from './core/constants.js';
 import { preloadDragonAssets } from './game/dragonLevel.js';
 import { HUD } from './ui/hud.js';
 import { AudioManager } from './vr/audio.js';
@@ -18,22 +18,14 @@ window.__pageLog?.info('[main] 模块开始执行（imports 已解析）');
 const canvas = document.getElementById('app');
 const world = new World(canvas);
 
-// 预览阶段预加载全部重资产（3 张全景天空 + 龙关动画 JSON/龙头 GLB），
-// 进度条走完才放行 Enter VR 按钮。如此进第 12 关时天空与龙资源都已命中缓存，
-// 不再黑屏、不再空等。进度条按体感分段：80% 停 6s、95% 停 3s、最后 1s 跑到 100%。
+// 预览阶段预加载重资产（龙关动画 JSON/龙头 GLB + 传送门/开场/激光剑/马戏团 GLB + 抽卡图）。
+// 进度条走完才放行 Enter VR 按钮。天空(18 张 4K 全景)改为「进对应关时按需懒加载」，
+// 避免启动时一次性解码 18 张 ~600MB 占用内存；setSkyPanorama 自带异步兜底，进关即显示。
+// 进度条按体感分段：80% 停 6s、95% 停 3s、最后 1s 跑到 100%。
 (function preloadAll() {
   const overlay = document.getElementById('loading-overlay');
   const fill = document.getElementById('loading-bar-fill');
   const text = document.getElementById('loading-text');
-
-  // —— 各加载任务的实时进度（0..1）——
-  // 过滤 .exr：EXRLoader 在主线程同步解析大文件（68MB），会冻结 rAF 循环导致进度条卡死+兜底超时失效
-  const skyUrls = Object.values(SKY_PANORAMA).filter(u => !u.toLowerCase().endsWith('.exr'));
-  const skyFrac = {}; skyUrls.forEach((u) => { skyFrac[u] = 0; });
-  const skyTasks = skyUrls.map((u) => world.loadSky(u, (loaded, total) => {
-    skyFrac[u] = total ? Math.min(1, loaded / total) : 0;
-  }).then(() => { skyFrac[u] = 1; })
-    .catch(() => { skyFrac[u] = 1; })); // 单张失败不卡死
 
   let dragonFrac = 0; // JSON 占 0.1，GLB 下载占 0.9
   const dragonTask = preloadDragonAssets((loaded, total) => {
@@ -57,11 +49,10 @@ const world = new World(canvas);
     .then((texMap) => { game.setCardTextures(texMap); })
     .catch(() => {});
 
-  // 真实总进度：天空 / 龙资产 / 传送门+开场动画 各占三分之一
+  // 真实总进度：龙资产 / 传送门+开场动画 GLB 各占一半（天空已改为逐关懒加载，不进启动进度）
   const realFrac = () => {
-    const sky = skyUrls.reduce((s, u) => s + skyFrac[u], 0) / skyUrls.length;
     const glb = glbParts.reduce((s, v) => s + v, 0) / glbParts.length;
-    return (sky + dragonFrac + glb) / 3;
+    return (dragonFrac + glb) / 2;
   };
 
   // —— 分段节奏（毫秒）——
@@ -96,7 +87,7 @@ const world = new World(canvas);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
-  Promise.all([...skyTasks, dragonTask, cardTask, glbTask]).catch(() => {}); // 触发加载（帧循环独立读取进度）
+  Promise.all([dragonTask, cardTask, glbTask]).catch(() => {}); // 触发加载（帧循环独立读取进度）
 })();
 
 const hud = new HUD();
