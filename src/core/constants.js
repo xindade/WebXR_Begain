@@ -6,7 +6,7 @@
 // 无条目的关卡走 world.setSkyMood() 的渐变天空。后续加关只需加一行「关号: '路径'」。
 export const SKY_PANORAMA = {
   1:  'Sky/01关/早晨天空.jpg', // 第1关（黄昏小怪）→ 早晨天空 4K 全景（原 8K PNG 27MB 转 4K JPG 396KB）
-  3:  'Sky/sky-arctic-6k.jpg', // 第3关（激光·搭阵）→ 北极天空 6K
+  3:  'Sky/sky-arctic-4k.jpg', // 第3关（激光·搭阵）→ 北极天空 4K（原 6K 太费带宽，符合项目 8K→4K 规则）
   12: 'Sky/sky-lake-8k.jpg',   // 第12关（龙 Boss）→ 临时用湖边天空（原 68MB EXR 会冻结 PICO 主线程）
   15: 'Sky/sky-lake-8k.jpg',   // 第15关（激光·九宫格）→ 湖边天空 8K（与第3关对比清晰度）
   18: 'Sky/18关/空中堡垒.jpg', // 第18关（脸谱Boss）→ 用户提供的 360 空中堡垒全景（Plan A 烘焙失败后的替代方案）。JPG 为离线转出的 4K 版本；若缺失则回退到 空中堡垒.png
@@ -17,6 +17,10 @@ export const SKY_PANORAMA = {
 // 右 1/4(u=0.75) 落在 -Z（正前）。旋转 +π/2 把图中心转到正前。
 // 若头显里城堡不在正前方：左右偏差约 ±π/2、背后则 ±π，调此值刷新即生效（同时影响 3/12/15 关天空，但皆为对称天空无影响）。
 export const PANO_DOME_YAW = Math.PI / 2;
+
+// 渲染分辨率系数（WebXR 帧缓冲缩放）：1.0=最稳，1.25=更清晰但更费 GPU，1.5 易掉帧。
+// PICO 4 双目高分辨率下 1.0 最稳；若某关流畅可热调到 1.25 提清晰度（userConfig.RENDER 可调）。
+export const RENDER = { FRAMEBUFFER_SCALE: 1.0 };
 
 // 全景天空亮度倍率（天地朝向已确认正确，只调亮度用）。
 // 1.0 = 原样；<1 = 变暗；>1 = 变亮。改完刷新页面即生效。
@@ -111,14 +115,20 @@ export const BUDDHA = {            // 如来神掌（大招）
   FALL_END_SCALE: 1.5,             // 落地的终止缩放（贴近玩家大小）
 };
 
-export const STAFF = {            // 金箍棒（方向伤害技能）
-  DAMAGE: 1000,                   // 前方扇形内敌人受到的伤害（秒杀级）
-  COOLDOWN: 8,                    // 释放冷却 s（与 BUDDHA 对齐）
-  HALF_ANGLE: 45,                 // 扇形半角(°)：45 → 90° 正面扇形 ≈ 四分之一全屏
-  WALL_DUR: 0.6,                  // 前方光墙视觉持续时长 s
-  WALL_WIDTH: 12,                 // 光墙宽 m（覆盖前方扇形）
-  WALL_HEIGHT: 6,                 // 光墙高 m
-  WALL_DIST: 6,                   // 光墙距玩家距离 m
+// 激光剑（左手柄近战武器，由「金箍棒」技能改造而来）
+// 选卡装备后常驻左手柄；按左手柄 grip 激活「5 秒伤害状态」，期间左手自由挥动，
+// 剑刃线段扫过怪物即扣血，每只怪 1 秒内只受一次。位置/旋转/缩放/伤害均可热调。
+export const LASER_SWORD = {
+  MODEL_URL:  'Model/激光剑.glb',           // 模型路径（相对 index.html，项目根 Model 目录）
+  POSITION:   { x: 0.0, y: 0.0, z: 0.0 },  // 相对左手柄(grip)本地坐标（米）
+  ROTATION:   { x: 0, y: 0, z: 0 },        // 旋转（度，绕 XYZ）：模型默认朝向未知，上机后调
+  SCALE:      1.0,                          // 整体缩放（过大/过小先 1.0 看效果再调）
+  BLADE_AXIS: { x: 0, y: 0, z: -1 },       // 剑刃方向（模型本地轴，单位向量；按实际模型调，默认 -Z 前方）
+  BLADE_LENGTH: 1.0,                        // 剑刃长度（米）= 命中线段长度
+  DAMAGE:     500,                          // 单次命中伤害
+  DURATION:   5,                            // 激活后伤害状态持续秒数
+  COOLDOWN:   5,                            // 激活后复用冷却秒数（HUD 显示）
+  COST:       500,                          // 消耗积分
 };
 
 export const FREEZE = {           // 定身咒（暂停所有敌人行动，Boss 减半）
@@ -254,6 +264,17 @@ export const GUN = {
     DECAY:      0.80,    // 每帧(60fps基准)回正系数，越小回正越快、抖得越短促
     CURVE:      1.5,     // 射速→幅度映射曲率(>1 让快射时幅度掉得更陡，强化「整体变小」)
   },
+};
+
+// ============================================================
+// 马戏团模型（机制关 3/9/15 固定场景装饰，常驻整关）
+// 坐标系：世界坐标（相对场地原点）；上机后在 PICO 里看效果微调位置/旋转/缩放。
+// ============================================================
+export const CIRCUS = {
+  MODEL_URL: 'Model/马戏团.glb',          // 模型路径（相对 index.html，项目根 Model 目录）
+  POSITION: { x: 0, y: 1.4, z: -1.5 },   // 世界坐标（米）：贴合激光关原 npc 占位 (0,1.4,-1.5)
+  ROTATION: { x: 0, y: 0, z: 0 },        // 旋转（度，绕 XYZ）
+  SCALE:    1.0,                          // 整体缩放
 };
 
 // ============================================================
@@ -614,6 +635,9 @@ const _OVERRIDES = [
   ['WAVE',    WAVE,    USER_CONFIG.WAVE],
   ['PORTAL_BEAM', PORTAL_BEAM, USER_CONFIG.PORTAL_BEAM],
   ['SPAWN_RING', SPAWN_RING, USER_CONFIG.SPAWN_RING],
+  ['LASER_SWORD', LASER_SWORD, USER_CONFIG.LASER_SWORD],
+  ['CIRCUS', CIRCUS, USER_CONFIG.CIRCUS],
+  ['RENDER', RENDER, USER_CONFIG.RENDER],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

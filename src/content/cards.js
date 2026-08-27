@@ -1,6 +1,6 @@
 // 抽卡卡牌配置（知识库「卡片」笔记）
 // 属性类：攻击力/射速/多重(新图) + 回血/减冷却（保留 4 档稀有度）
-// 技能类（红色）：如来神掌 / 金钟罩 / 金箍棒 / 定身咒
+// 技能类（红色）：如来神掌 / 金钟罩 / 激光剑 / 定身咒
 //
 // atk / fireRate / multiShot 改用新 PNG 卡图（assets/cards/{id}.png），单值效果（不再走 4 档）
 // 爆炸卡已删除（爆炸系统全链路移除）
@@ -53,7 +53,7 @@ export const ATTR_TYPES = [
   },
 ];
 
-// 技能卡（红色）：第三关固定三张（buddha/staff/freeze）+ 其余关随机出现其一（含 bell）
+// 技能卡（红色）：第三关固定三张（buddha/lightsaber/freeze）+ 其余关随机出现其一（含 bell）
 export const SKILL_CARDS = [
   {
     id: 'buddha', label: '如来神掌', rarity: 'gold', color: '#ff3b3b', desc: '解锁/刷新大招',
@@ -64,8 +64,8 @@ export const SKILL_CARDS = [
     apply: (p) => { p.shieldTime = Math.max(p.shieldTime, 3); },
   },
   {
-    id: 'staff', label: '金箍棒', rarity: 'gold', color: '#ff3b3b', desc: '前方扇形伤害',
-    apply: () => { /* 实际伤害由 game._castStaff 执行（需场景上下文）*/ },
+    id: 'lightsaber', label: '激光剑', rarity: 'gold', color: '#ff3b3b', desc: '左手激光剑近战（按左手柄激活5秒）',
+    apply: () => { /* 伤害由 game._castLaserSword 执行（需场景上下文）*/ },
   },
   {
     id: 'freeze', label: '定身咒', rarity: 'gold', color: '#ff3b3b', desc: '暂停所有敌人行动',

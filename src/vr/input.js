@@ -258,9 +258,9 @@ export class InputManager {
       const btnA = gp.buttons[4]?.pressed || false; // 右:A / 左:X
       const btnB = gp.buttons[5]?.pressed || false; // 右:B / 左:Y
 
-      // 握柄按下（边缘）→ 触发选中技能（仅右手；避免双手歧义）
+      // 握柄按下（边缘）→ 触发选中技能（左右手均可；激光剑是左手武器，用左手 grip 最直觉）
       if (ctrl) {
-        if (hand === 'right' && grip && !ctrl.userData.prevGrip) this._skillQueued = true;
+        if (grip && !ctrl.userData.prevGrip) this._skillQueued = true;
         ctrl.userData.prevGrip = grip;
       }
 

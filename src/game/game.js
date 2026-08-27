@@ -8,12 +8,14 @@ import { LaserLevel } from './laser.js';
 import { GlassGrid } from './glassGrid.js';
 import { FlipGrid } from './flipGrid.js';
 import { RightGun } from '../vr/rightGun.js';
+import { LeftSword } from '../vr/leftSword.js';
 import { DragonBoss } from './dragonLevel.js';
 import { OpeningModel } from './openingModel.js';
+import { CircusModel } from './circusModel.js';
 import { Portal } from './portal.js';
 import { LEVELS, isLaser, isBoss } from '../content/levels.js';
 import { LEVEL_PLANS } from '../content/spawnPlans.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, STAFF, FREEZE, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, FREEZE, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, LASER_SWORD, CIRCUS } from '../core/constants.js';
 import { setRenderer } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 
@@ -85,6 +87,7 @@ export class Game {
     );
     this.cards = new CardDraft(world.scene);
     this.rightGun = new RightGun(world.scene);   // 右手柄 AK 枪（VR 手持，纯视觉）
+    this.leftSword = new LeftSword(world.scene);  // 左手柄激光剑（选卡装备后常驻，激活后5秒伤害）
 
     this.state = 'menu';
     this.gunMode = 'preview';   // 枪械模式：preview=初始态, full=满状态（由预览界面按钮经 start() 注入）
@@ -98,6 +101,11 @@ export class Game {
     this.flipTimer = 0;      // 180s 倒计时剩余秒
     this.dragon = null;      // 第十二关龙 Boss 实例（boss==='dragon' 时存在）
     this.openingModel = null; // 第3/9/15关开场动画模型（魔术师），10秒后自动移除
+    this._circus = null;       // 第3/9/15关马戏团固定场景装饰（常驻整关）
+    this._gameTime = 0;        // 全局累计时间（秒）：激光剑状态/每怪1秒限频的时间基准
+    this._swordUntil = 0;      // 激光剑伤害状态结束时刻（this._gameTime 基准）
+    this._hilt = new THREE.Vector3();  // 激光剑剑柄世界坐标（每帧命中检测复用）
+    this._tip = new THREE.Vector3();   // 激光剑剑尖世界坐标
     this._portals = [];        // 小怪关传送门装饰（非 boss、非激光机制关，前后左右各 20m）
     this.score = 0;
     this._buddhaFx = null;
@@ -105,7 +113,7 @@ export class Game {
     this._levelSnapshot = null;  // 关卡开始时的玩家属性+分数快照
     this._explosions = [];       // 爆炸视觉特效列表
     this.enemyFreeze = 0;        // 定身咒计时(s)：>0 时敌人暂停行动（Boss 仅前 50% 时长）
-    this.selectedSkill = 'scatter'; // 当前装备技能：前期默认「积分散射」；第三关选卡后可替换为 staff/freeze/buddha，右手握柄触发
+    this.selectedSkill = 'scatter'; // 当前装备技能：前期默认「积分散射」；第三关选卡后可替换为 lightsaber/freeze/buddha，左手柄 grip 触发
     this.skillCooldown = 0;      // 技能释放冷却计时(s)：>0 时握柄无效，HUD 显示剩余
 
     this._tmp = new THREE.Vector3();
@@ -158,6 +166,7 @@ export class Game {
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon)   { this.dragon.dispose();   this.dragon = null; }
     if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清开场动画
+    if (this._circus) { this._circus.dispose(); this._circus = null; } // 清马戏团装饰
     this._clearPortals(); // 清传送门装饰（防跨关/回菜单残留）
     this.waves.clearPending();   // 清出怪光点（防回菜单残留）
     // 清理实体
@@ -197,6 +206,7 @@ export class Game {
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon) { this.dragon.dispose(); this.dragon = null; }
     if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清上一关残留的开场动画
+    if (this._circus) { this._circus.dispose(); this._circus = null; } // 清上一关残留的马戏团装饰
     this._clearPortals(); // 清上一关残留的传送门装饰
     this.waves.clearPending();   // 清上一关残留出怪光点（防光点飞到新关卡）
     this.gridPhase = false;
@@ -216,6 +226,9 @@ export class Game {
     if (lv.n === 3 || lv.n === 9 || lv.n === 15) {
       this.openingModel = new OpeningModel(this.world.scene, new THREE.Vector3(0, 1.4, -5));
       this.openingModel.start();
+      // 同关固定场景装饰「马戏团」：常驻整关，位置/旋转/缩放由 CIRCUS 配置（userConfig 可调）
+      this._circus = new CircusModel(this.world.scene);
+      this._circus.start();
     }
     // 小怪关（非 boss、非激光机制）：按本关方向表生成传送门装饰（自带动画+上下浮动）
     if (!isBoss(lv) && !isLaser(lv)) this._spawnPortals(lv);
@@ -319,14 +332,16 @@ export class Game {
 
   update(dt) {
     dt = Math.min(dt, 0.05);
+    this._gameTime += dt;                            // 激光剑状态/每怪限频的时间基准
     this.world.update(dt);
     if (this.openingModel) this.openingModel.update(dt); // 开场动画模型：推进动画 + 10秒计时
+    if (this._circus) this._circus.update(dt);       // 马戏团装饰：推进动画（若有）
     const pp = this._playerPos();                     // 取一次玩家位置，所有门共用（同步读取，无异步滞留）
     this._portals.forEach((p) => p.update(dt, pp));   // 传送门动画 + 浮动 + 摇杆偏移 + 数值标签
     this.wristUI?.update(dt, this, this.input); // 手腕面板（VR 下显示，桌面忽略）
     this.rightGun.update(dt, this.input);        // 右手柄 AK 枪（VR 手持，桌面忽略）
+    this.leftSword.update(dt, this.input);        // 左手柄激光剑（VR 手持，桌面忽略）
     this._updateBuddhaFx(dt);
-    this._updateStaffFx(dt);
     this._updateExplosions(dt);
 
     if (this.state === 'playing') this._updatePlaying(dt);
@@ -341,14 +356,19 @@ export class Game {
 
     for (const shot of this.input.shots) this.player.fire(shot, this.bullets, this.audio);
 
-    // 选中技能：冷却递减；右手握柄(或桌面 F)请求释放 → 冷却就绪则触发
+    // 选中技能：冷却递减；左手柄 grip(或桌面 F)请求释放 → 冷却就绪则触发
     this.skillCooldown = Math.max(0, this.skillCooldown - dt);
     if (this.input.consumeSkill() && this.selectedSkill && this.skillCooldown <= 0) this._triggerSelectedSkill();
     const skillLabel = this.selectedSkill === 'buddha' ? '如来神掌'
-                     : this.selectedSkill === 'staff' ? '金箍棒'
+                     : this.selectedSkill === 'lightsaber' ? '激光剑'
                      : this.selectedSkill === 'freeze' ? '定身咒'
                      : this.selectedSkill === 'scatter' ? '积分散射' : null;
     this.hud.setSkill(skillLabel, this.skillCooldown, this._skillCdTotal());
+
+    // 激光剑「5秒伤害状态」到期自动关闭（与 skillCooldown 同步倒计时）
+    if (this.leftSword.active && this._gameTime >= this._swordUntil) this.leftSword.setActive(false);
+    // 激光剑近战命中（所有关卡通用：激光关无普通怪则自然 no-op）
+    if (this.leftSword.active) this._updateSwordMelee();
 
     // ====== 激光关：无普通敌人，仅激光气球 ======
     if (this.laserMode) {
@@ -472,7 +492,7 @@ export class Game {
       } else {
         this.laser.dispose();
         this.laser = null;
-        this._forceSkillCards = ['buddha', 'staff', 'freeze']; // 第三关固定三张红色技能卡
+        this._forceSkillCards = ['buddha', 'lightsaber', 'freeze']; // 第三关固定三张红色技能卡
         this._enterCard();
       }
       return;
@@ -521,6 +541,7 @@ export class Game {
     if (this.laser) this.laser.reset();
     if (this.grid) this.grid.reset();   // 玻璃网格（含破碎格）一并重建
     if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 激光关死亡重开：清开场动画，防重复生成
+    if (this._circus) { this._circus.dispose(); this._circus = null; } // 激光关死亡重开：清马戏团装饰
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; } // 九宫格 dispose，下次 16s 由 isHoldPhase 重建为初始布局
     this.gridPhase = false;
     this.flipPhase = false; this.flipTimer = 0;
@@ -727,22 +748,25 @@ export class Game {
   }
 
   // ====== 第三关三技能 ======
-  // 选卡：仅「装备」技能到右手握柄，不立即释放（释放由握柄触发 _triggerSelectedSkill）
+  // 选卡：仅「装备」技能（激光剑→左手柄出现），不立即释放（释放由左手柄 grip 触发 _triggerSelectedSkill）
   _applySkillCard(id) {
     this.selectedSkill = id;
-    this.skillCooldown = 0;                 // 装备即就绪，可立即按握柄释放
+    this.skillCooldown = 0;                 // 装备即就绪，可立即按手柄释放
     if (id === 'buddha') this.player.buddhaUnlocked = true;
-    const label = id === 'buddha' ? '如来神掌' : id === 'staff' ? '金箍棒' : '定身咒';
-    this.log(`已装备：${label}（按右手握柄释放）`);
+    this.leftSword?.setEquipped(id === 'lightsaber'); // 选到激光剑→左手出现；选别的→隐藏
+    const label = id === 'buddha' ? '如来神掌' : id === 'lightsaber' ? '激光剑' : '定身咒';
+    this.log(`已装备：${label}（按左手柄 grip 释放）`);
   }
 
-  // 右手握柄/桌面 F 触发：按当前装备技能分发释放，统一冷却由 this.skillCooldown 负责
+  // 左手柄 grip/桌面 F 触发：按当前装备技能分发释放，统一冷却由 this.skillCooldown 负责
   _triggerSelectedSkill() {
     switch (this.selectedSkill) {
       case 'buddha':
         if (!this.player.buddhaUnlocked) { this.log('如来神掌尚未解锁'); return; } // 还原原语义：未解锁不放（return 不进入冷却）
         this._doBuddha(); break;
-      case 'staff':  this._castStaff(); break;
+      case 'lightsaber':
+        if (!this._castLaserSword()) return; // 积分不足 → 不进入冷却，可立即重试
+        break;
       case 'freeze': this._castFreeze(); break;
       case 'scatter':
         if (!this._castScatter()) return; // 积分不足 → 不进入冷却，可立即重试
@@ -752,7 +776,7 @@ export class Game {
   }
   _skillCdTotal() {
     if (this.selectedSkill === 'buddha') return BUDDHA.COOLDOWN;
-    if (this.selectedSkill === 'staff')  return STAFF.COOLDOWN;
+    if (this.selectedSkill === 'lightsaber') return LASER_SWORD.COOLDOWN;
     if (this.selectedSkill === 'freeze') return FREEZE.COOLDOWN;
     if (this.selectedSkill === 'scatter') return SCATTER.COOLDOWN;
     return 0;
@@ -784,56 +808,39 @@ export class Game {
     return true;
   }
 
-  // 金箍棒：玩家正前方 90° 扇形（±45°）内敌人受致命伤 ≈ 四分之一全屏
-  _castStaff() {
-    const pp = this._playerPos();
-    this.world.camera.getWorldDirection(this._fwd); // 玩家看向场景内的方向
-    const COS_HALF = Math.cos(THREE.MathUtils.degToRad(STAFF.HALF_ANGLE));
-    for (let i = this.balloons.list.length - 1; i >= 0; i--) {
-      const b = this.balloons.list[i];
-      this._tmp2.copy(b.mesh.position).sub(pp);
-      this._tmp2.y = 0;
-      const dist = this._tmp2.length();
-      if (dist < 0.001) continue;
-      this._tmp2.normalize();
-      if (this._tmp2.x * this._fwd.x + this._tmp2.z * this._fwd.z >= COS_HALF) { // 落在前方扇形内
-        if (b.takeDamage(STAFF.DAMAGE)) this._onKilled(b);
-      }
+  // 激光剑：消耗积分，激活左手柄「5秒伤害状态」。期间左手自由挥动，剑刃线段扫过怪物即扣血，
+  // 每只怪 1 秒内只受一次（限频在 _updateSwordMelee 内）。伤害穿透脸谱95%减伤。
+  _castLaserSword() {
+    if (this.score < LASER_SWORD.COST) { this.log(`积分不足（需${LASER_SWORD.COST}）`); return false; }
+    this.score -= LASER_SWORD.COST;
+    this.hud.setScore(this.score);
+    this.leftSword.setActive(true);
+    this._swordUntil = this._gameTime + LASER_SWORD.DURATION; // 伤害状态结束时刻
+    this.log(`激光剑激活！${LASER_SWORD.DURATION}秒内挥剑伤害`);
+    return true;
+  }
+
+  // 激光剑每帧近战命中：剑刃线段(hilt→tip) 扫过怪物命中球即扣血，每只怪 1 秒内只受一次。
+  _updateSwordMelee() {
+    this.leftSword.getBlade(this._hilt, this._tip);
+    const now = this._gameTime;
+    const list = this.balloons.list;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const b = list[i];
+      if (!b.alive) continue;
+      const rr = b.hitRadius; // 含立绘 0.6 系数/薄板近似，球体足够
+      if (_pointSegDistSq(b.mesh.position, this._hilt, this._tip) > rr * rr) continue; // 剑刃未扫到
+      if ((b._swordCdUntil || 0) > now) continue; // 每只怪 1 秒内只受一次
+      const killed = b.takeDamage(LASER_SWORD.DAMAGE, true); // ignoreReduction=true 穿透减伤，稳定 500
+      b._swordCdUntil = now + 1.0;
+      if (killed) this._onKilled(b);
     }
-    this._spawnStaffWall(pp, this._fwd);
-    this.log('金箍棒！前方扇形伤害');
   }
 
   // 定身咒：暂停所有敌人行动；Boss（龙）仅前 50% 时长冻结（由 FREEZE.BOSS_FACTOR 控制）
   _castFreeze() {
     this.enemyFreeze = FREEZE.DURATION;
     this.log('定身咒！敌人暂停行动');
-  }
-
-  // 金箍棒视觉：玩家正前方一道红色光墙
-  _spawnStaffWall(pp, fwd) {
-    const wall = new THREE.Mesh(
-      new THREE.PlaneGeometry(STAFF.WALL_WIDTH, STAFF.WALL_HEIGHT),
-      new THREE.MeshBasicMaterial({ color: 0xff3b3b, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending })
-    );
-    wall.position.copy(pp).addScaledVector(fwd, STAFF.WALL_DIST);
-    wall.position.y += STAFF.WALL_HEIGHT / 2;
-    wall.lookAt(pp.x, wall.position.y, pp.z);
-    this.world.scene.add(wall);
-    this._staffFx = { mesh: wall, t: 0 };
-  }
-
-  _updateStaffFx(dt) {
-    if (!this._staffFx) return;
-    this._staffFx.t += dt;
-    const k = Math.min(1, this._staffFx.t / STAFF.WALL_DUR);
-    this._staffFx.mesh.material.opacity = 0.5 * (1 - k);
-    if (k >= 1) {
-      this.world.scene.remove(this._staffFx.mesh);
-      this._staffFx.mesh.geometry.dispose();
-      this._staffFx.mesh.material.dispose();
-      this._staffFx = null;
-    }
   }
 
   _updateBuddhaFx(dt) {

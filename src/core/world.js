@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MOVE, SKY_BRIGHTNESS, SKY_EXR_BRIGHTNESS, PANO_DOME_YAW } from './constants.js';
+import { MOVE, SKY_BRIGHTNESS, SKY_EXR_BRIGHTNESS, PANO_DOME_YAW, RENDER } from './constants.js';
 import { makeTextSprite } from './canvasTexture.js';
 import { EXRLoader } from '../../vendor/EXRLoader.js';
 
@@ -34,10 +34,10 @@ export class World {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0)); // 降采样，知识库要求
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.xr.enabled = true;
-    // 头显实际渲染分辨率倍率。
-    // 原值 1.5 在「龙 Boss 关」（14 段高模 + 70MB EXR 天空）会严重掉帧 → 降到 1.25，
-    // 填充率开销下降约 (1.25/1.5)^2≈31%，PICO 4 帧率更稳；若实测仍不足可再降（1.0）。
-    this.renderer.xr.setFramebufferScaleFactor(1.25);
+    // 头显实际渲染分辨率倍率（集中式可调：constants.RENDER / userConfig.RENDER.FRAMEBUFFER_SCALE）。
+    // 默认 1.0 最稳；原 1.25 在 PICO 4 双目高分下填充率偏重，第3关实测 GPU 99% 掉到 10fps。
+    // 若某关流畅且清晰度不足，可在 userConfig 热调到 1.25 提清晰度（更费 GPU）。
+    this.renderer.xr.setFramebufferScaleFactor(RENDER.FRAMEBUFFER_SCALE);
     this.renderer.toneMapping = THREE.NoToneMapping;
     this.renderer.shadowMap.enabled = false; // VR 关阴影
 

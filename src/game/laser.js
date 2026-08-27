@@ -79,15 +79,17 @@ function createGroup(dir, color) {
   dir = dir || 'negZ';
   const group = new THREE.Group();
 
-  // -- 气球材质 --
-  const mat = new THREE.MeshPhysicalMaterial({
+  // -- 气球材质：去 transmission，避免每帧整场景透射重渲染 pass（GPU 99% 主因）--
+  const mat = new THREE.MeshStandardMaterial({
     color,
-    metalness: 0, roughness: 0.12,
-    transmission: 0.35, thickness: 0.4,
-    clearcoat: 0.7, clearcoatRoughness: 0.05,
-    ior: 1.15, specularIntensity: 1,
+    metalness: 0.0,
+    roughness: 0.25,
+    transparent: true,
+    opacity: 0.85,           // 半透明玻璃感
+    depthWrite: false,       // 与原透明行为一致，避免自遮挡写深度
     side: THREE.DoubleSide,
-    transparent: true, opacity: 0.88, depthWrite: false,
+    emissive: color,
+    emissiveIntensity: 0.15, // 微弱自发光，保留"发光玻璃球"质感，无光处也可见
   });
   const balloonMesh = new THREE.Mesh(balloonGeo, mat);
   balloonMesh.renderOrder = 0;

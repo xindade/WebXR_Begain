@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { World } from './core/world.js';
-import { SKY_PANORAMA } from './core/constants.js';
+import { SKY_PANORAMA, LASER_SWORD, CIRCUS } from './core/constants.js';
 import { preloadDragonAssets } from './game/dragonLevel.js';
 import { HUD } from './ui/hud.js';
 import { AudioManager } from './vr/audio.js';
@@ -41,10 +41,10 @@ const world = new World(canvas);
   }).then(() => { dragonFrac = 1; })
     .catch(() => { dragonFrac = 1; });
 
-  // 传送门 + 开场动画 GLB（2.4MB + 3.2MB）：下载+DRACO 解码+parse 一次性完成，
-  // 进小怪关 / 3·9·15 关零等待（glbCache 命中，零重复加载）。两文件各占一半进度。
-  const glbParts = [0, 0];
-  const glbTasks = [PORTAL_MODEL_URL, OPENING_MODEL_URL].map((u, i) =>
+  // 传送门 + 开场动画 + 激光剑 + 马戏团 GLB：下载+DRACO 解码+parse 一次性完成，
+  // 进小怪关 / 3·9·15 关零等待（glbCache 命中，零重复加载）。各文件平均占进度。
+  const glbParts = [0, 0, 0, 0];
+  const glbTasks = [PORTAL_MODEL_URL, OPENING_MODEL_URL, LASER_SWORD.MODEL_URL, CIRCUS.MODEL_URL].map((u, i) =>
     preloadGLB(u, (loaded, total) => {
       glbParts[i] = total ? Math.min(1, loaded / total) : 0;
     }).then(() => { glbParts[i] = 1; })
@@ -60,7 +60,7 @@ const world = new World(canvas);
   // 真实总进度：天空 / 龙资产 / 传送门+开场动画 各占三分之一
   const realFrac = () => {
     const sky = skyUrls.reduce((s, u) => s + skyFrac[u], 0) / skyUrls.length;
-    const glb = (glbParts[0] + glbParts[1]) / 2;
+    const glb = glbParts.reduce((s, v) => s + v, 0) / glbParts.length;
     return (sky + dragonFrac + glb) / 3;
   };
 
