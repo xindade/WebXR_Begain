@@ -15,7 +15,8 @@ import { CircusModel } from './circusModel.js';
 import { Portal } from './portal.js';
 import { LEVELS, isLaser, isBoss } from '../content/levels.js';
 import { LEVEL_PLANS } from '../content/spawnPlans.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, FREEZE, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, LASER_SWORD, CIRCUS } from '../core/constants.js';
+import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, CIRCUS } from '../core/constants.js';
 import { setRenderer } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 
@@ -107,6 +108,7 @@ export class Game {
     this._hilt = new THREE.Vector3();  // 激光剑剑柄世界坐标（每帧命中检测复用）
     this._tip = new THREE.Vector3();   // 激光剑剑尖世界坐标
     this._portals = [];        // 小怪关传送门装饰（非 boss、非激光机制关，前后左右各 20m）
+    this._collectedCards = [];   // 本局收集的选项卡 id 列表（供第18关通关汇总展示）
     this.score = 0;
     this._buddhaFx = null;
     this._cardState = null;
@@ -221,6 +223,9 @@ export class Game {
     const pano = SKY_PANORAMA[lv.n];
     if (pano) this.world.setSkyPanorama(pano);
     this.hud.setLevel(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
+
+    // 切关复位射速：玩家 fireRate（发/秒）落到真实节流源（2 发/秒基线，射速卡 +2 叠加）
+    this.input?.setFireRate(this.player.fireRate);
 
     // 第3/9/15关开头：世界固定点播放在「魔术师动画版」模型，循环播放 10 秒后自动消失
     if (lv.n === 3 || lv.n === 9 || lv.n === 15) {
@@ -361,7 +366,7 @@ export class Game {
     if (this.input.consumeSkill() && this.selectedSkill && this.skillCooldown <= 0) this._triggerSelectedSkill();
     const skillLabel = this.selectedSkill === 'buddha' ? '如来神掌'
                      : this.selectedSkill === 'lightsaber' ? '激光剑'
-                     : this.selectedSkill === 'freeze' ? '定身咒'
+                     : this.selectedSkill === 'scatterburst' ? '散射强化'
                      : this.selectedSkill === 'scatter' ? '积分散射' : null;
     this.hud.setSkill(skillLabel, this.skillCooldown, this._skillCdTotal());
 
@@ -377,17 +382,9 @@ export class Game {
     }
 
     // ====== 普通关 ======
-    // 定身咒：冻结期间跳过敌人移动（Boss 仅前 50% 时长冻结）
-    let freezeNormal = false, freezeBoss = false;
-    if (this.enemyFreeze > 0) {
-      this.enemyFreeze = Math.max(0, this.enemyFreeze - dt);
-      freezeNormal = this.enemyFreeze > 0;
-      freezeBoss   = this.enemyFreeze > FREEZE.DURATION * (1 - FREEZE.BOSS_FACTOR);
-    }
     // 气球追踪原点(0,0,0)而非玩家位置
-    this.balloons.update(dt, ORIGIN, this.world.camera, { freezeNormal, freezeBoss });
+    this.balloons.update(dt, ORIGIN, this.world.camera);
     if (this.dragon) {
-      if (freezeBoss) this.dragon.pauseTimer = Math.max(this.dragon.pauseTimer, 0.1); // 定身：龙 Boss 暂停推进
       this.dragon.update(dt, pp);   // 龙 Boss：逐帧接管龙气球位置
     } else {
       this.waves.update(dt);
@@ -492,8 +489,7 @@ export class Game {
       } else {
         this.laser.dispose();
         this.laser = null;
-        this._forceSkillCards = ['buddha', 'lightsaber', 'freeze']; // 第三关固定三张红色技能卡
-        this._enterCard();
+        this._enterCard(); // 第三关固定三张红色技能卡（如来神掌/激光剑/散射强化）
       }
       return;
     }
@@ -727,12 +723,17 @@ export class Game {
 
   _doBuddha() {
     const pp = this._playerPos();
+    // 技能统一计费：积分不足则不放（不进冷却，可立即重试）
+    if (this.score < this.player.skillCost) { this.log(`积分不足（需${this.player.skillCost}）`); return false; }
+    this.score -= this.player.skillCost;
+    this.hud.setScore(this.score);
     this.log('如来神掌！');
-    // 伤害范围内所有气球
+    // 伤害范围内所有气球（命中伤害 = 基础 × 技能倍率）
+    const dmg = BUDDHA.DAMAGE * this.player.skillDamageMul;
     for (let i = this.balloons.list.length - 1; i >= 0; i--) {
       const b = this.balloons.list[i];
       if (b.mesh.position.distanceTo(pp) < BUDDHA.KILL_RADIUS) {
-        if (b.takeDamage(BUDDHA.DAMAGE)) this._onKilled(b);
+        if (b.takeDamage(dmg)) this._onKilled(b);
       }
     }
     // 视觉：金色巨掌从天而降
@@ -754,7 +755,7 @@ export class Game {
     this.skillCooldown = 0;                 // 装备即就绪，可立即按手柄释放
     if (id === 'buddha') this.player.buddhaUnlocked = true;
     this.leftSword?.setEquipped(id === 'lightsaber'); // 选到激光剑→左手出现；选别的→隐藏
-    const label = id === 'buddha' ? '如来神掌' : id === 'lightsaber' ? '激光剑' : '定身咒';
+    const label = id === 'buddha' ? '如来神掌' : id === 'lightsaber' ? '激光剑' : id === 'scatterburst' ? '散射强化' : id;
     this.log(`已装备：${label}（按左手柄 grip 释放）`);
   }
 
@@ -763,11 +764,14 @@ export class Game {
     switch (this.selectedSkill) {
       case 'buddha':
         if (!this.player.buddhaUnlocked) { this.log('如来神掌尚未解锁'); return; } // 还原原语义：未解锁不放（return 不进入冷却）
-        this._doBuddha(); break;
+        if (!this._doBuddha()) return; // 积分不足 → 不进入冷却，可立即重试
+        break;
       case 'lightsaber':
         if (!this._castLaserSword()) return; // 积分不足 → 不进入冷却，可立即重试
         break;
-      case 'freeze': this._castFreeze(); break;
+      case 'scatterburst':
+        if (!this._castScatterBurst()) return; // 积分不足 → 不进入冷却，可立即重试
+        break;
       case 'scatter':
         if (!this._castScatter()) return; // 积分不足 → 不进入冷却，可立即重试
         break;
@@ -777,15 +781,15 @@ export class Game {
   _skillCdTotal() {
     if (this.selectedSkill === 'buddha') return BUDDHA.COOLDOWN;
     if (this.selectedSkill === 'lightsaber') return LASER_SWORD.COOLDOWN;
-    if (this.selectedSkill === 'freeze') return FREEZE.COOLDOWN;
+    if (this.selectedSkill === 'scatterburst') return SCATTER_BURST.COOLDOWN;
     if (this.selectedSkill === 'scatter') return SCATTER.COOLDOWN;
     return 0;
   }
 
-  // 积分散射：消耗积分，从枪口喷出 COUNT 弹头，轴向 DIST 米铺成半径 RADIUS 圆盘（实心/环）
+  // 积分散射（默认技能）：消耗 player.skillCost 积分，从枪口喷出 COUNT 弹头，轴向 DIST 米铺成半径 RADIUS 圆盘
   _castScatter() {
-    if (this.score < SCATTER.COST) { this.log(`积分不足（需${SCATTER.COST}）`); return false; }
-    this.score -= SCATTER.COST;
+    if (this.score < this.player.skillCost) { this.log(`积分不足（需${this.player.skillCost}）`); return false; }
+    this.score -= this.player.skillCost;
     this.hud.setScore(this.score);
     const muzzle = new THREE.Vector3();
     const dir = new THREE.Vector3();
@@ -793,7 +797,7 @@ export class Game {
     // 以瞄准方向 dir 为轴建正交基：right ⊥ dir（水平），up = right × dir
     const right = new THREE.Vector3().crossVectors(dir, _WORLD_UP).normalize();
     const up = new THREE.Vector3().crossVectors(right, dir).normalize();
-    const dmg = SCATTER.DAMAGE > 0 ? SCATTER.DAMAGE : this.player.atk;
+    const dmg = (SCATTER.DAMAGE > 0 ? SCATTER.DAMAGE : this.player.atk) * this.player.skillDamageMul;
     for (let i = 0; i < SCATTER.COUNT; i++) {
       const theta = Math.random() * Math.PI * 2;
       const r = SCATTER.SPREAD_DISC ? Math.sqrt(Math.random()) * SCATTER.RADIUS : SCATTER.RADIUS; // 实心=面积均匀，环=等半径
@@ -804,15 +808,41 @@ export class Game {
       const bdir = new THREE.Vector3(bx, by, bz).normalize();
       this.bullets.spawn(muzzle, bdir, dmg);
     }
-    this.log(`积分散射！消耗${SCATTER.COST}积分，喷出${SCATTER.COUNT}弹头`);
+    this.log(`积分散射！消耗${this.player.skillCost}积分，喷出${SCATTER.COUNT}弹头`);
     return true;
   }
 
-  // 激光剑：消耗积分，激活左手柄「5秒伤害状态」。期间左手自由挥动，剑刃线段扫过怪物即扣血，
+  // 散射强化（第3关技能卡，一次性）：消耗 player.skillCost 积分，喷出 SCATTER_BURST.COUNT 发、每发 SCATTER_BURST.DAMAGE（×倍率）
+  _castScatterBurst() {
+    if (this.score < this.player.skillCost) { this.log(`积分不足（需${this.player.skillCost}）`); return false; }
+    this.score -= this.player.skillCost;
+    this.hud.setScore(this.score);
+    const muzzle = new THREE.Vector3();
+    const dir = new THREE.Vector3();
+    this.input.getMuzzle(muzzle, dir); // 右手柄位姿（无则回退相机）
+    const right = new THREE.Vector3().crossVectors(dir, _WORLD_UP).normalize();
+    const up = new THREE.Vector3().crossVectors(right, dir).normalize();
+    const dmg = SCATTER_BURST.DAMAGE * this.player.skillDamageMul;
+    const n = SCATTER_BURST.COUNT;
+    for (let i = 0; i < n; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const r = SCATTER_BURST.SPREAD_DISC ? Math.sqrt(Math.random()) * SCATTER_BURST.RADIUS : SCATTER_BURST.RADIUS;
+      const bx = dir.x * SCATTER_BURST.DIST + (right.x * Math.cos(theta) + up.x * Math.sin(theta)) * r;
+      const by = dir.y * SCATTER_BURST.DIST + (right.y * Math.cos(theta) + up.y * Math.sin(theta)) * r;
+      const bz = dir.z * SCATTER_BURST.DIST + (right.z * Math.cos(theta) + up.z * Math.sin(theta)) * r;
+      const bdir = new THREE.Vector3(bx, by, bz).normalize();
+      this.bullets.spawn(muzzle, bdir, dmg);
+    }
+    this.log(`散射强化！消耗${this.player.skillCost}积分，喷出${n}弹头`);
+    this.selectedSkill = 'scatter'; // 一次性技能：用后回落到默认积分散射（避免空技能）
+    return true;
+  }
+
+  // 激光剑：消耗 player.skillCost 积分，激活左手柄「5秒伤害状态」。期间左手自由挥动，剑刃线段扫过怪物即扣血，
   // 每只怪 1 秒内只受一次（限频在 _updateSwordMelee 内）。伤害穿透脸谱95%减伤。
   _castLaserSword() {
-    if (this.score < LASER_SWORD.COST) { this.log(`积分不足（需${LASER_SWORD.COST}）`); return false; }
-    this.score -= LASER_SWORD.COST;
+    if (this.score < this.player.skillCost) { this.log(`积分不足（需${this.player.skillCost}）`); return false; }
+    this.score -= this.player.skillCost;
     this.hud.setScore(this.score);
     this.leftSword.setActive(true);
     this._swordUntil = this._gameTime + LASER_SWORD.DURATION; // 伤害状态结束时刻
@@ -831,16 +861,10 @@ export class Game {
       const rr = b.hitRadius; // 含立绘 0.6 系数/薄板近似，球体足够
       if (_pointSegDistSq(b.mesh.position, this._hilt, this._tip) > rr * rr) continue; // 剑刃未扫到
       if ((b._swordCdUntil || 0) > now) continue; // 每只怪 1 秒内只受一次
-      const killed = b.takeDamage(LASER_SWORD.DAMAGE, true); // ignoreReduction=true 穿透减伤，稳定 500
+      const killed = b.takeDamage(LASER_SWORD.DAMAGE * this.player.skillDamageMul, true); // ignoreReduction=true 穿透减伤，稳定 400×倍率
       b._swordCdUntil = now + 1.0;
       if (killed) this._onKilled(b);
     }
-  }
-
-  // 定身咒：暂停所有敌人行动；Boss（龙）仅前 50% 时长冻结（由 FREEZE.BOSS_FACTOR 控制）
-  _castFreeze() {
-    this.enemyFreeze = FREEZE.DURATION;
-    this.log('定身咒！敌人暂停行动');
   }
 
   _updateBuddhaFx(dt) {
@@ -927,6 +951,11 @@ export class Game {
       atk: p.atk,
       shootCooldown: p.shootCooldown,
       multiShotChance: p.multiShotChance,
+      shotCount: p.shotCount,
+      fireRate: p.fireRate,
+      skillCost: p.skillCost,
+      skillDamageMul: p.skillDamageMul,
+      regen: p.regen,
       maxHp: p.maxHp,
       hp: p.hp,
       buddhaUnlocked: p.buddhaUnlocked,
@@ -944,6 +973,11 @@ export class Game {
     p.atk = s.atk;
     p.shootCooldown = s.shootCooldown;
     p.multiShotChance = s.multiShotChance;
+    p.shotCount = s.shotCount;
+    p.fireRate = s.fireRate;
+    p.skillCost = s.skillCost;
+    p.skillDamageMul = s.skillDamageMul;
+    p.regen = s.regen;
     p.maxHp = s.maxHp;
     p.hp = s.hp;
     p.buddhaUnlocked = s.buddhaUnlocked;
@@ -974,22 +1008,54 @@ export class Game {
     const pp = this._playerPos();
     this.world.camera.getWorldDirection(this._fwd);
     this._fwd.negate(); // 相机/手柄前向为 -Z，getWorldDirection 返回 +Z，需取反，否则卡牌会生成在身后
+
+    // 逐关卡池（对齐 iMA 笔记「选项卡调整」）：抽 3 张不重复
+    const lv = LEVELS[this.levelIndex];
+    let plan;
+    if (lv.kind === 'laser' && lv.n === 3) {
+      // 第三关：固定三张技能卡（如来神掌/激光剑/散射强化）
+      plan = { fixedSkills: ['buddha', 'lightsaber', 'scatterburst'] };
+    } else if (lv.n === 18) {
+      // 第18关（最终 Boss）通关：展示本局获得的所有选项卡，随后进入通关结算
+      this._showRunSummary();
+      return;
+    } else if (lv.kind === 'boss' || lv.kind === 'laser') {
+      // Boss 关(6/12) + 机制关(9/15)：抽 4–7 池（技能消耗/技能伤害/自我修复/生命）
+      plan = { pool: ['skillCost', 'skillDamage', 'selfRepair', 'hp'] };
+    } else {
+      // 普通/危机关：抽 1–5 池（射速/子弹/攻击/技能消耗/技能伤害）
+      plan = { pool: ['fireRate', 'multiShot', 'atk', 'skillCost', 'skillDamage'] };
+    }
+
     this._cardState = {
       player: this.player,
       // score 访问解耦：注入回调，cardDraft 不再反向持有 game 实例
       getScore: () => this.score,
       spendScore: (cost) => { this.score -= cost; },
-      // 01/02 关卡片品质覆盖（见 LEVEL_PLANS）；首卡强制攻击紫仅 02 关且本关首次
-      rarity: LEVEL_PLANS[LEVELS[this.levelIndex].n]?.cards || null,
-      forceAttackPurple: !!(LEVEL_PLANS[LEVELS[this.levelIndex].n]?.firstCardForceAttackPurple && this._firstCardOfLevel),
-      // 第三关激光关：固定弹出三张红色技能卡（如来神掌/金箍棒/定身咒），onSkill 回调执行需场景上下文的技能
-      fixedSkills: this._forceSkillCards || null,
+      pool: plan.pool || null,                 // 普通/Boss/机制关：属性卡池（抽 3 不重复）
+      fixedSkills: plan.fixedSkills || null,    // 第三关：固定技能卡
       onSkill: (id) => this._applySkillCard(id),
+      onCollect: (id) => this._collectedCards.push(id), // 本局收集：供第18关汇总
     };
-    this._forceSkillCards = null; // 取用后清空
-    this._firstCardOfLevel = false; // 翻转：本关仅首张卡强制攻击紫
-    this.hud.message('选择强化', '射击对应气球进行选择（刷新气球可重roll，积分不足时锁定）', '#ffd43b');
+    this.hud.message('选择强化', '射击对应气球进行选择（3 选 1）', '#ffd43b');
     this.cards.open(pp, this._fwd.clone(), this._cardState, () => this._onCardDone());
+  }
+
+  // 第18关通关：汇总本局获得的所有选项卡并展示，随后进入通关结算
+  _showRunSummary() {
+    const counts = {};
+    for (const id of this._collectedCards) counts[id] = (counts[id] || 0) + 1;
+    const nameOf = (id) => {
+      const s = SKILL_CARDS.find(c => c.id === id);
+      const a = ATTR_TYPES.find(c => c.id === id);
+      return (s && s.label) || (a && a.label) || id;
+    };
+    const lines = Object.entries(counts).map(([id, n]) => `${nameOf(id)}×${n}`);
+    const text = lines.length ? lines.join('  ·  ') : '（本局未获得强化）';
+    this.log('本局获得强化：\n' + text);
+    this.state = 'over';
+    this.hud.message('通关！本局强化', text, '#2ecc71');
+    this.hud.showStart();
   }
 
   // 抽卡模式：允许自由移动 + 射击，子弹命中卡气球即选卡

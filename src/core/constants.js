@@ -103,6 +103,16 @@ export const SCATTER = {
   SPREAD_DISC: true,  // true=实心圆盘(面积均匀)；false=仅圆周
 };
 
+// 散射强化（第3关技能卡 scatterburst）：一次性喷出 COUNT 发、每发 DAMAGE 伤害，消耗走 player.skillCost
+export const SCATTER_BURST = {
+  COUNT: 100,         // 一次性弹头数量
+  DAMAGE: 100,        // 每发伤害（×player.skillDamageMul 倍率）
+  COOLDOWN: 1.0,      // 释放后冷却（秒，仅作 HUD 显示；用后回落到默认积分散射）
+  DIST: 9,            // 轴向距离（米）：弹头圆盘中心在枪口前方此距离处
+  RADIUS: 3,          // 圆盘半径（米）
+  SPREAD_DISC: true,  // 实心圆盘
+};
+
 export const BALLOON = {
   HP: 100,
   SPEED: 0.5,       // 普通气球移动速度 m/s
@@ -120,7 +130,7 @@ export const SHIP = {
 export const BUDDHA = {            // 如来神掌（大招）
   COOLDOWN: 8,
   KILL_RADIUS: 50,
-  DAMAGE: 1000,
+  DAMAGE: 200,                     // 笔记：如来神掌全屏基础伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
   FALL_DURATION: 0.5,
   FALL_START_SCALE: 8,             // 巨掌从天而降的起始缩放（大）
   FALL_END_SCALE: 1.5,             // 落地的终止缩放（贴近玩家大小）
@@ -136,7 +146,7 @@ export const LASER_SWORD = {
   SCALE:      1.0,                          // 整体缩放（过大/过小先 1.0 看效果再调）
   BLADE_AXIS: { x: 0, y: 0, z: -1 },       // 剑刃方向（模型本地轴，单位向量；按实际模型调，默认 -Z 前方）
   BLADE_LENGTH: 1.0,                        // 剑刃长度（米）= 命中线段长度
-  DAMAGE:     500,                          // 单次命中伤害
+  DAMAGE:     400,                          // 笔记：激光剑单次命中伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
   DURATION:   5,                            // 激活后伤害状态持续秒数
   COOLDOWN:   5,                            // 激活后复用冷却秒数（HUD 显示）
   COST:       500,                          // 消耗积分

@@ -1,74 +1,71 @@
-// 抽卡卡牌配置（知识库「卡片」笔记）
-// 属性类：攻击力/射速/多重(新图) + 回血/减冷却（保留 4 档稀有度）
-// 技能类（红色）：如来神掌 / 金钟罩 / 激光剑 / 定身咒
+// 抽卡卡牌配置（对齐 iMA 笔记「选项卡调整」）
+// 属性类（加法叠加 + 封顶）：射速 / 子弹 / 攻击 / 技能消耗 / 技能伤害 / 自我修复 / 生命
+// 技能类（红色）：如来神掌 / 激光剑 / 散射强化（仅第3关机制关固定三张）
 //
-// atk / fireRate / multiShot 改用新 PNG 卡图（assets/cards/{id}.png），单值效果（不再走 4 档）
-// 爆炸卡已删除（爆炸系统全链路移除）
+// atk / fireRate / multiShot 用 PNG 卡图（assets/cards/{id}.png）；
+// 其余属性/技能卡用 canvas 文字卡面（与历史 heal/cooldownReduction 一致），不新增 PNG。
 
-import { SHOOT, BUDDHA } from '../core/constants.js';
-
-// 每个属性：各稀有度增量 + apply(player)
-// 有 image 字段的条目：用新 PNG 作为卡面纹理，单值效果（rarity 仅用于背景色，不再影响数值）
+// 属性卡：卡面有 image 字段则用对应 PNG；color 用于边框/背景色，rarity 仅作配色不做数值（加法叠加 + 封顶）。
 export const ATTR_TYPES = [
   {
-    id: 'atk',
-    label: '攻击力加倍',
-    desc: '攻击力×2',
-    image: 'atk',  // 对应 assets/cards/atk.png，由 preloadCardImages 预加载
-    values: { white: 0, blue: 0, purple: 0, gold: 0 },
-    apply: (p) => { p.atk *= 2; },
-  },
-  {
-    id: 'fireRate',
-    label: '攻击速度加倍',
-    desc: '射速×2',
-    image: 'fireRate',
-    values: { white: 0, blue: 0, purple: 0, gold: 0 },
-    // 冷却减半，封底为原始 COOLDOWN 的 25%（避免无下限卡死）。
-    // 改 player.shootCooldown 只是存档快照——真实节流在 input._gunCooldown，必须调 input.setFireRateMul 才生效。
+    id: 'fireRate', label: '射速+2', desc: '射速+2/秒（上限14）',
+    image: 'fireRate', color: '#2e86de',
+    // 落到真实节流源（input.setFireRate）：选卡后射速真正提升，封顶 14 发/秒
     apply: (p) => {
-      p.fireRateMul = Math.max(0.25, (p.fireRateMul ?? 1) * 0.5);
-      p.shootCooldown = Math.max(SHOOT.COOLDOWN * 0.25, p.shootCooldown * 0.5); // 存档快照
-      p.input?.setFireRateMul(p.fireRateMul); // 落到真实节流源：选卡后射速真正翻倍
+      p.fireRate = Math.min(14, (p.fireRate || 2) + 2);
+      p.input?.setFireRate(p.fireRate);
     },
   },
   {
-    id: 'multiShot',
-    label: '额外发射一枚子弹',
-    desc: '每发+1子弹',
-    image: 'multiShot',
-    values: { white: 0, blue: 0, purple: 0, gold: 0 },
-    // 确定性 +1（与现 fire() 的水平扇形对齐，可多次叠加）
-    apply: (p) => { p.shotCount = (p.shotCount || 1) + 1; },
+    id: 'multiShot', label: '额外子弹+1', desc: '每发+1子弹（上限7）',
+    image: 'multiShot', color: '#27ae60',
+    apply: (p) => { p.shotCount = Math.min(7, (p.shotCount || 1) + 1); },
   },
   {
-    id: 'heal', label: '回血', desc: '恢复并提升上限',
-    values: { white: 10, blue: 20, purple: 50, gold: 100 },
-    apply: (p, v) => { p.maxHp += v; p.hp = Math.min(p.maxHp, p.hp + v); },
+    id: 'atk', label: '攻击力+100', desc: '攻击力+100（上限700）',
+    image: 'atk', color: '#e67e22',
+    apply: (p) => { p.atk = Math.min(700, (p.atk || 100) + 100); },
   },
   {
-    id: 'cooldownReduction', label: '减冷却', desc: '大招冷却',
-    values: { white: 10, blue: 20, purple: 30, gold: 35 },
-    apply: (p, v) => { p.buddhaCooldown = Math.max(BUDDHA.COOLDOWN * 0.25, p.buddhaCooldown - v); },
+    id: 'skillCost', label: '技能消耗-100', desc: '技能消耗-100（下限100）',
+    color: '#8e44ad',
+    apply: (p) => { p.skillCost = Math.max(100, (p.skillCost || 500) - 100); },
+  },
+  {
+    id: 'skillDamage', label: '技能伤害+1倍', desc: '技能伤害×(+1)（上限×5）',
+    color: '#c0392b',
+    apply: (p) => { p.skillDamageMul = Math.min(5, (p.skillDamageMul || 1) + 1); },
+  },
+  {
+    id: 'selfRepair', label: '自我修复+2%/s', desc: '每秒回血+2%（上限10%）',
+    color: '#16a085',
+    apply: (p) => { p.regen = Math.min(10, (p.regen || 0) + 2); },
+  },
+  {
+    id: 'hp', label: '生命+50', desc: '生命上限+50（上限400），并回50',
+    color: '#2980b9',
+    apply: (p) => {
+      p.maxHp = Math.min(400, (p.maxHp || 100) + 50);
+      p.hp = Math.min(p.maxHp, (p.hp || 0) + 50);
+    },
   },
 ];
 
-// 技能卡（红色）：第三关固定三张（buddha/lightsaber/freeze）+ 其余关随机出现其一（含 bell）
+// 技能卡（红色）：第3关固定三张（buddha/lightsaber/scatterburst）
 export const SKILL_CARDS = [
   {
-    id: 'buddha', label: '如来神掌', rarity: 'gold', color: '#ff3b3b', desc: '解锁/刷新大招',
+    id: 'buddha', label: '如来神掌', rarity: 'gold', color: '#ff3b3b',
+    desc: '全屏伤害200（×技能倍率）',
     apply: (p) => { p.buddhaUnlocked = true; p.buddhaTimer = 0; },
   },
   {
-    id: 'bell', label: '金钟罩', rarity: 'gold', color: '#ff3b3b', desc: '场地护盾 3 秒',
-    apply: (p) => { p.shieldTime = Math.max(p.shieldTime, 3); },
-  },
-  {
-    id: 'lightsaber', label: '激光剑', rarity: 'gold', color: '#ff3b3b', desc: '左手激光剑近战（按左手柄激活5秒）',
+    id: 'lightsaber', label: '激光剑', rarity: 'gold', color: '#ff3b3b',
+    desc: '左手激光剑近战，伤害400（×倍率），持续5秒',
     apply: () => { /* 伤害由 game._castLaserSword 执行（需场景上下文）*/ },
   },
   {
-    id: 'freeze', label: '定身咒', rarity: 'gold', color: '#ff3b3b', desc: '暂停所有敌人行动',
-    apply: () => { /* 冻结由 game._castFreeze 执行 */ },
+    id: 'scatterburst', label: '散射强化', rarity: 'gold', color: '#ff3b3b',
+    desc: '一次性100发×100伤害（×倍率）',
+    apply: () => { /* 伤害由 game._castScatterBurst 执行 */ },
   },
 ];
