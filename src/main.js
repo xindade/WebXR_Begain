@@ -8,7 +8,6 @@ import { InputManager } from './vr/input.js';
 import { WristUI } from './vr/wrist-ui.js';
 import { Game } from './game/game.js';
 import { LEVELS } from './content/levels.js';
-import { preloadCardImages } from './game/cardDraft.js';
 import { preloadGLB } from './game/glbCache.js';
 import { MODEL_URL as PORTAL_MODEL_URL } from './game/portal.js';
 import { MODEL_URL as OPENING_MODEL_URL } from './game/openingModel.js';
@@ -43,13 +42,8 @@ const world = new World(canvas);
   );
   const glbTask = Promise.all(glbTasks);
 
-  // 抽卡 PNG（3 张共 ~1.1MB，太小不进进度条；加载完直接注入 game）
-  // 失败也不影响：CardDraft 自动回落到 canvas 文字卡
-  const cardTask = preloadCardImages()
-    .then((texMap) => { game.setCardTextures(texMap); })
-    .catch(() => {});
-
   // 真实总进度：龙资产 / 传送门+开场动画 GLB 各占一半（天空已改为逐关懒加载，不进启动进度）
+  // 抽卡卡面现由 canvas 程序化绘制（简笔画图标），无需预加载 PNG。
   const realFrac = () => {
     const glb = glbParts.reduce((s, v) => s + v, 0) / glbParts.length;
     return (dragonFrac + glb) / 2;
@@ -87,7 +81,7 @@ const world = new World(canvas);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
-  Promise.all([dragonTask, cardTask, glbTask]).catch(() => {}); // 触发加载（帧循环独立读取进度）
+  Promise.all([dragonTask, glbTask]).catch(() => {}); // 触发加载（帧循环独立读取进度）
 })();
 
 const hud = new HUD();

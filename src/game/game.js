@@ -1025,6 +1025,8 @@ export class Game {
     } else {
       // 普通/危机关：抽 1–5 池（射速/子弹/攻击/技能消耗/技能伤害）
       plan = { pool: ['fireRate', 'multiShot', 'atk', 'skillCost', 'skillDamage'] };
+      if (lv.n === 1) plan.guarantee = 'multiShot';    // 01 关：额外子弹必出
+      else if (lv.n === 2) plan.guarantee = 'fireRate'; // 02 关：射速必出
     }
 
     this._cardState = {
@@ -1033,6 +1035,7 @@ export class Game {
       getScore: () => this.score,
       spendScore: (cost) => { this.score -= cost; },
       pool: plan.pool || null,                 // 普通/Boss/机制关：属性卡池（抽 3 不重复）
+      guarantee: plan.guarantee || null,        // 01/02 关：指定卡必出（multiShot / fireRate）
       fixedSkills: plan.fixedSkills || null,    // 第三关：固定技能卡
       onSkill: (id) => this._applySkillCard(id),
       onCollect: (id) => this._collectedCards.push(id), // 本局收集：供第18关汇总
