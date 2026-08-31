@@ -40,6 +40,11 @@ export const RENDER = { FRAMEBUFFER_SCALE: 1.0 };
 // 1.0 = 原样；<1 = 变暗；>1 = 变亮。改完刷新页面即生效。
 export const SKY_BRIGHTNESS = 1.0; // 全景天空亮度倍率（JPG 等距柱状全景）。1.0=原样；<1 变暗；>1 变亮。刷新即生效。
 
+// 全景天空 mipmap 开关（用于一键回退）：
+// false = 关闭 mipmap（省约一半显存带宽 + 去掉切换关时的 mip 生成单帧尖峰卡顿，推荐）；
+// true  = 回退到原行为（生成 mipmap，远景更平滑但带宽/卡顿更重）。改完刷新页面即生效。
+export const SKY_PANO_MIPMAPS = false;
+
 export const MOVE = {
   SPEED: 3.5,        // 摇杆/键鼠 移动速度 m/s
   DEADZONE: 0.2,    // 摇杆死区
@@ -188,10 +193,12 @@ export const CARD = {
   // —— 固定世界坐标摆放（射击选卡版）——
   ROW_Z: -4,                // 卡片固定世界 Z（场地底边）
   ROW_Y: 2,                 // 卡片固定世界 Y（比原方案提高 1m）
-  // 卡变高了，气球必须抬高到卡顶之上：HEIGHT/2 + BALLOON_R + 留白 ≈ 0.355+0.18+0.21=0.745
-  BALLOON_DY: 0.75,         // 气球在卡片上方偏移 m
+  // 气球相对卡牌平面抬多高、细绳自身多长：二者独立可调（线长应略小于高度，使线底端落在卡面；若相等则线正好接卡牌中心）
+  BALLOON_HEIGHT: 0.7,     // 气球（气球组）相对卡牌平面的竖直高度(m)：越大气球离卡牌越远
+  BALLOON_STRING_LEN: 0.35, // 细绳自身长度(m)：从气球中心向下连到卡牌的线长（与气球高度独立，单独调线长短/松紧）
   BALLOON_R: 0.18,          // 气球可被击中半径 m
-  BALLOON_BOB: 0.06,        // 气球上下浮动幅度 m
+  BALLOON_BOB: 0.16,        // 气球上下浮动幅度 m（上下晃多高）
+  BALLOON_BOB_FREQ: 1.5,    // 气球上下浮动频率(Hz)：每秒摆动次数，越大晃得越快
   RESOLVE_DUR: 2,           // 其余卡/气球向上飞走耗时 s
   FLY_TOP_Y: 10,            // 其余卡/气球飞到该高度后消失
   LIGHT_DUR: 1.0,           // 选中卡化为光点飞向玩家耗时 s
@@ -616,6 +623,31 @@ export const PORTAL_BEAM = {
 };
 
 // ============================================================
+// 关卡开场「穿云」特效 + 出怪/动画延迟（cloudFx.js / game._loadLevel 引用）
+//   每关开始先在玩家前方生成 COLS×ROWS 软雾团，整团向后飘 DRIFT_DUR 秒，
+//   再「由前向后」缩短 SHRINK_DUR 秒（表现玩家突破云层），
+//   期间冻结出怪与 Boss/机制动画，但场景(天空/传送门/激光几何/龙)已先出现。
+//   总延迟 = INTRO_DELAY(默认 4s) = DRIFT_DUR(3) + SHRINK_DUR(1)，调参请保持此关系。
+// ============================================================
+export const CLOUD = {
+  ENABLED:       true,    // 总开关：false → 跳过穿云与延迟，关卡直开
+  COLS:          5,       // 横向(宽)雾团列数
+  ROWS:          9,       // 纵深(前→后)雾团排数
+  SPREAD_X:      14,      // 云雾总宽度（米）：越大越铺满视野
+  DEPTH:         20,      // 云雾总纵深（米，沿玩家正前方向）
+  FRONT_DIST:    0,       // 最前排距玩家的距离（米）：云在身前多远处起
+  Y:             2.6,     // 云雾中心高度（米，约玩家眼高）
+  Y_JITTER:      2.0,     // 单团高度随机抖动（米）：增加体积感
+  PUFF_SIZE:     3.5,     // 单团基础尺寸（米）
+  OPACITY:       0.95,     // 单团基础不透明度 0~1：越大越浓
+  COLOR:         0xffffff,// 云雾颜色
+  DRIFT_DUR:     3.0,     // 阶段1：整团向后飘动持续（秒）
+  DRIFT_SPEED:   5.0,     // 阶段1：向后飘动速度（米/秒）
+  SHRINK_DUR:    1.0,     // 阶段2：由前向后缩短持续（秒）
+  INTRO_DELAY:   4.0,     // 关卡开场总延迟（秒）：普通关出怪 / Boss·机制关动画 延后至此才启动
+};
+
+// ============================================================
 // 玩家参数覆盖（userConfig.js）—— 改动后刷新页面即生效
 // 原理：本文件是依赖图叶子模块（无 import 业务模块），此合并先于所有消费方求值。
 // 用户唯一编辑入口：src/core/userConfig.js（只写想改的键，其余保持默认）。
@@ -659,6 +691,7 @@ const _OVERRIDES = [
   ['LASER_SWORD', LASER_SWORD, USER_CONFIG.LASER_SWORD],
   ['CIRCUS', CIRCUS, USER_CONFIG.CIRCUS],
   ['RENDER', RENDER, USER_CONFIG.RENDER],
+  ['CLOUD', CLOUD, USER_CONFIG.CLOUD],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

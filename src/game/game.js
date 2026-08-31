@@ -12,11 +12,12 @@ import { LeftSword } from '../vr/leftSword.js';
 import { DragonBoss } from './dragonLevel.js';
 import { OpeningModel } from './openingModel.js';
 import { CircusModel } from './circusModel.js';
+import { CloudFx } from './cloudFx.js';
 import { Portal } from './portal.js';
 import { LEVELS, isLaser, isBoss } from '../content/levels.js';
 import { LEVEL_PLANS } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, CIRCUS } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, CIRCUS, CLOUD } from '../core/constants.js';
 import { setRenderer } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 
@@ -103,6 +104,9 @@ export class Game {
     this.dragon = null;      // 第十二关龙 Boss 实例（boss==='dragon' 时存在）
     this.openingModel = null; // 第3/9/15关开场动画模型（魔术师），10秒后自动移除
     this._circus = null;       // 第3/9/15关马戏团固定场景装饰（常驻整关）
+    this.cloudFx = null;       // 关卡开场穿云特效（cloudFx.js），4秒后自动移除
+    this._introActive = false; // 开场门控：true 时冻结出怪/Boss/机制动画（仅自然转头）
+    this._introT = 0;          // 开场计时（秒）
     this._gameTime = 0;        // 全局累计时间（秒）：激光剑状态/每怪1秒限频的时间基准
     this._swordUntil = 0;      // 激光剑伤害状态结束时刻（this._gameTime 基准）
     this._hilt = new THREE.Vector3();  // 激光剑剑柄世界坐标（每帧命中检测复用）
@@ -169,6 +173,8 @@ export class Game {
     if (this.dragon)   { this.dragon.dispose();   this.dragon = null; }
     if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清开场动画
     if (this._circus) { this._circus.dispose(); this._circus = null; } // 清马戏团装饰
+    if (this.cloudFx) { this.cloudFx.dispose(); this.cloudFx = null; } // 清穿云特效
+    this._introActive = false; this._introT = 0; // 复位开场门控
     this._clearPortals(); // 清传送门装饰（防跨关/回菜单残留）
     this.waves.clearPending();   // 清出怪光点（防回菜单残留）
     // 清理实体
@@ -269,6 +275,18 @@ export class Game {
     }
     // 非激光关在关卡加载完成后拍照快照（用于死亡重开时恢复属性+分数）
     if (!isLaser(lv)) this._snapshotState();
+
+    // ====== 关卡开场穿云（每关都跑：遮蔽加载卡顿 + 平滑过渡）======
+    // 在场景(天空/传送门/激光几何/龙)已构建后触发；INTRO_DELAY 秒内冻结出怪与 Boss/机制动画。
+    if (CLOUD.ENABLED) {
+      this._introActive = true;
+      this._introT = 0;
+      if (this.cloudFx) this.cloudFx.dispose();   // 死亡重开等复用场景：先清旧云
+      this.cloudFx = new CloudFx(this.world.scene);
+      this.cloudFx.start(this.world.camera, this.rig);
+    } else {
+      this._introActive = false;
+    }
   }
 
   // 小怪关装饰：按本关方向表在场地中心四周生成传送门（FRONT=-Z BACK=+Z LEFT=-X RIGHT=+X）
@@ -339,8 +357,8 @@ export class Game {
     dt = Math.min(dt, 0.05);
     this._gameTime += dt;                            // 激光剑状态/每怪限频的时间基准
     this.world.update(dt);
-    if (this.openingModel) this.openingModel.update(dt); // 开场动画模型：推进动画 + 10秒计时
-    if (this._circus) this._circus.update(dt);       // 马戏团装饰：推进动画（若有）
+    if (this.openingModel && !this._introActive) this.openingModel.update(dt); // 开场动画模型：推进动画 + 10秒计时（穿云时冻结）
+    if (this._circus && !this._introActive) this._circus.update(dt);       // 马戏团装饰：推进动画（穿云时冻结）
     const pp = this._playerPos();                     // 取一次玩家位置，所有门共用（同步读取，无异步滞留）
     this._portals.forEach((p) => p.update(dt, pp));   // 传送门动画 + 浮动 + 摇杆偏移 + 数值标签
     this.wristUI?.update(dt, this, this.input); // 手腕面板（VR 下显示，桌面忽略）
@@ -354,6 +372,18 @@ export class Game {
   }
 
   _updatePlaying(dt) {
+    // ====== 关卡开场穿云：INTRO_DELAY 秒内冻结玩法（不移动/不开火/不触发技能），仅自然转头观察 ======
+    if (this._introActive) {
+      this._introT += dt;
+      if (this.cloudFx) this.cloudFx.update(dt);   // 驱动云雾动画（后飘3s → 由前向后缩短1s）
+      this.hud.setHp(this.player.hp, this.player.maxHp);
+      if (this._introT >= CLOUD.INTRO_DELAY) {
+        this._introActive = false;
+        if (this.cloudFx) { this.cloudFx.dispose(); this.cloudFx = null; }
+        this.log('穿云结束 · 关卡正式开始');
+      }
+      return;
+    }
     this.input.update(dt);
     this.player.update(dt);
     this.bullets.update(dt);
@@ -1011,6 +1041,16 @@ export class Game {
 
     // 逐关卡池（对齐 iMA 笔记「选项卡调整」）：抽 3 张不重复
     const lv = LEVELS[this.levelIndex];
+    // 提前预热下一关全景：抽卡阶段就下载+解码+上传GPU，避开切换关时单帧 32MB 上传+mip 尖峰卡顿
+    const _nxLv = LEVELS[this.levelIndex + 1];
+    if (_nxLv) {
+      const _nxPano = SKY_PANORAMA[_nxLv.n];
+      if (_nxPano) {
+        this.world.loadSky(_nxPano)
+          .then((t) => { try { this.world.renderer.initTexture(t); } catch (e) {} })
+          .catch(() => {});
+      }
+    }
     let plan;
     if (lv.kind === 'laser' && lv.n === 3) {
       // 第三关：固定三张技能卡（如来神掌/激光剑/散射强化）
@@ -1025,6 +1065,8 @@ export class Game {
     } else {
       // 普通/危机关：抽 1–5 池（射速/子弹/攻击/技能消耗/技能伤害）
       plan = { pool: ['fireRate', 'multiShot', 'atk', 'skillCost', 'skillDamage'] };
+      if (lv.n === 1) plan.guarantee = 'multiShot';    // 01 关：额外子弹必出
+      else if (lv.n === 2) plan.guarantee = 'fireRate'; // 02 关：射速必出
     }
 
     this._cardState = {
@@ -1033,6 +1075,7 @@ export class Game {
       getScore: () => this.score,
       spendScore: (cost) => { this.score -= cost; },
       pool: plan.pool || null,                 // 普通/Boss/机制关：属性卡池（抽 3 不重复）
+      guarantee: plan.guarantee || null,        // 01/02 关：指定卡必出（multiShot / fireRate）
       fixedSkills: plan.fixedSkills || null,    // 第三关：固定技能卡
       onSkill: (id) => this._applySkillCard(id),
       onCollect: (id) => this._collectedCards.push(id), // 本局收集：供第18关汇总

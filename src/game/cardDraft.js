@@ -8,27 +8,6 @@ import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
 
 const _up = new THREE.Vector3(0, 1, 0);
 
-// 抽卡 PNG 纹理预加载：返回 {atk,fireRate,multiShot} -> THREE.Texture
-// 卡图为竖版（长边 1024），加载时设置 SRGBColorSpace + 各向异性，避免边缘锐利/色彩偏灰
-// onProgress(loaded, total)：可选回调；PNG 很小（~370KB/张），总耗时 < 1s
-const _cardLoader = new THREE.TextureLoader();
-const CARD_IMAGE_IDS = ['atk', 'fireRate', 'multiShot'];
-export function preloadCardImages(onProgress) {
-  const map = {};
-  let done = 0;
-  return Promise.all(CARD_IMAGE_IDS.map((id) => _cardLoader.loadAsync(`assets/cards/${id}.png`).then((tex) => {
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 4;
-    tex.minFilter = THREE.LinearMipmapLinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    tex.generateMipmaps = true;
-    map[id] = tex;
-    done++;
-    if (onProgress) onProgress(done, CARD_IMAGE_IDS.length);
-    return tex;
-  }))).then(() => map);
-}
-
 function rollRarity(weights) {
   // weights: 形如 {white:60, blue:40} 的覆盖权重（来自 LEVEL_PLANS 的 cards）；缺省用全局 RARITY
   const entries = weights
@@ -40,7 +19,136 @@ function rollRarity(weights) {
   return entries[0][0];
 }
 
-function makeCardTexture(title, sub, color) {
+// 按宽度断行（中文按字符断），最多 maxLines 行，超出加「…」
+function wrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines, color) {
+  const chars = [...text];
+  const lines = [];
+  let line = '';
+  for (const ch of chars) {
+    if (ctx.measureText(line + ch).width > maxWidth && line) {
+      lines.push(line);
+      line = ch;
+      if (lines.length >= maxLines - 1) break;
+    } else {
+      line += ch;
+    }
+  }
+  if (lines.length < maxLines) lines.push(line);
+  else if (line) lines[maxLines - 1] = (lines[maxLines - 1] || '') + '…';
+  ctx.fillStyle = color || '#fff';
+  lines.forEach((ln, i) => ctx.fillText(ln, x, y + i * lineHeight));
+  return lines.length;
+}
+
+// 简笔画图标：统一线稿风格（圆头线、粗描边），按 key 画不同图案
+function drawSketchIcon(ctx, key, cx, cy, s, color) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = Math.max(5, s * 0.07);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const L = s / 2; // 半尺寸
+  switch (key) {
+    case 'fireRate': // 两个向右 chevron >>
+      for (const off of [-s * 0.12, s * 0.12]) {
+        ctx.beginPath();
+        ctx.moveTo(cx - L * 0.5, cy - L * 0.6 + off);
+        ctx.lineTo(cx + L * 0.25, cy + off);
+        ctx.lineTo(cx - L * 0.5, cy + L * 0.6 + off);
+        ctx.stroke();
+      }
+      break;
+    case 'multiShot': // 扇形散开的圆点 + 发射点
+      for (let i = 0; i < 3; i++) {
+        const px = cx - L * 0.55 + i * L * 0.55;
+        const py = cy - L * 0.55 + (i === 1 ? 0 : L * 0.55);
+        ctx.beginPath();
+        ctx.arc(px, py, s * 0.1, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.beginPath(); ctx.arc(cx - L * 0.7, cy + L * 0.1, s * 0.09, 0, Math.PI * 2); ctx.fill();
+      break;
+    case 'atk': // 向上的剑/箭头
+      ctx.beginPath(); ctx.moveTo(cx, cy - L * 0.8); ctx.lineTo(cx, cy + L * 0.5); ctx.stroke();
+      ctx.beginPath(); // 剑尖
+      ctx.moveTo(cx, cy - L); ctx.lineTo(cx - L * 0.35, cy - L * 0.55);
+      ctx.lineTo(cx + L * 0.35, cy - L * 0.55); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); // 护手
+      ctx.moveTo(cx - L * 0.5, cy + L * 0.15); ctx.lineTo(cx + L * 0.5, cy + L * 0.15); ctx.stroke();
+      break;
+    case 'skillCost': // 硬币 + 向下箭头（消耗）
+      ctx.beginPath(); ctx.arc(cx, cy - L * 0.1, L * 0.7, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - L * 0.5); ctx.lineTo(cx, cy + L * 0.4);
+      ctx.moveTo(cx - L * 0.3, cy + L * 0.1); ctx.lineTo(cx, cy + L * 0.4);
+      ctx.lineTo(cx + L * 0.3, cy + L * 0.1);
+      ctx.stroke();
+      break;
+    case 'skillDamage': // 星爆
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(a) * L * 0.3, cy + Math.sin(a) * L * 0.3);
+        ctx.lineTo(cx + Math.cos(a) * L * 0.85, cy + Math.sin(a) * L * 0.85);
+        ctx.stroke();
+      }
+      break;
+    case 'selfRepair': { // 十字
+      const w = L * 0.28;
+      ctx.beginPath();
+      ctx.moveTo(cx - w, cy - L * 0.7); ctx.lineTo(cx + w, cy - L * 0.7);
+      ctx.lineTo(cx + w, cy - w); ctx.lineTo(cx + L * 0.7, cy - w);
+      ctx.lineTo(cx + L * 0.7, cy + w); ctx.lineTo(cx + w, cy + w);
+      ctx.lineTo(cx + w, cy + L * 0.7); ctx.lineTo(cx - w, cy + L * 0.7);
+      ctx.lineTo(cx - w, cy + w); ctx.lineTo(cx - L * 0.7, cy + w);
+      ctx.lineTo(cx - L * 0.7, cy - w); ctx.lineTo(cx - w, cy - w);
+      ctx.closePath(); ctx.stroke();
+      break;
+    }
+    case 'hp': // 心形
+      ctx.beginPath();
+      ctx.moveTo(cx, cy + L * 0.6);
+      ctx.bezierCurveTo(cx - L * 0.9, cy - L * 0.2, cx - L * 0.2, cy - L * 0.9, cx, cy - L * 0.3);
+      ctx.bezierCurveTo(cx + L * 0.2, cy - L * 0.9, cx + L * 0.9, cy - L * 0.2, cx, cy + L * 0.6);
+      ctx.stroke();
+      break;
+    case 'buddha': // 张开手掌
+      ctx.beginPath(); ctx.arc(cx, cy + L * 0.55, L * 0.45, Math.PI, 0); ctx.stroke();
+      for (let i = 0; i < 5; i++) {
+        const fx = cx - L * 0.6 + i * (L * 1.2 / 4);
+        ctx.beginPath();
+        ctx.moveTo(cx + (fx - cx) * 0.4, cy + L * 0.3);
+        ctx.lineTo(fx, cy - L * 0.7);
+        ctx.stroke();
+      }
+      break;
+    case 'lightsaber': // 横刃 + 剑尖 + 斜柄
+      ctx.beginPath(); ctx.moveTo(cx - L * 0.8, cy); ctx.lineTo(cx + L * 0.5, cy); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx + L * 0.5, cy); ctx.lineTo(cx + L * 0.25, cy - L * 0.2);
+      ctx.moveTo(cx + L * 0.5, cy); ctx.lineTo(cx + L * 0.25, cy + L * 0.2);
+      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx - L * 0.8, cy); ctx.lineTo(cx - L * 0.95, cy + L * 0.35); ctx.stroke();
+      break;
+    case 'scatterburst': { // 扇面放射线
+      const n = 7;
+      for (let i = 0; i < n; i++) {
+        const a = -Math.PI / 3 + (i / (n - 1)) * (Math.PI * 2 / 3);
+        ctx.beginPath();
+        ctx.moveTo(cx - L * 0.5, cy);
+        ctx.lineTo(cx - L * 0.5 + Math.cos(a) * L * 1.2, cy + Math.sin(a) * L * 1.2);
+        ctx.stroke();
+      }
+      break;
+    }
+    default: // 兜底：实心圆点
+      ctx.beginPath(); ctx.arc(cx, cy, L * 0.5, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function makeCardTexture(title, sub, color, iconKey) {
   // 竖版画布（aspect 256/456≈0.561 ≈ CARD.WIDTH/HEIGHT 0.4/0.71≈0.563，文字不会被拉伸）
   const W = 256, H = 456;
   const cv = document.createElement('canvas');
@@ -48,11 +156,14 @@ function makeCardTexture(title, sub, color) {
   const x = cv.getContext('2d');
   x.fillStyle = '#1b1b2f'; x.fillRect(0, 0, W, H);
   x.strokeStyle = color; x.lineWidth = 8; x.strokeRect(6, 6, W - 12, H - 12);
-  // 文字居中靠上（卡面上 1/3 区域）
+  // 顶部简笔画图标
+  drawSketchIcon(x, iconKey, W / 2, 150, 120, color);
+  // 中部标题
   x.fillStyle = color; x.font = 'bold 30px sans-serif'; x.textAlign = 'center';
-  x.fillText(title, W / 2, 210);
-  x.fillStyle = '#fff'; x.font = '22px sans-serif';
-  x.fillText(sub, W / 2, 270);
+  x.fillText(title, W / 2, 300);
+  // 底部说明（自动换行，最多 3 行）
+  x.font = '22px sans-serif';
+  wrapText(x, sub, W / 2, 350, W - 50, 30, 3, '#fff');
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -68,10 +179,10 @@ function makeBalloon(colorHex) {
   const sphere = new THREE.Mesh(sphereGeo, sphereMat);
   g.add(sphere);
 
-  // 细绳：从气球底部向下延伸到卡面
-  const stringLen = CARD.BALLOON_DY;
+  // 细绳：从气球中心向下延伸（线长 = CARD.BALLOON_STRING_LEN，颜色随该卡选项卡变化），下端接卡牌
+  const stringLen = CARD.BALLOON_STRING_LEN;
   const stringGeo = new THREE.CylinderGeometry(0.006, 0.006, stringLen, 6);
-  const stringMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.9 });
+  const stringMat = new THREE.MeshStandardMaterial({ color: color, roughness: 0.9, emissive: color, emissiveIntensity: 0.3 });
   const string = new THREE.Mesh(stringGeo, stringMat);
   string.position.y = -stringLen / 2;
   g.add(string);
@@ -80,14 +191,11 @@ function makeBalloon(colorHex) {
 }
 
 export class CardDraft {
-  constructor(scene, cardTextures = {}) {
+  constructor(scene) {
     this.scene = scene;
     this.group = new THREE.Group();
     this.scene.add(this.group);
     this.group.visible = false;
-    // PNG 卡面纹理表 {atk, fireRate, multiShot} -> THREE.Texture
-    // 未加载完时对应键缺失，_makeCardMesh 自动回落到 canvas 文字卡
-    this.cardTextures = cardTextures;
 
     this.items = [];          // 每项 { holder, card, balloon, pick, invincible, flying, flyVel, exploded, locked }
     this.refreshCost = CARD.REFRESH_BASE_COST;
@@ -113,12 +221,7 @@ export class CardDraft {
     this._playerPos = new THREE.Vector3(); // 光点飞行目标（玩家位置，触发时记录）
   }
 
-  // 由 Game.setCardTextures 注入预加载好的 PNG 纹理表
-  // 未注入时 _makeCardMesh 自动回落到 canvas 文字卡（heal/cooldownReduction/refresh/技能卡）
-  setCardTextures(map) {
-    this.cardTextures = map || {};
-  }
-
+  // 卡面统一由 canvas 程序化绘制（简笔画图标 + 文字），见 makeCardTexture / drawSketchIcon
   open(playerPos, forward, state, onDone) {
     if (playerPos) this._playerPos.copy(playerPos);
     this._state = state;
@@ -137,6 +240,7 @@ export class CardDraft {
     // 01/02 关卡片品质覆盖（来自 LEVEL_PLANS）：仅首次 open 注入，refresh 复用本对象
     this._rarity = state.rarity || null;
     this._forceAtkPurple = !!state.forceAttackPurple;
+    this._guarantee = state.guarantee || null; // 01/02 关指定卡必出（multiShot / fireRate）
     this._buildCards();
   }
 
@@ -151,23 +255,35 @@ export class CardDraft {
       for (const id of this._state.fixedSkills) {
         const s = SKILL_CARDS.find(c => c.id === id);
         if (!s) continue;
-        picks.push({ kind: 'skill', def: s, rarity: s.rarity, label: s.label, sub: s.desc, color: s.color, image: null });
+        picks.push({ kind: 'skill', def: s, rarity: s.rarity, label: s.label, sub: s.desc, color: s.color, icon: s.icon || null });
       }
     } else {
       // 普通/Boss/机制关：从卡池抽 3 张不重复的属性卡（无刷新卡）
       const pool = (this._state.pool || ATTR_TYPES.map(a => a.id))
         .map(id => ATTR_TYPES.find(a => a.id === id))
         .filter(Boolean);
-      // 洗牌取前 3（不重复）
-      for (let i = pool.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [pool[i], pool[j]] = [pool[j], pool[i]];
+      let chosen;
+      const g = this._guarantee;
+      if (g && pool.some(a => a.id === g)) {
+        // 保证卡必出：先固定该卡，再对剩余卡洗牌取 2 张（不重复）
+        const rest = pool.filter(a => a.id !== g);
+        for (let i = rest.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [rest[i], rest[j]] = [rest[j], rest[i]];
+        }
+        chosen = [pool.find(a => a.id === g), ...rest.slice(0, Math.min(2, rest.length))];
+      } else {
+        // 洗牌取前 3（不重复）
+        for (let i = pool.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [pool[i], pool[j]] = [pool[j], pool[i]];
+        }
+        chosen = pool.slice(0, Math.min(CARD.COUNT, pool.length));
       }
-      const chosen = pool.slice(0, Math.min(CARD.COUNT, pool.length));
       for (const attr of chosen) {
         picks.push({
           kind: 'attr', def: attr, rarity: 'gold',
-          label: attr.label, sub: attr.desc, color: attr.color, image: attr.image || null,
+          label: attr.label, sub: attr.desc, color: attr.color, icon: attr.icon || null,
         });
       }
     }
@@ -182,23 +298,20 @@ export class CardDraft {
       holder.position.set(x, CARD.ROW_Y, CARD.ROW_Z);
       this.group.add(holder);
 
-      const card = this._makeCardMesh(p.label, p.sub, p.color, p.image);
+      const card = this._makeCardMesh(p.label, p.sub, p.color, p.icon);
       card.position.set(0, 0, 0);
       holder.add(card);              // 必须先挂进 holder，world 坐标才正确
       card.lookAt(0, CARD.ROW_Y, 0); // 再朝向坐标原点（保持竖直可读，正面朝玩家）
 
       const balloon = makeBalloon(p.color);
-      balloon.position.set(0, CARD.BALLOON_DY, 0); // 相对 holder 上方
+      balloon.position.set(0, CARD.BALLOON_HEIGHT, 0); // 气球相对卡牌的高度（BALLOON_HEIGHT）
       holder.add(balloon);
 
-      // 共享 PNG 纹理标记：_clearItems 据此判断是否可 dispose map
-      // （多张同图卡复用同一个 THREE.Texture，dispose 会破坏后续抽卡）
-      const isSharedMap = !!(p.image && this.cardTextures[p.image]);
+      // 每张卡面都是独立 canvas 纹理，_clearItems 直接 dispose
       const item = {
         holder, card, balloon, pick: p,
         invincible: false, flying: false, flyVel: 0, exploded: false,
         locked: false, // 刷新卡已移除，所有卡均可击中
-        isSharedMap,
       };
 
       if (item.locked) {
@@ -210,9 +323,9 @@ export class CardDraft {
     });
   }
 
-  _makeCardMesh(title, sub, color, imageKey) {
-    // 优先用预加载的 PNG 纹理；缺失则回落到 canvas 文字卡（heal/cooldownReduction/refresh/技能卡）
-    const tex = (imageKey && this.cardTextures[imageKey]) || makeCardTexture(title, sub, color);
+  _makeCardMesh(title, sub, color, iconKey) {
+    // 卡面统一 canvas 绘制：简笔画图标 + 标题 + 说明（不再依赖 PNG）
+    const tex = makeCardTexture(title, sub, color, iconKey);
     const mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(CARD.WIDTH, CARD.HEIGHT),
       new THREE.MeshBasicMaterial({ map: tex, transparent: true })
@@ -224,8 +337,8 @@ export class CardDraft {
     for (const it of this.items) {
       this.group.remove(it.holder);
       it.card.geometry.dispose();
-      // 共享 PNG 纹理不能 dispose（其他同图卡还在用）；canvas 独占纹理可以释放
-      if (!it.isSharedMap) it.card.material.map?.dispose();
+      // 每张卡面都是独立 canvas 纹理，直接释放（无共享复用）
+      it.card.material.map?.dispose();
       it.card.material.dispose();
       it.balloon.traverse((o) => {
         if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
@@ -263,7 +376,7 @@ export class CardDraft {
     for (let i = 0; i < this.items.length; i++) {
       const it = this.items[i];
       if (it.flying) continue;
-      it.holder.position.y = CARD.ROW_Y + CARD.BALLOON_BOB * Math.sin(this.t * 1.5 + i);
+      it.holder.position.y = CARD.ROW_Y + CARD.BALLOON_BOB * Math.sin(this.t * CARD.BALLOON_BOB_FREQ + i);
     }
 
     // 子弹 ↔ 卡气球 碰撞
@@ -271,9 +384,9 @@ export class CardDraft {
       for (const b of [...bullets.active]) {
         for (const it of this.items) {
           if (it.invincible || it.locked) continue; // 锁定的刷新气球不可击中
-          // 气球世界坐标 = holder.position + 气球局部(0, BALLOON_DY, 0)
+          // 气球世界坐标 = holder.position + 气球局部(0, BALLOON_HEIGHT, 0)
           const bx = it.holder.position.x;
-          const by = it.holder.position.y + CARD.BALLOON_DY;
+          const by = it.holder.position.y + CARD.BALLOON_HEIGHT;
           const bz = it.holder.position.z;
           const dx = b.pos.x - bx;
           const dy = b.pos.y - by;
@@ -315,7 +428,7 @@ export class CardDraft {
         if (it === item) it.exploded = true;
         else { it.invincible = true; it.flying = true; it.flyVel = (CARD.FLY_TOP_Y - it.holder.position.y) / CARD.RESOLVE_DUR; }
       }
-      const from = new THREE.Vector3(item.holder.position.x, item.holder.position.y + CARD.BALLOON_DY, item.holder.position.z);
+      const from = new THREE.Vector3(item.holder.position.x, item.holder.position.y + CARD.BALLOON_HEIGHT, item.holder.position.z);
       this._spawnLightFx(from, this._playerPos, item.pick.color);
     }
   }

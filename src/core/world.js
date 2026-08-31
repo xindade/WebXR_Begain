@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MOVE, SKY_BRIGHTNESS, PANO_DOME_YAW, RENDER } from './constants.js';
+import { MOVE, SKY_BRIGHTNESS, PANO_DOME_YAW, RENDER, SKY_PANO_MIPMAPS } from './constants.js';
 import { makeTextSprite } from './canvasTexture.js';
 import { EXRLoader } from '../../vendor/EXRLoader.js';
 
@@ -123,11 +123,14 @@ export class World {
       // 作为普通 2D 贴图（UVMapping）由穹顶球面 UV 直接采样；
       // 不设 EquirectangularReflectionMapping（那是给环境反射用的，会改采样方式）。
       tex.colorSpace = THREE.SRGBColorSpace;
+      // mipmap 开关（SKY_PANO_MIPMAPS）：背景球无需 mip，关闭可省带宽 + 去切换卡顿；minFilter 在下方统一按开关设置
+      tex.generateMipmaps = SKY_PANO_MIPMAPS;
     }
     // 各向异性过滤：天空在视野边缘以掠射角显示时仍能保持锐利，减少发糊。
     // 上限钳到 4：最大各向异性(常为 16)在 EXR(70MB) 上纹理带宽压力很大，钳制后肉眼差异极小但省带宽。
     tex.anisotropy = Math.min(4, this.renderer.capabilities.getMaxAnisotropy());
-    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    // mipmap 开关（SKY_PANO_MIPMAPS）：EXR 始终生成 mip；JPG 由开关决定 → 关闭省带宽+去切换卡顿，true 即回退原行为
+    tex.minFilter = (isEXR || SKY_PANO_MIPMAPS) ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
   }
 
