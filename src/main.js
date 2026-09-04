@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { World } from './core/world.js';
-import { LASER_SWORD, CIRCUS } from './core/constants.js';
+import { LASER_SWORD } from './core/constants.js';
 import { preloadDragonAssets } from './game/dragonLevel.js';
 import { HUD } from './ui/hud.js';
 import { AudioManager } from './vr/audio.js';
@@ -17,7 +17,7 @@ window.__pageLog?.info('[main] 模块开始执行（imports 已解析）');
 const canvas = document.getElementById('app');
 const world = new World(canvas);
 
-// 预览阶段预加载重资产（龙关动画 JSON/龙头 GLB + 传送门/开场/激光剑/马戏团 GLB + 抽卡图）。
+// 预览阶段预加载重资产（龙关动画 JSON/龙头 GLB + 传送门/激光剑 GLB + 抽卡图）。
 // 进度条走完才放行 Enter VR 按钮。天空(18 张 4K 全景)改为「进对应关时按需懒加载」，
 // 避免启动时一次性解码 18 张 ~600MB 占用内存；setSkyPanorama 自带异步兜底，进关即显示。
 // 进度条按体感分段：80% 停 6s、95% 停 3s、最后 1s 跑到 100%。
@@ -32,10 +32,10 @@ const world = new World(canvas);
   }).then(() => { dragonFrac = 1; })
     .catch(() => { dragonFrac = 1; });
 
-  // 传送门 + 开场动画 + 激光剑 + 马戏团 GLB：下载+DRACO 解码+parse 一次性完成，
-  // 进小怪关 / 3·9·15 关零等待（glbCache 命中，零重复加载）。各文件平均占进度。
-  const glbParts = [0, 0, 0, 0];
-  const glbTasks = [PORTAL_MODEL_URL, OPENING_MODEL_URL, LASER_SWORD.MODEL_URL, CIRCUS.MODEL_URL].map((u, i) =>
+  // 传送门 + 激光剑 + 开场魔术师动画 GLB：下载+DRACO 解码+parse 一次性完成，进关零等待（glbCache 命中，零重复加载）。
+  // 注：马戏团(CIRCUS)模型已按需求移除、其 GLB 不再预载；开场魔术师动画已恢复——机制关(3/9/15)进关即播放、10秒后自动消失。
+  const glbParts = [0, 0, 0];
+  const glbTasks = [PORTAL_MODEL_URL, LASER_SWORD.MODEL_URL, OPENING_MODEL_URL].map((u, i) =>
     preloadGLB(u, (loaded, total) => {
       glbParts[i] = total ? Math.min(1, loaded / total) : 0;
     }).then(() => { glbParts[i] = 1; })

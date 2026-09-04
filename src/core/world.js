@@ -185,6 +185,87 @@ export class World {
     this._panoActive = false;
   }
 
+  // 关卡开场穿云：环境（天空穹顶 + 地面边界 + 星空）透明度由 0→1 淡入，与云雾动画同步。
+  // p: 0=全透明(场景隐没于雾中) → 1=完全显现。英雄模型/传送门本轮不动（避免改动含 transmission 的材质）。
+  setEnvOpacity(p) {
+    const o = Math.max(0, Math.min(1, p));
+    if (this._skydome) {
+      this._skydome.material.transparent = true;
+      this._skydome.material.opacity = o;
+    }
+    if (this.boundary) {
+      this.boundary.material.transparent = true;
+      this.boundary.material.opacity = 0.14 * o;  // 地面边界基准不透明度 0.14
+    }
+    if (this._starLayers) {
+      for (const l of this._starLayers) { l.material.transparent = true; l.material.opacity = 0.9 * o; }
+    }
+  }
+
+  // ====== 穿云淡入：本关「场景物体」透明度 0→1（与云雾进度同步）======
+  // 性能要点：material.transparent 的取值变化会触发 three 着色器重编译，
+  // 因此「只在登记时切一次 → 每帧仅改 opacity（廉价）→ 结束时一次性恢复」，
+  // 绝不在每帧切换 transparent，否则 PICO 上会持续卡顿。
+  setFadeRoots(roots) {
+    this._restoreFade();                 // 先恢复上一关残留，避免共享材质被永久改写
+    this._fadeMats = [];
+    this._fadeSeen = new Set();
+    for (const r of roots) {
+      if (!r) continue;
+      r.traverse((o) => {
+        const m = o.material;
+        if (!m) return;
+        for (const mat of (Array.isArray(m) ? m : [m])) {
+          if (!mat || this._fadeSeen.has(mat)) continue;  // GLB clone 共享材质：去重，避免重复改写同一材质
+          this._fadeSeen.add(mat);
+          this._fadeMats.push({ mat, baseOpacity: mat.opacity ?? 1, baseTransparent: !!mat.transparent });
+        }
+      });
+    }
+    // 一次性切到透明模式（每关只一次），并从全透明开始
+    for (const e of this._fadeMats) { e.mat.transparent = true; e.mat.opacity = 0; }
+    this._fadeOn = this._fadeMats.length > 0;
+  }
+
+  // 增量登记：GLB 是异步加载的（如传送门），进关瞬间其根节点可能还没加入场景。
+  // 云雾期间每帧补登记一次新出现的物体，并立即套用当前进度 p，避免「后半段突然满显」。
+  extendFadeRoots(roots, p) {
+    if (!this._fadeOn || !this._fadeMats || !this._fadeSeen) return;
+    const o = Math.max(0, Math.min(1, p));
+    for (const r of roots) {
+      if (!r) continue;
+      r.traverse((obj) => {
+        const m = obj.material;
+        if (!m) return;
+        for (const mat of (Array.isArray(m) ? m : [m])) {
+          if (!mat || this._fadeSeen.has(mat)) continue;  // 已登记过的直接跳过，零重复开销
+          this._fadeSeen.add(mat);
+          const e = { mat, baseOpacity: mat.opacity ?? 1, baseTransparent: !!mat.transparent };
+          this._fadeMats.push(e);
+          mat.transparent = true;
+          mat.opacity = e.baseOpacity * o;  // 与当前云雾进度对齐
+        }
+      });
+    }
+  }
+
+  // p: 0=全透明（隐没于雾中） → 1=完全显现；到 1 即恢复原始材质设置
+  setObjectsOpacity(p) {
+    if (!this._fadeOn || !this._fadeMats) return;
+    const o = Math.max(0, Math.min(1, p));
+    if (o >= 1) { this._restoreFade(); return; }
+    for (const e of this._fadeMats) e.mat.opacity = e.baseOpacity * o;
+  }
+
+  // 恢复所有登记材质到原始状态（切关/退出/淡入结束均调用，幂等）
+  _restoreFade() {
+    if (!this._fadeMats) return;
+    for (const e of this._fadeMats) { e.mat.opacity = e.baseOpacity; e.mat.transparent = e.baseTransparent; }
+    this._fadeMats = null;
+    this._fadeSeen = null;
+    this._fadeOn = false;
+  }
+
   _buildStars() {
     this._starLayers = [];
     const make = (count, radius, size) => {

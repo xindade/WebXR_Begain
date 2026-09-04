@@ -149,12 +149,30 @@ export const LASER_SWORD = {
   POSITION:   { x: 0.0, y: 0.0, z: 0.0 },  // 相对左手柄(grip)本地坐标（米）
   ROTATION:   { x: 0, y: 0, z: 0 },        // 旋转（度，绕 XYZ）：模型默认朝向未知，上机后调
   SCALE:      1.0,                          // 整体缩放（过大/过小先 1.0 看效果再调）
-  BLADE_AXIS: { x: 0, y: 0, z: -1 },       // 剑刃方向（模型本地轴，单位向量；按实际模型调，默认 -Z 前方）
-  BLADE_LENGTH: 1.0,                        // 剑刃长度（米）= 命中线段长度
+  BLADE_AXIS: { x: -1, y: 0, z: 0 },       // 剑刃方向（root 本地轴）：GLB 解析真实刃长轴=本地 X（extent 1.1994m）；配 ROTATION.y:270 映射到世界前向，与可见剑刃一致
+  BLADE_LENGTH: 1.2,                        // 剑刃本地长度（米）；命中线段 = ×SCALE(4.0)=4.8m，与可见剑刃一致
   DAMAGE:     400,                          // 笔记：激光剑单次命中伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
   DURATION:   5,                            // 激活后伤害状态持续秒数
   COOLDOWN:   5,                            // 激活后复用冷却秒数（HUD 显示）
   COST:       500,                          // 消耗积分
+  // —— 释放缩放动画参数（未释放=base×IDLE；释放时放大到 base）——
+  SWORD_IDLE_SCALE: 0.1,   // 未释放视觉缩放 = SCALE × 此值（0.1 = 缩小10倍）
+  SWORD_GROW_TIME:  0.5,   // 第一段放大时长(s)：0.5s 内放大 GROW_STEP 倍
+  SWORD_GROW_STEP:  5.0,   // 第一段放大倍数（字面 5 倍：idle 0.1 → 0.5）
+  SWORD_HOLD:       0.2,   // 两段之间停顿(s)
+  SWORD_GROW2_TIME: 0.5,   // 第二段放大时长(s)
+  SWORD_GROW2_STEP: 2.0,   // 第二段放大倍数：0.5×2=1.0=回到 base（想更大改 5.0 → 最终 base×2.5）
+  SWORD_SHRINK_TIME:0.6,   // 结束/卸下时反向缩回 idle 的时长(s)
+};
+
+// 积分上限：玩家持有积分不超过此值（≈一次技能释放机会，因技能消耗 player.skillCost=500）。改此值即调上限。
+export const SCORE_CAP = 500;
+
+// 输入/控制器：设备相关校准（不同头显手柄 handedness 上报可能相反）
+export const INPUT = {
+  // 枪/剑绑定手交换开关。默认 false=不交换（枪挂右手柄、剑挂左手柄，子弹始终从右手发射）。
+  // 若某台设备出现「枪在左手、剑在右手」，改为 true 交换枪/剑绑定手。
+  SWAP_HANDS: false,
 };
 
 export const FREEZE = {           // 定身咒（暂停所有敌人行动，Boss 减半）
@@ -292,17 +310,6 @@ export const GUN = {
     DECAY:      0.80,    // 每帧(60fps基准)回正系数，越小回正越快、抖得越短促
     CURVE:      1.5,     // 射速→幅度映射曲率(>1 让快射时幅度掉得更陡，强化「整体变小」)
   },
-};
-
-// ============================================================
-// 马戏团模型（机制关 3/9/15 固定场景装饰，常驻整关）
-// 坐标系：世界坐标（相对场地原点）；上机后在 PICO 里看效果微调位置/旋转/缩放。
-// ============================================================
-export const CIRCUS = {
-  MODEL_URL: 'Model/马戏团.glb',          // 模型路径（相对 index.html，项目根 Model 目录）
-  POSITION: { x: 0, y: 1.4, z: -1.5 },   // 世界坐标（米）：贴合激光关原 npc 占位 (0,1.4,-1.5)
-  ROTATION: { x: 0, y: 0, z: 0 },        // 旋转（度，绕 XYZ）
-  SCALE:    1.0,                          // 整体缩放
 };
 
 // ============================================================
@@ -689,9 +696,9 @@ const _OVERRIDES = [
   ['PORTAL_BEAM', PORTAL_BEAM, USER_CONFIG.PORTAL_BEAM],
   ['SPAWN_RING', SPAWN_RING, USER_CONFIG.SPAWN_RING],
   ['LASER_SWORD', LASER_SWORD, USER_CONFIG.LASER_SWORD],
-  ['CIRCUS', CIRCUS, USER_CONFIG.CIRCUS],
   ['RENDER', RENDER, USER_CONFIG.RENDER],
   ['CLOUD', CLOUD, USER_CONFIG.CLOUD],
+  ['INPUT', INPUT, USER_CONFIG.INPUT],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

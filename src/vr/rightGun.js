@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from '../../vendor/GLTFLoader.js';
 import { DRACOLoader } from '../../vendor/DRACOLoader.js';
-import { GUN, GUN_MODES } from '../core/constants.js';
+import { GUN, GUN_MODES, INPUT } from '../core/constants.js';
 
 // 右手柄 AK 枪模型：加载 Ak枪.glb → 幂等挂到右手柄(grip) → 每帧从 GUN 配置应用变换
 // 纯视觉叠加，不影响射击/碰撞/血量逻辑。
@@ -54,7 +54,7 @@ export class RightGun {
     this._applyTransform();
     this._applyRecoil(dt, input);
     if (this._attached) return;
-    const anchor = input?.getGrip('right');   // 右手握把空间（手腕面板同此）
+    const anchor = input?.getGrip(INPUT.SWAP_HANDS ? 'left' : 'right');   // 右手握把空间（SWAP_HANDS 时交换到左手柄以校正 PICO 左右反）
     if (anchor) { anchor.add(this.root); this._attached = true; }
   }
 

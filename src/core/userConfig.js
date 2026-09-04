@@ -83,6 +83,14 @@ export const USER_CONFIG = {
     DAMAGE: 5,             // 撞船伤害
   },
 
+  // ==================== 输入/控制器（设备相关） ====================
+  // 枪/剑绑定手的交换开关。本机(PICO 4)实测：保持默认 false 即可——枪挂右手柄、剑挂左手柄，
+  // 子弹发射口 _hands['right'] 不变（始终从右手发射）。若某台设备出现「枪在左手、剑在右手」，
+  // 再把此项改 true（交换枪/剑绑定手）。
+  INPUT: {
+    SWAP_HANDS: false,
+  },
+
   // ==================== 右手 AK 枪 ====================
   GUN: {
     MODEL_URL: 'Model/Ak枪.glb', // 模型路径
@@ -107,20 +115,20 @@ export const USER_CONFIG = {
     POSITION: { x: 0.0, y: 0.0, z: 0.0 },   // 相对左手柄(grip)本地坐标（米）
     ROTATION: { x: 0, y: 270, z: 0 },         // 旋转（度）
     SCALE: 4.0,                              // 整体缩放
-    BLADE_AXIS: { x: 0, y: 0, z: -1 },       // 剑刃方向（模型本地轴）：按实际模型调，默认 -Z 前方
-    BLADE_LENGTH: 1.0,                        // 剑刃长度（米）= 命中线段长度
+    BLADE_AXIS: { x: -1, y: 0, z: 0 },       // 剑刃方向（root 本地轴）：真实刃长轴=本地 X；配 ROTATION.y:270 映射到世界前向
+    BLADE_LENGTH: 1.2,                        // 剑刃本地长度（米）；命中线段 = ×SCALE(4.0)=4.8m
     DAMAGE: 500,                              // 单次命中伤害
     DURATION: 5,                              // 激活后伤害状态持续秒数
     COOLDOWN: 5,                              // 激活后复用冷却秒数
     COST: 500,                                // 消耗积分
-  },
-
-  // ==================== 马戏团模型（机制关 3/9/15 固定场景装饰） ====================
-  CIRCUS: {
-    MODEL_URL: 'Model/马戏团.glb',          // 模型路径
-    POSITION: { x: 2, y: -4, z: -11 },   // 世界坐标（米）
-    ROTATION: { x: 0, y: 0, z: 0 },        // 旋转（度）
-    SCALE: 8.0,                            // 整体缩放
+    // —— 释放缩放动画参数（未释放=base×IDLE；释放时放大到 base）——
+    SWORD_IDLE_SCALE: 0.1,   // 未释放视觉缩放 = SCALE × 此值（0.1 = 缩小10倍）
+    SWORD_GROW_TIME:  0.5,   // 第一段放大时长(s)
+    SWORD_GROW_STEP:  5.0,   // 第一段放大倍数（idle 0.1 → 0.5）
+    SWORD_HOLD:       0.2,   // 两段之间停顿(s)
+    SWORD_GROW2_TIME: 0.5,   // 第二段放大时长(s)
+    SWORD_GROW2_STEP: 2.0,   // 第二段放大倍数：0.5×2=1.0=回到 base
+    SWORD_SHRINK_TIME:0.6,   // 结束/卸下时反向缩回 idle 的时长(s)
   },
 
   // ==================== 渲染分辨率（WebXR 帧缓冲缩放） ====================
