@@ -91,6 +91,16 @@ export const USER_CONFIG = {
     SWAP_HANDS: false,
   },
 
+  // ==================== 测试工具（调试用） ====================
+  // 左手柄 X 键（或桌面 G 键）按一下 +ADD_SCORE 积分，用于快速测试技能。
+  // 正式上线把 ENABLED 改 false 即可关闭，避免误触加分。
+  TEST: {
+    ENABLED: true,          // 总开关：false 关闭测试快捷键
+    ADD_SCORE: 500,         // 每次按下赠送的积分数（受 SCORE_CAP 上限裁剪）
+    VR_BUTTON_LEFT_X: true, // 左手柄 X 键(buttons[4])触发
+    DESKTOP_KEY_G: true,    // 桌面 G 键触发
+  },
+
   // ==================== 右手 AK 枪 ====================
   GUN: {
     MODEL_URL: 'Model/Ak枪.glb', // 模型路径
@@ -129,6 +139,27 @@ export const USER_CONFIG = {
     SWORD_GROW2_TIME: 0.5,   // 第二段放大时长(s)
     SWORD_GROW2_STEP: 2.0,   // 第二段放大倍数：0.5×2=1.0=回到 base
     SWORD_SHRINK_TIME:0.6,   // 结束/卸下时反向缩回 idle 的时长(s)
+  },
+
+  // ==================== 如来神掌（大招） ====================
+  // 第三关可选技能；按左手柄 grip 释放。消耗 player.skillCost 积分。
+  // 伤害仅「变化(grow)/运动(move)」阶段结算：掌图作横扫墙，只命中命中盒内的敌人（不再全屏秒杀）。
+  // 视觉：贴图 Palm 在 START_POS 出现 → GROW_TIME 内放大到 END_SCALE（分两段）→ MOVE_TIME 内沿 +Z 移到 END_POS → 停顿 PAUSE_TIME → 淡出消失。
+  BUDDHA: {
+    TEXTURE_URL: 'assets/buddha-palm.jpg', // 贴图路径（相对 index.html）
+    COLOR_KEY_THRESHOLD: 0.99,   // 白底剔除阈值（0~1）：越低剔除范围越大
+    PLANE_WIDTH: 4.0,            // 平面宽度（米）
+    PLANE_HEIGHT: 6.0,           // 平面高度（米）
+    START_POS: { x: 0, y: 0, z: -30 }, // 出现位置（世界坐标，米）
+    END_POS:   { x: 0, y: 0, z:  30 }, // 移动终点（世界坐标，米）
+    START_SCALE: 1.0,            // 初始缩放倍数
+    END_SCALE: 15.0,             // 最终缩放倍数（10 倍）
+    GROW_TIME: 1.5,              // 原地放大总时长（秒）
+    MOVE_TIME: 1.0,              // 沿 +Z 移动时长（秒）
+    PAUSE_TIME: 1.0,             // 到达终点后停顿（秒）
+    FADE_TIME: 0.3,              // 淡出消失时长（秒）
+    HIT_MARGIN_XY: 1.3,          // 命中盒 XY 放大系数（1=完全贴合掌面）
+    HIT_Z_BAND: 8,               // 命中盒 Z 半厚（米）：仅命中掌图当前 Z 前后 ±该值的敌人
   },
 
   // ==================== 渲染分辨率（WebXR 帧缓冲缩放） ====================

@@ -133,12 +133,23 @@ export const SHIP = {
 };
 
 export const BUDDHA = {            // 如来神掌（大招）
-  COOLDOWN: 8,
-  KILL_RADIUS: 50,
-  DAMAGE: 200,                     // 笔记：如来神掌全屏基础伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
-  FALL_DURATION: 0.5,
-  FALL_START_SCALE: 8,             // 巨掌从天而降的起始缩放（大）
-  FALL_END_SCALE: 1.5,             // 落地的终止缩放（贴近玩家大小）
+  COOLDOWN: 8,                     // 释放冷却 s
+  HIT_MARGIN_XY: 1.3,             // 命中盒 XY 放大系数：以掌图平面半宽/半高为基准再乘该系数（1=完全贴合掌面）
+  HIT_Z_BAND: 8,                  // 命中盒 Z 半厚（米）：掌图作「横扫墙」，仅命中其当前 Z 前后 ±HIT_Z_BAND 内的敌人（沿 +Z 扫过逐步清场）
+  DAMAGE: 200,                     // 命中盒内单体基础伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
+  // —— 视觉参数（基于透明 PNG 贴图） ——
+  TEXTURE_URL: 'assets/buddha-palm.jpg', // 贴图路径（相对 index.html）；若原图为 PNG 可换 .png
+  COLOR_KEY_THRESHOLD: 0.92,       // 白底剔除阈值：R/G/B 均大于 0.92×255 的像素变透明（0~1，越低越激进）
+  PLANE_WIDTH: 4.0,                // 平面宽度（米），贴图原始宽高比 2:3 左右
+  PLANE_HEIGHT: 6.0,               // 平面高度（米）
+  START_POS: { x: 0, y: 0, z: -30 }, // 出现位置（世界坐标）
+  END_POS:   { x: 0, y: 0, z:  30 }, // 移动终点（世界坐标）
+  START_SCALE: 1.0,                // 初始缩放倍数
+  END_SCALE: 10.0,                 // 最终缩放倍数（10 倍）
+  GROW_TIME: 1.0,                  // 原地放大总时长 s（1 秒内分两段变化：1→中间→10）
+  MOVE_TIME: 1.0,                  // 沿 +Z 移动时长 s
+  PAUSE_TIME: 1.0,                 // 到达终点后停顿 s
+  FADE_TIME: 0.3,                  // 淡出消失时长 s
 };
 
 // 激光剑（左手柄近战武器，由「金箍棒」技能改造而来）
@@ -173,6 +184,14 @@ export const INPUT = {
   // 枪/剑绑定手交换开关。默认 false=不交换（枪挂右手柄、剑挂左手柄，子弹始终从右手发射）。
   // 若某台设备出现「枪在左手、剑在右手」，改为 true 交换枪/剑绑定手。
   SWAP_HANDS: false,
+};
+
+// 测试工具（仅开发/调试用，正式上线把 ENABLED 改 false 即可整体关掉）
+export const TEST = {
+  ENABLED: true,          // 总开关：false 关闭所有测试快捷键（左手 X / 桌面 G）
+  ADD_SCORE: 500,         // 按一次测试积分键赠送的积分数（走 _addScore，受 SCORE_CAP 上限裁剪→恰好满一格技能）
+  VR_BUTTON_LEFT_X: true, // 说明用：左手柄 X 键(buttons[4])触发积分
+  DESKTOP_KEY_G: true,    // 说明用：桌面 G 键触发积分
 };
 
 export const FREEZE = {           // 定身咒（暂停所有敌人行动，Boss 减半）
@@ -696,9 +715,11 @@ const _OVERRIDES = [
   ['PORTAL_BEAM', PORTAL_BEAM, USER_CONFIG.PORTAL_BEAM],
   ['SPAWN_RING', SPAWN_RING, USER_CONFIG.SPAWN_RING],
   ['LASER_SWORD', LASER_SWORD, USER_CONFIG.LASER_SWORD],
+  ['BUDDHA', BUDDHA, USER_CONFIG.BUDDHA],
   ['RENDER', RENDER, USER_CONFIG.RENDER],
   ['CLOUD', CLOUD, USER_CONFIG.CLOUD],
   ['INPUT', INPUT, USER_CONFIG.INPUT],
+  ['TEST', TEST, USER_CONFIG.TEST],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

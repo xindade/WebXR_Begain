@@ -13,6 +13,7 @@ import { DragonBoss } from './dragonLevel.js';
 import { CloudFx } from './cloudFx.js';
 import { OpeningModel } from './openingModel.js';
 import { Portal } from './portal.js';
+import { BuddhaFx } from './buddhaFx.js';
 import { LEVELS, isLaser, isBoss } from '../content/levels.js';
 import { LEVEL_PLANS } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
@@ -114,6 +115,7 @@ export class Game {
     this._collectedCards = [];   // 本局收集的选项卡 id 列表（供第18关通关汇总展示）
     this.score = 0;
     this._buddhaFx = null;
+    this._buddhaHit = new Set(); // 当前如来神掌已命中气球集合（防止重复结算）
     this._cardState = null;
     this._levelSnapshot = null;  // 关卡开始时的玩家属性+分数快照
     this._explosions = [];       // 爆炸视觉特效列表
@@ -180,7 +182,7 @@ export class Game {
     this.balloons.clear();
     this.bullets.clear();
     this._clearExplosions();
-    if (this._buddhaFx) { this.world.scene.remove(this._buddhaFx.mesh); this._buddhaFx = null; }
+    if (this._buddhaFx) { this._buddhaFx.dispose(); this._buddhaFx = null; }
     this.cards.clearCards();                    // 清抽卡气球（不拆除 group，可再次 open 复用）
     this._cardState = null;
     this._levelSnapshot = null;
@@ -213,6 +215,7 @@ export class Game {
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon) { this.dragon.dispose(); this.dragon = null; }
     if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清上一关残留的开场动画（防跨关泄漏）
+    if (this._buddhaFx) { this._buddhaFx.dispose(); this._buddhaFx = null; } // 清上一关残留的如来神掌特效
     this._clearPortals(); // 清上一关残留的传送门装饰
     this.waves.clearPending();   // 清上一关残留出怪光点（防光点飞到新关卡）
     this.gridPhase = false;
@@ -402,6 +405,9 @@ export class Game {
       return;
     }
     this.input.update(dt);
+    // 测试积分键（左手 X / 桌面 G）：按一下 +TEST.ADD_SCORE，用于快速测试技能（受 SCORE_CAP 上限裁剪）
+    const credit = this.input.consumeCredit();
+    if (credit > 0) { this._addScore(credit); this.log(`测试 +${credit} 积分`); }
     this.player.update(dt);
     this.bullets.update(dt);
     const pp = this._playerPos();
@@ -780,30 +786,17 @@ export class Game {
   }
 
   _doBuddha() {
-    const pp = this._playerPos();
     // 技能统一计费：积分不足则不放（不进冷却，可立即重试）
     if (this.score < this.player.skillCost) { this.log(`积分不足（需${this.player.skillCost}）`); return false; }
     this.score -= this.player.skillCost;
     this.hud.setScore(this.score);
     this.log('如来神掌！');
-    // 伤害范围内所有气球（命中伤害 = 基础 × 技能倍率）
-    const dmg = BUDDHA.DAMAGE * this.player.skillDamageMul;
-    for (let i = this.balloons.list.length - 1; i >= 0; i--) {
-      const b = this.balloons.list[i];
-      if (b.mesh.position.distanceTo(pp) < BUDDHA.KILL_RADIUS) {
-        if (b.takeDamage(dmg)) this._onKilled(b);
-      }
-    }
-    // 视觉：金色巨掌从天而降
-    const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 16, 12),
-      new THREE.MeshStandardMaterial({ color: 0xffd43b, emissive: 0xffa500, emissiveIntensity: 0.6, transparent: true, opacity: 0.85 })
-    );
-    mesh.scale.setScalar(BUDDHA.FALL_START_SCALE);
-    mesh.position.copy(pp);
-    mesh.position.y += 20;
-    this.world.scene.add(mesh);
-    this._buddhaFx = { mesh, t: 0 };
+    // 伤害不再瞬间全屏秒杀：改为随特效「变化(grow)/运动(move)」阶段实时结算（见 _updateBuddhaFx）
+    this._buddhaHit = new Set(); // 本次神掌已命中的气球，避免被重复结算
+    // 视觉：如来神掌从 START_POS 出现 → 放大 → 沿 +Z 横扫 → 停顿 → 消失
+    this._buddhaFx?.dispose();
+    this._buddhaFx = new BuddhaFx(this.world.scene).start(this.world.camera);
+    return true;
   }
 
   // ====== 第三关三技能 ======
@@ -932,15 +925,28 @@ export class Game {
 
   _updateBuddhaFx(dt) {
     if (!this._buddhaFx) return;
-    this._buddhaFx.t += dt;
-    const k = Math.min(1, this._buddhaFx.t / BUDDHA.FALL_DURATION);
-    const s = THREE.MathUtils.lerp(BUDDHA.FALL_START_SCALE, BUDDHA.FALL_END_SCALE, k);
-    this._buddhaFx.mesh.scale.setScalar(s);
-    this._buddhaFx.mesh.position.y = THREE.MathUtils.lerp(20, 0, k) + this._playerPos().y;
-    if (k >= 1) {
-      this.world.scene.remove(this._buddhaFx.mesh);
-      this._buddhaFx = null;
+    const finished = this._buddhaFx.update(dt);
+    // 仅在「变化/运动」阶段结算伤害：掌图作横扫墙，只命中其当前位置附近命中盒内的敌人（不再全屏秒杀）
+    const fx = this._buddhaFx;
+    if (fx.isDamaging) {
+      const dmg = BUDDHA.DAMAGE * this.player.skillDamageMul;
+      const s = fx.scale;                                   // 当前缩放倍数
+      const halfW = BUDDHA.PLANE_WIDTH  * s * 0.5 * BUDDHA.HIT_MARGIN_XY; // 命中盒 X 半宽
+      const halfH = BUDDHA.PLANE_HEIGHT * s * 0.5 * BUDDHA.HIT_MARGIN_XY; // 命中盒 Y 半高
+      const zBand = BUDDHA.HIT_Z_BAND;                      // 命中盒 Z 半厚
+      const px = fx.position.x, py = fx.position.y, pz = fx.position.z;
+      const list = this.balloons.list;
+      for (let i = list.length - 1; i >= 0; i--) {
+        const b = list[i];
+        if (this._buddhaHit.has(b)) continue;               // 本轮神掌已结算过，跳过
+        const p = b.mesh.position;
+        if (Math.abs(p.x - px) < halfW && Math.abs(p.y - py) < halfH && Math.abs(p.z - pz) < zBand) {
+          this._buddhaHit.add(b);
+          if (b.takeDamage(dmg)) this._onKilled(b);
+        }
+      }
     }
+    if (finished) this._buddhaFx = null;
   }
 
   // ====== 爆炸系统 ======
@@ -1137,6 +1143,9 @@ export class Game {
   // 抽卡模式：允许自由移动 + 射击，子弹命中卡气球即选卡
   _updateCard(dt) {
     this.input.update(dt);
+    // 测试积分键（左手 X / 桌面 G）：抽卡阶段也可加分，方便直接测试刚选的技能
+    const credit = this.input.consumeCredit();
+    if (credit > 0) { this._addScore(credit); this.log(`测试 +${credit} 积分`); }
     this.player.update(dt);
     this.bullets.update(dt);
     for (const shot of this.input.shots) this.player.fire(shot, this.bullets, this.audio);
