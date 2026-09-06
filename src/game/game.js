@@ -15,10 +15,11 @@ import { OpeningModel } from './openingModel.js';
 import { Portal } from './portal.js';
 import { BuddhaFx } from './buddhaFx.js';
 import { LEVELS, isLaser, isBoss } from '../content/levels.js';
-import { LEVEL_PLANS } from '../content/spawnPlans.js';
+import { ENEMY_TYPES } from '../content/enemies.js';
+import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, CLOUD, SCORE_CAP } from '../core/constants.js';
-import { setRenderer } from './balloonModels.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, CLOUD, SCORE_CAP, DRAGON } from '../core/constants.js';
+import { setRenderer, loadBalloonModel, preCaptureDepthSprite } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 
 const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关' };
@@ -105,6 +106,8 @@ export class Game {
     this.cloudFx = null;       // 关卡开场穿云特效（cloudFx.js），4秒后自动移除
     this._introActive = false; // 开场门控：true 时冻结出怪/Boss/机制动画（仅自然转头）
     this._introT = 0;          // 开场计时（秒）
+    this._introPreloadQueue = null; // 穿云窗顺序预载队列（[{url,radius,capture}]）
+    this._introPreloadIdx = 0;     // 队列处理游标
     this.openingModel = null;  // 第3/9/15关开场动画模型（魔术师动画版），10秒后自动移除
     this._gameTime = 0;        // 全局累计时间（秒）：激光剑状态/每怪1秒限频的时间基准
     this._swordUntil = 0;      // 激光剑伤害状态结束时刻（this._gameTime 基准）
@@ -176,6 +179,7 @@ export class Game {
     if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清开场动画（防回菜单残留）
     this.world._restoreFade(); // 恢复穿云淡入改写的材质（防回菜单残留半透明）
     this._introActive = false; this._introT = 0; // 复位开场门控
+    this._introPreloadQueue = null; this._introPreloadIdx = 0; // 复位预载队列
     this._clearPortals(); // 清传送门装饰（防跨关/回菜单残留）
     this.waves.clearPending();   // 清出怪光点（防回菜单残留）
     // 清理实体
@@ -298,6 +302,59 @@ export class Game {
       this.world._restoreFade();    // 无穿云：确保无残留半透明材质
       this.world.setEnvOpacity(1);  // 无穿云：场景直接满显
     }
+
+    // ====== 关卡开场「雾气窗顺序预载」======
+    // 把本关要用的敌人/装饰 GLB 模型 + DepthSprite 捕获，分散到 INTRO_DELAY 秒穿云窗内「每帧处理 1 个」，
+    // 避免「首只怪出生时」一次性解码/抓帧导致的尖峰卡顿（穿云遮蔽下不可见）。
+    // 无穿云(CLOUD.ENABLED=false)时立即同步预载，保证效果不丢。
+    this._introPreloadIdx = 0;
+    this._introPreloadQueue = this._buildIntroPreloadQueue(lv);
+    if (!CLOUD.ENABLED && this._introPreloadQueue.length) {
+      for (const it of this._introPreloadQueue) {
+        if (it.url) loadBalloonModel(it.url);
+        if (it.capture) preCaptureDepthSprite(it.url, it.radius);
+      }
+      this._introPreloadQueue = null;
+    }
+  }
+
+  // 收集本关「雾气窗顺序预载」队列：敌人/装饰 GLB 模型 URL + 是否需要 DepthSprite 捕获。
+  // 覆盖三种出怪配置（SPAWN_RING / NORMAL_TEST / LEVEL_ENEMY），确保开关怎么切都不会漏预载；
+  // 龙 Boss 关额外预载龙头 GLB。出怪池若日后恢复全量(['basic','ninja','octopus','shield','ghost','heart'])，
+  // 队列会自动跟着变长、摊在穿云窗内逐帧处理。
+  _buildIntroPreloadQueue(lv) {
+    const q = [];
+    const addType = (typeId) => {
+      const t = ENEMY_TYPES[typeId];
+      if (!t || !t.model) return;
+      q.push({ url: t.model, radius: t.radius || 0.5, capture: DEPTH_SPRITE_TYPES.includes(typeId) });
+    };
+    const addUrl = (url) => { if (url) q.push({ url, radius: 1.0, capture: false }); };
+
+    if (lv.boss === 'dragon') {
+      addUrl(DRAGON.HEAD_MODEL);                  // 第12关龙 Boss 龙头 GLB（未被 main 预载）
+    } else if (!isBoss(lv) && !isLaser(lv)) {
+      // 普通/危机关（waves）：收集所有可能出怪类型
+      const types = new Set();
+      if (SPAWN_RING.enabled) SPAWN_RING.pool.forEach((t) => types.add(t));
+      if (NORMAL_TEST.enabled) NORMAL_TEST.pool.forEach((t) => types.add(t));
+      const le = LEVEL_ENEMY[lv.n];
+      if (le && le.type) types.add(le.type);
+      types.forEach(addType);
+    }
+    // 去重（同一模型只预载一次；如盾兵怪与骑士 Boss 共用 Model/骑士.glb）
+    const seen = new Set();
+    return q.filter((it) => { if (seen.has(it.url)) return false; seen.add(it.url); return true; });
+  }
+
+  // 穿云窗内每帧处理 1 个预载项：敌人 GLB 进缓存 + DepthSprite 抓帧进缓存。
+  // 摊到 INTRO_DELAY 秒窗内，每帧开销极小，单帧不会穿透云雾露馅。
+  _pumpIntroPreload() {
+    if (!this._introPreloadQueue) return;
+    if (this._introPreloadIdx >= this._introPreloadQueue.length) { this._introPreloadQueue = null; return; }
+    const it = this._introPreloadQueue[this._introPreloadIdx++];
+    if (it.url) loadBalloonModel(it.url);                  // 进 glbCache，首只怪克隆零等待
+    if (it.capture) preCaptureDepthSprite(it.url, it.radius); // 预热 DepthSprite 抓帧缓存（首帧零成本）
   }
 
   // 小怪关装饰：按本关方向表在场地中心四周生成传送门（FRONT=-Z BACK=+Z LEFT=-X RIGHT=+X）
@@ -395,6 +452,7 @@ export class Game {
       }
       this.world.setObjectsOpacity(_ef);  // 统一套用当前淡入进度
       this.hud.setHp(this.player.hp, this.player.maxHp);
+      this._pumpIntroPreload();            // 穿云窗内每帧摊一个预载（敌人 GLB 解码 + DepthSprite 抓帧）
       if (this._introT >= CLOUD.INTRO_DELAY) {
         this._introActive = false;
         if (this.cloudFx) { this.cloudFx.dispose(); this.cloudFx = null; }
@@ -1085,9 +1143,9 @@ export class Game {
     if (_nxLv) {
       const _nxPano = SKY_PANORAMA[_nxLv.n];
       if (_nxPano) {
-        this.world.loadSky(_nxPano)
-          .then((t) => { try { this.world.renderer.initTexture(t); } catch (e) {} })
-          .catch(() => {});
+        // 抽卡阶段预热下一关全景：下载+解码+GPU 上传(initTexture) 一步到位（含去重 + _gpuReady 标记），
+        // 避开切换关时单帧上传卡顿；与 _loadLevel 的 setSkyPanorama 共用 _gpuReady 标记，不重复上传。
+        this.world.prepareSkyPano(_nxPano).catch(() => {});
       }
     }
     let plan;

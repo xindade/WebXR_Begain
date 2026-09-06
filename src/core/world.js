@@ -50,6 +50,7 @@ export class World {
     this._texLoader = new THREE.TextureLoader();
     this._exrLoader = new EXRLoader();
     this._panoCache = {};
+    this._panoLoading = {}; // 在途加载 Promise（去重：同一 url 并发只起一次真实加载）
     this._panoActive = false;
     this._skydome = null; // 全景天空穹顶（环绕原点的大球，用真实网格采样贴图，完整保留 8K + 各向异性）
 
@@ -135,19 +136,39 @@ export class World {
   }
 
   // 预加载 / 取全景纹理（供预览阶段预加载 + 进度回调，返回 Promise）。
-  // 已缓存则直接同步 resolve；否则按扩展名选 EXR/JPG 加载器，配置后入缓存。
+  // 已缓存则直接同步 resolve；在途加载去重（同一 url 并发只起一次真实加载）；
+  // 否则按扩展名选 EXR/JPG 加载器，配置后入缓存。
   loadSky(url, onProgress) {
     return new Promise((resolve, reject) => {
       const isEXR = url.toLowerCase().endsWith('.exr');
       const cached = this._panoCache[url];
       if (cached) { onProgress?.(1, 1); resolve(cached); return; }
+      // 在途去重：抽卡阶段预热与切关加载可能并发请求同一 pano
+      if (this._panoLoading[url]) { this._panoLoading[url].then(resolve, reject); return; }
       const loader = isEXR ? this._exrLoader : this._texLoader;
-      loader.load(
-        url,
-        (tex) => { this._configurePano(tex, isEXR); this._panoCache[url] = tex; resolve(tex); },
-        (ev)  => { onProgress?.(ev.loaded, ev.total); },
-        (err) => reject(err)
-      );
+      const p = new Promise((res2, rej2) => {
+        loader.load(
+          url,
+          (tex) => { this._configurePano(tex, isEXR); this._panoCache[url] = tex; res2(tex); },
+          (ev)  => { onProgress?.(ev.loaded, ev.total); },
+          (err) => rej2(err)
+        );
+      });
+      this._panoLoading[url] = p;
+      p.then(() => { delete this._panoLoading[url]; }, () => { delete this._panoLoading[url]; });
+      p.then(resolve, reject);
+    });
+  }
+
+  // 确保全景纹理完成「下载+解码+GPU 上传(initTexture)」，返回 Promise。
+  // 用于切关时强制在穿云窗内完成 GPU 上传，避免首帧渲染才上传造成的卡顿。
+  // initTexture 幂等：已上传(_gpuReady)的纹理直接跳过，不重复上传。
+  prepareSkyPano(url) {
+    return this.loadSky(url).then((tex) => {
+      if (!tex._gpuReady) {
+        try { this.renderer.initTexture(tex); tex._gpuReady = true; } catch (e) { /* 忽略：首帧自然上传兜底 */ }
+      }
+      return tex;
     });
   }
 
@@ -173,8 +194,9 @@ export class World {
       this._panoActive = true;
     };
     const cached = this._panoCache[url];
-    if (cached) { apply(cached); return; }
-    this.loadSky(url).then(apply).catch(() => {}); // 兜底：未预加载时也能用
+    // 已缓存且已完成 GPU 上传 → 直接套用（无首帧上传卡顿）；否则先 prepare（含 initTexture）再 apply
+    if (cached && cached._gpuReady) { apply(cached); return; }
+    this.prepareSkyPano(url).then(apply).catch(() => {}); // 兜底：未预加载/未上传时也能用
   }
 
   // 退出全景关：恢复渐变球+星空，隐藏穹顶
