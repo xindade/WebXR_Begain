@@ -28,7 +28,7 @@
 export const ELITE_BASE_HP = {
   eliteKnight: 1000,   // 骑士（L01 骑士1000；未另行指定 → 全局 1000）
   knight:      1000,   // 普通骑士同值兜底
-  shield:      2000,   // 盾兵怪/盾牌怪（L02 盾兵怪2000）
+  shield:      1300,   // 盾兵怪/盾牌怪（L02 盾兵怪2000）
   heart:       5000,   // 心型怪/心形怪（L04 心形怪5000）
   ghost:       7000,   // 幽灵怪（L05 幽灵怪7000）
   ninja:       8000,   // 忍者怪（L07 忍者怪8000）
@@ -54,8 +54,8 @@ export const ELITE_SCHEDULE = {
   },
   5: {
     early: { combos: [{ type: 'shield', count: 1 }, { type: 'eliteKnight', count: 2 }], dir: 'front' },
-    mid:   { combos: [{ type: 'shield', count: 2 }, { type: 'eliteKnight', count: 1 }], dir: 'frontLeft' },
-    late:  { combos: [{ type: 'shield', count: 3 }], dir: 'frontRight' },
+    mid:   { combos: [{ type: 'shield', count: 1 }, { type: 'eliteKnight', count: 1 }], dir: 'frontLeft' },
+    late:  { combos: [{ type: 'shield', count: 2 }], dir: 'frontRight' },
   },
   7: {
     early: { combos: [{ type: 'shield', count: 2 }, { type: 'eliteKnight', count: 2 }], dir: 'front' },
