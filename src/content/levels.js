@@ -20,7 +20,7 @@ export const LEVELS = [
   { n: 15, kind: 'laser',  mood: 'day', laserMode: 'flip' },
   { n: 16, kind: 'normal', mood: 'dusk' },
   { n: 17, kind: 'crisis', mood: 'night' },
-  { n: 18, kind: 'boss',   mood: 'day', boss: 'face' },
+  { n: 18, kind: 'boss',   mood: 'day', boss: 'magician' },
 ];
 
 // 是否危机关：精英比例提升、四周奖励气球

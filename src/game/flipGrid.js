@@ -19,6 +19,20 @@ const WHITE = { color: 0xffffff, roughness: 0.6, metalness: 0.0 };
 const BLACK = { color: 0x111111, roughness: 0.6, metalness: 0.0 };
 const easeInOut = (p) => (p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2);
 
+// 导出：供 Boss 九宫格阶段复用「与第十五关九宫格完全一致」的双面球视觉
+//   pivot 含 frontMesh(白, +z 朝玩家) / backMesh(黑, -z)；外部自行加入场景并定位。
+export function buildFlipBall() {
+  const pivot = new THREE.Group();
+  const frontMat = new THREE.MeshStandardMaterial(WHITE);
+  const backMat = new THREE.MeshStandardMaterial(BLACK);
+  const frontMesh = new THREE.Mesh(balloonGeo, frontMat);
+  frontMesh.position.set(0, 0, FLIP.BALLOON_OFFSET_Z);
+  const backMesh = new THREE.Mesh(balloonGeo, backMat);
+  backMesh.position.set(0, 0, -FLIP.BALLOON_OFFSET_Z);
+  pivot.add(frontMesh, backMesh);
+  return pivot;
+}
+
 export class FlipGrid {
   constructor(scene) {
     this.scene = scene;

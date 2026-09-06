@@ -5,6 +5,7 @@ import { ELITE_SCHEDULE, ELITE_WINDOW, ELITE_BASE_HP } from '../content/eliteMon
 import { isBoss } from '../content/levels.js';
 import { LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { swapBalloonModel, loadBalloonModel, preCaptureDepthSprite } from './balloonModels.js';
+import { MagicianBoss } from './bossMagician.js';
 
 // ===== 召唤怪小兵参数（手动微调入口，改这里即可）=====
 const SUMMON_MINION_DISTANCE = 1.5; // 小兵出生在召唤者「身后」的距离(m)：调大 → 离本体更远
@@ -16,7 +17,7 @@ const _portalTmp = new THREE.Vector3();
 
 // 波次管理：分阶段生成（前→左右→全向），清空后触发抽卡
 export class WaveManager {
-  constructor(scene, balloons, getPlayerPos, dda, getPortals, getPlayerDPS = null, getSkillCd = null) {
+  constructor(scene, balloons, getPlayerPos, dda, getPortals, getPlayerDPS = null, getSkillCd = null, damagePlayer = null, camera = null, onWinExit = null) {
     this.scene = scene;
     this.balloons = balloons;
     this.getPlayerPos = getPlayerPos;
@@ -24,6 +25,9 @@ export class WaveManager {
     this.getPortals = getPortals || null; // () => game._portals；null 视为无门 → 直接 spawn
     this.getPlayerDPS = getPlayerDPS;             // () => number  玩家当前 DPS（game 注入）
     this.getSkillCd = getSkillCd || (() => 0);    // () => number  技能剩余冷却（>3=最近5秒放过技能）
+    this.damagePlayer = damagePlayer || (() => {}); // (dmg) => void  供 Boss 子系统伤害玩家（game.js 注入）
+    this.camera = camera;                         // THREE.Camera  玩家相机（通关横幅锚定准星位置）
+    this.onWinExit = onWinExit || null;           // () => void  通关横幅 10s 后自动退出（game.js 注入 → toMenu）
     // —— 精英波（叠加于普通出怪之上，来自 ELITE_SCHEDULE）——
     this._eliteElapsed = 0;          // 精英波独立计时（秒），与 mode 的 elapsed 解耦
     this._elitePlan = null;          // 本关排程（ELITE_SCHEDULE[n] 或 null）
@@ -51,6 +55,10 @@ export class WaveManager {
     this.spawnTimer = 0;       // 测试模式：两次生成最小间隔计时
     // 脸谱 Boss 状态（单 Boss 多阶段循环）
     this.faceBoss = null;           // 单 Boss 气球
+    // 魔术师 Boss 状态（第18关）
+    this._magicianBoss = null;          // MagicianBoss 控制器实例
+    this.magicianGlassWall = null;       // 当前玻璃墙（供 game.js 子弹钩子拦截；非玻璃阶段为 null）
+    this._winBanner = null;              // 第18关 Boss 死亡后的 VR 通关横幅（切关时清理，见 startLevel）
     this.facePhase = 0;             // 0=蓝, 1=红, 2=黑
     this.facePhaseTimer = 0;
     this.faceSubEntities = [];      // 当前阶段子实体（小怪/旗子/分身混合）
@@ -79,6 +87,7 @@ export class WaveManager {
   get _active() { return this.balloons.count + this._pendingSpawns.length; }
 
   startLevel(level) {
+    if (this._winBanner) { this._winBanner.dispose(); this._winBanner = null; } // 切关清理上关的 VR 通关横幅
     this.clearPending();       // 清残留光点 + _bossQueued（幂等）
     this.level = level;
     this.elapsed = 0;
@@ -304,7 +313,12 @@ export class WaveManager {
   }
 
   _spawnBoss() {
-    // 脸谱 Boss（第6/18关 boss='face'）
+    // 魔术师 Boss（第18关 boss='magician'）
+    if (this.level.boss === 'magician') {
+      this._spawnMagicianBoss();
+      return;
+    }
+    // 脸谱 Boss（第6关 boss='face'）
     if (this.level.boss === 'face') {
       this._spawnFaceBoss();
       return;
@@ -322,6 +336,14 @@ export class WaveManager {
         this.bossSpawned = true;   // 落地才置位，避免飞行期 cleared 误判
       },
     });
+  }
+
+  // 魔术师 Boss（第18关 boss='magician'）：实例化 MagicianBoss 控制器
+  // （控制器内部建命中代理气球 + 常驻动画模型，并接管阶段循环）
+  _spawnMagicianBoss() {
+    if (this._magicianBoss) return;   // 防每帧重入（bossSpawned 在代理落地后才置位）
+    this._bossQueued = true;
+    this._magicianBoss = new MagicianBoss(this);
   }
 
   // ===== 精英波（叠加于普通出怪之上，来自 ELITE_SCHEDULE）=====
@@ -720,6 +742,11 @@ export class WaveManager {
 
     if (isBoss(this.level)) {
       if (!this.bossSpawned) this._spawnBoss();
+      // 魔术师 Boss：控制器接管阶段循环 + 通关判定
+      if (this.level.boss === 'magician') {
+        if (this._magicianBoss) this._magicianBoss.update(dt);
+        return;
+      }
       // 脸谱 Boss：每帧更新变脸 + 通关判定
       if (this.level.boss === 'face') {
         this._updateFaceBoss(dt);

@@ -585,6 +585,101 @@ export const FACE_BOSS = {
 };
 
 // ============================================================
+// 第18关 · 魔术师 Boss（循环多阶段）
+//   阶段：开场(0-10s, 正前30m播动画) → 激光(11-20s, 正前30m) → 玻璃墙(21-30s, 闪现左边30m) → 九宫格(31-40s, 闪现右边30m) → 循环 A→B→C
+//   血量 = HP_BASE + 玩家DPS × HP_DPS_SEC（动态）；Boss 死亡即通关「恭喜通关」
+//   模型：Model/魔术师动画版.glb（复用开场动画 GLB；Boss 常驻播放内嵌动画，不自动消失）
+// ============================================================
+export const MAGICIAN_BOSS = {
+  // —— 通用 ——
+  MODEL: 'Model/魔术师动画版.glb',
+  HP_BASE: 30000,             // Boss 基础血量（集中可调）
+  HP_DPS_SEC: 10,             // 血量 = HP_BASE + 玩家DPS × 本值（按战力缩放，避免高 DPS 下秒杀/低 DPS 下打不动）
+  PROXY_RADIUS: 8.0,          // 命中代理碰撞半径(m)：Boss模型随 MODEL_SCALE 缩放(现5倍≈10m高，脚底在y=2、头顶≈y=12)；
+                              //   半径放大到8m覆盖全身，确保各阶段(含激光/九宫格)瞄准躯干即可正常击中掉血
+  SCALE: 2.0,                 // 模型基准高度（米）：先按此把 GLB 缩放到 2m，再 ×MODEL_SCALE
+  MODEL_SCALE: 5,             // 整体再放大倍数（用户要求缩小一半 → 5 倍 → 最终约 10m 高）
+  MODEL_ROTATION: { x: 0, y: 0, z: 0 }, // 模型三轴旋转（度）：x=俯仰 y=偏航 z=翻滚
+  MODEL_POSITION: { x: 0, y: 0, z: 0 }, // 相对命中代理的偏移（米）：x=右 y=上 z=前(朝玩家为 -Z)
+  PHASE: {
+    INTRO: 10,                // 开场动画时长 s（0-10s）
+    LASER: 10,                // 激光阶段 s（第 11-20s）
+    GLASS: 10,                // 玻璃墙阶段 s（第 21-30s）
+    NINE: 10,                 // 九宫格阶段 s（第 31-40s）
+  },
+  // 三个闪现位置（距玩家约 30m）：0=前(-Z) 1=左(-X) 2=右(+X)
+  POSITIONS: [
+    [0, 2, -30],
+    [-30, 2, 0],
+    [30, 2, 0],
+  ],
+
+  // —— 每相位精英召唤（每阶段仅 2 种精英，数量 1/2/1；分帧错峰消费，见 bossMagician._summonElites）——
+  //   每阶段总量 = 2/4/2（原 6/12/6），显著降低同帧重型 GLB 解码压力（防卡死）
+  ELITE_TYPES_LASER: ['eliteKnight', 'shield'],   // 激光阶段：骑士 + 盾兵
+  ELITE_TYPES_GLASS: ['heart', 'ghost'],          // 玻璃墙阶段：心形 + 幽灵
+  ELITE_TYPES_NINE:  ['ninja', 'octopus'],        // 九宫格阶段：忍者 + 章鱼
+  ELITE_COUNT_LASER: 1,       // 激光阶段每种精英数量
+  ELITE_COUNT_GLASS: 2,       // 玻璃墙阶段每种精英数量
+  ELITE_COUNT_NINE: 1,        // 九宫格阶段每种精英数量
+  SPAWN_ENEMIES: false,       // 是否召唤精英/九宫格基础球：false=全禁(排查卡顿/伤害用，用户实测临时关闭)；true=恢复完整召唤
+  HP_BAR_OFFSET_Y: 11,        // 头顶 3D 血条相对代理的抬高高度(m)：Boss 5倍≈10m高(头顶≈y=12)，置于头顶上方
+
+  // —— 外圈常驻小怪：已移除（Boss 战不应出现基础怪，见 bossMagician.js 删除 _maybeMaintainMobs）——
+
+  // —— 激光组（第18关魔术师Boss·激光阶段，按实测调整重写）——
+  // 流程：① 1s 内垂直上升 4m；② 接着 1s 下端向下延伸 4m 激光；
+  //       ③ 两气球带激光从各自起点向 X=0 运动，间距 < CLOSE_DIST 时反向外扩，
+  //          到外边界 OSC_OUTER 回中心，一来一回持续往复直到阶段结束 dispose（已去掉时间封顶）。
+  //   玩家处于竖直光束内(x 半宽 + y∈[球底-激光长, 球底]) 受 DAMAGE*dt 伤害。
+  //   坐标说明：原文 A/B 均写 x=-4（疑似笔误）；按运动逻辑两侧对称取
+  //   A=(-4,0,0)、B=(+4,0,0)，如需改单侧只调下面 B.x 一处即可。
+  LASER_GROUP: {
+    COUNT: 2,                 // 激光气球数（A + B）
+    RISE_TIME: 1,             // ① 垂直上升耗时 s
+    RISE_HEIGHT: 4,           // ① 上升高度 m（y: 0 → 4）
+    EXTEND_TIME: 1,           // ② 激光向下延伸耗时 s
+    BEAM_LENGTH: 4,           // ② 激光长度 m（从气球下端向下）
+    OSC_TIME: 4,              // ③ 往复参数（保留：原往复时长参考；现往复已改为全程持续，无封顶）
+    OSC_SPEED: 3,             // ③ 往复速度 m/s
+    OSC_OUTER: 4,             // ③ 外边界 |x|（到此反向回中心，形成一来一回）
+    CLOSE_DIST: 0.5,          // ③ 两气球间距 < 此值 → 反向外扩
+    HIT_HALF_WIDTH: 0.6,      // 命中玩家所需 x 半宽 m
+    DAMAGE: 12,               // 玩家处于光束内每秒伤害
+    A: { x: -4, y: 0, z: 0 }, // A 起始位置
+    B: { x:  4, y: 0, z: 0 }, // B 起始位置（对称 +4）
+  },
+
+  // —— 玻璃墙（4×8，立 Boss 与玩家之间；有效格闪烁+命中扣Boss血，无效格挡子弹）——
+  GLASS_WALL: {
+    COLS: 8,                  // 列（沿水平 right 轴）
+    ROWS: 4,                  // 行（沿竖直 up 轴，自下而上）
+    CELL_W: 2.2,              // 单格宽 m
+    CELL_H: 2.2,              // 单格高 m
+    GAP: 0.15,                // 格间距 m
+    Y_BASE: 1.0,              // 最底行中心高度 m
+    DIST: 10,                 // 墙距 Boss 的水平距离 m（朝玩家方向）
+    VALID_CELLS: [[0,0],[0,3],[3,0],[3,7],[1,4],[2,3]], // 有效格 (row,col) 列表：闪烁、命中扣Boss血
+    FLASH_SPEED: 4,           // 有效格闪烁频率 Hz
+    BLOCK_ALL: true,          // true=整面墙拦截子弹（仅有效格额外扣Boss血）；false=仅无效格拦截
+  },
+
+  // —— 九宫格（Boss 头顶 3×3 共 9 球，各 BALL_HP 血，TIMER 秒倒计时，残球飞炸）——
+  NINE_GRID: {
+    COLS: 3, ROWS: 3,
+    BALL_HP: 1000,            // 每球血量
+    SPACING: 1.5,             // 球间距 m（与第十五关九宫格一致）
+    CENTER_Y: 6,              // 九宫格墙面中心高度 m（Boss 头顶附近）
+    FRONT_DIST: 8,            // 墙面距 Boss 朝玩家方向的前移距离 m
+    TIMER: 5,                 // 倒计时光破时间 s
+    RESIDUAL_GROUP: 3,        // 超时残球每 N 个一组飞向玩家
+    EXPLODE_DAMAGE: 5,        // 残球爆炸每球伤害
+    EXPLODE_SPEED: 6,         // 残球飞向玩家速度 m/s
+    RADIUS: 0.75,             // 每球碰撞半径 m（与 FlipGrid 球一致）
+  },
+};
+
+// ============================================================
 // 传送门装饰（portal.js / game._spawnPortals 引用）
 //   小怪关在场地中心前后左右各放 4 个传送门，可被左手摇杆整体操控：
 //     左手 Y 轴（前推负）→ 4 门整体升降；左手 X 轴（右推正）→ 4 门整体远近（径向远离/收拢）

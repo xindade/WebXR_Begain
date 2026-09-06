@@ -34,7 +34,7 @@ function createDoublePyramidGeometry() {
   g.computeVertexNormals();
   return g;
 }
-const balloonGeo = createDoublePyramidGeometry();
+export const balloonGeo = createDoublePyramidGeometry();
 
 // 参考文档 8 色（按 groups 索引）
 const balloonColors = [
@@ -48,9 +48,9 @@ const balloonColors = [
   0xff22ff,  // [7] 右列·最顶层 粉
 ];
 
-const LASER_LEN = 16;             // 激光长度（缩放前）
-const LASER_ATTACH_Y = -1.5 - LASER_LEN / 2; // -9.5，从气球底部向下延伸
-const GROUP_SCALE = 0.25;         // 整体缩小倍数
+export const LASER_LEN = 16;             // 激光长度（缩放前，×GROUP_SCALE 后=4m）
+export const LASER_ATTACH_Y = -1.5 - LASER_LEN / 2; // -9.5，从气球底部向下延伸
+export const GROUP_SCALE = 0.25;         // 整体缩小倍数（导出供 Boss 激光阶段复用同一视觉）
 
 // 参考文档坐标
 const pos1 = { x: -2.5, z: -4.5 };  // 左列起始

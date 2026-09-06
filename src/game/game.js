@@ -87,7 +87,10 @@ export class Game {
       this.dda,
       () => this._portals,
       () => this._playerDPS(),     // 新：玩家 DPS（内外圈调度基准）
-      () => this.skillCooldown     // 新：技能剩余冷却（>3 = 最近5秒放过技能 → 内圈系数=1）
+      () => this.skillCooldown,    // 新：技能剩余冷却（>3 = 最近5秒放过技能 → 内圈系数=1）
+      (dmg) => this.player.takeDamage(dmg), // 新：Boss 子系统（激光/九宫格）伤害玩家
+      world.camera,                        // 新：玩家相机（通关横幅锚定准星位置）
+      () => this.toMenu()                  // 新：通关横幅 10s 后自动退出游戏
     );
     this.cards = new CardDraft(world.scene);
     this.rightGun = new RightGun(world.scene);   // 右手柄 AK 枪（VR 手持，纯视觉）
@@ -445,6 +448,8 @@ export class Game {
 
     if (this.state === 'playing') this._updatePlaying(dt);
     else if (this.state === 'card') this._updateCard(dt);
+    // 通关横幅（魔术师Boss）：始终驱动，10s 后自动退出（不依赖关卡/抽卡状态）
+    if (this.waves && this.waves._winBanner) this.waves._winBanner.update(dt);
   }
 
   _updatePlaying(dt) {
@@ -537,7 +542,8 @@ export class Game {
 
     if (!this.player.alive) { this._restartLevel(); return; }
     const cleared = this.dragon ? this.dragon.cleared : this.waves.cleared;
-    if (cleared) { this._enterCard(); }
+    // 第18关魔术师Boss：通关横幅激活期间不走抽卡，改由横幅 10s 计时自动退出
+    if (cleared && !(this.waves && this.waves._winBanner)) { this._enterCard(); }
   }
 
   // 激光关主循环：激光动画 + 保持期发光驱动 + 走格子/九宫格阶段分派
@@ -701,52 +707,60 @@ export class Game {
     this.world.camera.getWorldPosition(this._camPos); // 供 2D 立绘薄板命中(法线=朝相机)使用
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i];
+      // 玻璃墙拦截（第18关魔术师Boss 玻璃墙阶段）：命中墙 → 消费/拦截子弹，不进气球循环
+      if (this.waves.magicianGlassWall && this.waves.magicianGlassWall.tryBlock(b)) {
+        this.bullets.release(b);
+        continue;
+      }
       const list = this.balloons.list;
-      for (let j = 0; j < list.length; j++) {
-        const balloon = list[j];
-        if (!balloon.alive) continue; // 跳过已隐藏的龙气球（复活前），防重复触发
-        // 幽灵怪隐身期间无视子弹（仅蓄力显形时可被击中）
-        if (balloon.behavior === 'ghost' && !balloon.revealed) continue;
-        const rr = balloon.hitRadius + SHOOT.HIT_PAD; // 命中球 ≈ 怪物可见半径
-        // 命中判定分两类：
-        //  a) 普通 3D 模型 → 线段-球心最近距离（轨迹真正穿过可见球体才命中，擦边/高速穿透不再误判）。
-        //  b) 2D 立绘(DepthSprite，永远朝相机的扁平 billboard) → 改用「薄板」：立绘无厚度，3D 球会沿纵深(朝相机)
-        //     伸出 rr，导致子弹在卡片正前方 rr 米(还没飞到)就误判命中；薄板仅当子弹在卡片平面内横向最近距
-        //     < rr 且 纵深偏移 < HIT_SLAB_DEPTH 才命中（板厚仅给斜射时的极小微宽容）。
-        let _hit = false;
-        if (balloon.depthSprite) {
-          _closestPointOnSeg(_segClosest, balloon.mesh.position, b.prevPos, b.pos); // 轨迹上离中心最近点
-          _segAB.copy(_segClosest).sub(balloon.mesh.position);                      // 最近点→中心
-          _segN.copy(this._camPos).sub(balloon.mesh.position).normalize();          // 卡片法线(朝相机)
-          const _depth = _segAB.dot(_segN);                                         // 纵深分量(沿法线)
-          const _inPlaneSq = Math.max(0, _segAB.lengthSq() - _depth * _depth);       // 平面内横向分量²
-          if (_inPlaneSq < rr * rr && Math.abs(_depth) < SHOOT.HIT_SLAB_DEPTH) _hit = true;
-        } else {
-          if (_pointSegDistSq(balloon.mesh.position, b.prevPos, b.pos) < rr * rr) _hit = true;
+      // Boss 代理命中球半径较大(4m)且常位于其他可击破目标(九宫格球/精英)的正后方，
+      // 若按 list 顺序优先判定会「抢走」本应命中前方目标的子弹 → 表现为「打小怪掉 Boss 血」。
+      // 两遍命中：pass0 只判非 Boss 目标(最高优先)，仅当无命中时才在 pass1 判 Boss 代理。
+      let hitBalloon = null;
+      for (let pass = 0; pass < 2 && !hitBalloon; pass++) {
+        const wantBoss = pass === 1;
+        for (let j = 0; j < list.length; j++) {
+          const balloon = list[j];
+          if (!balloon.alive) continue; // 跳过已隐藏的龙气球（复活前），防重复触发
+          // 幽灵怪隐身期间无视子弹（仅蓄力显形时可被击中）
+          if (balloon.behavior === 'ghost' && !balloon.revealed) continue;
+          if (!!balloon.isBoss !== wantBoss) continue; // pass0 跳过 Boss；pass1 仅 Boss
+          const rr = balloon.hitRadius + SHOOT.HIT_PAD; // 命中球 ≈ 怪物可见半径
+          let _hit = false;
+          if (balloon.depthSprite) {
+            _closestPointOnSeg(_segClosest, balloon.mesh.position, b.prevPos, b.pos); // 轨迹上离中心最近点
+            _segAB.copy(_segClosest).sub(balloon.mesh.position);                      // 最近点→中心
+            _segN.copy(this._camPos).sub(balloon.mesh.position).normalize();          // 卡片法线(朝相机)
+            const _depth = _segAB.dot(_segN);                                         // 纵深分量(沿法线)
+            const _inPlaneSq = Math.max(0, _segAB.lengthSq() - _depth * _depth);      // 平面内横向分量²
+            if (_inPlaneSq < rr * rr && Math.abs(_depth) < SHOOT.HIT_SLAB_DEPTH) _hit = true;
+          } else {
+            if (_pointSegDistSq(balloon.mesh.position, b.prevPos, b.pos) < rr * rr) _hit = true;
+          }
+          if (_hit) { hitBalloon = balloon; break; }
         }
-        if (_hit) {
-          // 盾兵怪：盾牌当前朝向玩家且在挡弹夹角内 → 挡下子弹（不扣血）
-          if (balloon.behavior === 'shield') {
-            const sb = balloon.getShieldBlock();
-            if (sb) {
-              this._tmp2.copy(this._playerPos()).sub(balloon.mesh.position);
-              this._tmp2.y = 0;
-              if (this._tmp2.lengthSq() > 1e-6) {
-                this._tmp2.normalize();
-                if (this._tmp2.dot(sb.dir) > Math.cos(sb.arc)) {
-                  this.bullets.release(b);
-                  this._spawnExplosionFx(b.pos, 0.2); // 挡弹火花（_spawnExplosionFx 内部 copy，无需 clone）
-                  break; // 子弹被盾挡下，退出内循环（修复原 continue 导致的双释放 bug）
-                }
+      }
+      if (hitBalloon) {
+        // 盾兵怪：盾牌当前朝向玩家且在挡弹夹角内 → 挡下子弹（不扣血）
+        if (hitBalloon.behavior === 'shield') {
+          const sb = hitBalloon.getShieldBlock();
+          if (sb) {
+            this._tmp2.copy(this._playerPos()).sub(hitBalloon.mesh.position);
+            this._tmp2.y = 0;
+            if (this._tmp2.lengthSq() > 1e-6) {
+              this._tmp2.normalize();
+              if (this._tmp2.dot(sb.dir) > Math.cos(sb.arc)) {
+                this.bullets.release(b);
+                this._spawnExplosionFx(b.pos, 0.2); // 挡弹火花
+                continue; // 子弹被盾挡下，处理下一发
               }
             }
           }
-          const killed = balloon.takeDamage(b.dmg);
-          this.bullets.release(b);
-          this.audio?.playPop();
-          if (killed) this._onKilled(balloon);
-          break;
         }
+        const killed = hitBalloon.takeDamage(b.dmg);
+        this.bullets.release(b);
+        this.audio?.playPop();
+        if (killed) this._onKilled(hitBalloon);
       }
     }
     this.bullets.sync(); // 碰撞释放后立刻刷新实例矩阵（避免命中子弹滞留一帧）

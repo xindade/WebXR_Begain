@@ -85,5 +85,5 @@ export const LEVEL_CONFIG = {
   // ===== Boss 关 =====
   6:  { type:'boss', boss:'face',   cardRarity:{ white:40, blue:30, purple:20, gold:10 } },
   12: { type:'boss', boss:'dragon', cardRarity:{ white:35, blue:30, purple:22, gold:13 } },
-  18: { type:'boss', boss:'face',   cardRarity:{ white:35, blue:30, purple:22, gold:13 } },
+  18: { type:'boss', boss:'magician', cardRarity:{ white:35, blue:30, purple:22, gold:13 } },
 };
