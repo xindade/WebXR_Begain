@@ -109,6 +109,7 @@ export class Game {
     this.dragon = null;      // 第十二关龙 Boss 实例（boss==='dragon' 时存在）
     this.cloudFx = null;       // 关卡开场穿云特效（cloudFx.js），4秒后自动移除
     this._introActive = false; // 开场门控：true 时冻结出怪/Boss/机制动画（仅自然转头）
+    this._pendingBgmFile = null; this._pendingBgmProc = false; this._pendingOpenVoice = null; // 穿云结束后启动的本关音频（雾气转场静音）
     this._introT = 0;          // 开场计时（秒）
     this._introPreloadQueue = null; // 穿云窗顺序预载队列（[{url,radius,capture}]）
     this._introPreloadIdx = 0;     // 队列处理游标
@@ -138,6 +139,7 @@ export class Game {
 
   setSystems(audio, input, wristUI = null, pageLog = null) {
     this.audio = audio; this.input = input; this.wristUI = wristUI; this.pageLog = pageLog;
+    this.waves.audio = audio; // 注入音频到波次管理器（脸谱Boss 召唤语音用）
   }
 
   // 游戏内日志：同时送往左手腕面板（VR 可见）和页面日志（预览可见、最高优先）
@@ -164,7 +166,6 @@ export class Game {
     this.hud.setScore(0);
     this.hud.setHp(this.player.hp, this.player.maxHp);
     this.audio?.unlock();
-    this.audio?.startBGM();
     this._clearExplosions();
     this.log('游戏开始');
     this._loadLevel(this.levelIndex);
@@ -234,6 +235,21 @@ export class Game {
     this.bullets.clear();        // 防跨关残留子弹误击
     this.hud.clearCountdown();   // 关倒计时显示
     this.world.setSkyMood(lv.mood);
+    // ===== 关卡 BGM 选择：先停旧曲，按关卡类型预置，待「穿云结束」后再播 =====
+    // 规则①：雾气转场(穿云)期间不播任何语音/音乐 → 一律延迟到 _startLevelAudio()
+    this.audio?.stopBGM();
+    this._pendingBgmFile = null;   // 文件 BGM（普通/危机关/第6关/第12关），null=无
+    this._pendingBgmProc = false;  // true=程序化 BGM（激光/魔术师Boss 沿用原行为）
+    this._pendingOpenVoice = null; // 开场语音（L3/6/9/15/18），null=无
+    if (lv.kind === 'normal' || lv.kind === 'crisis') {
+      this._pendingBgmFile = 'music/01游戏背景音.wav';   // 普通关 + 机制关(危机关)
+    } else if (lv.n === 6) {
+      this._pendingBgmFile = 'music/戏曲背景音.wav';        // 第6关(脸谱Boss)
+    } else if (lv.n === 12) {
+      this._pendingBgmFile = 'music/龙Boss.wav';            // 第12关(龙Boss)
+    } else {
+      this._pendingBgmProc = true;                          // 其余(激光3/9/15、魔术师Boss18)沿用程序化 BGM
+    }
     // 有全景配置的关卡（如第3/15关）用全景图作天空，覆盖渐变；无配置则维持渐变天空
     const pano = SKY_PANORAMA[lv.n];
     if (pano) this.world.setSkyPanorama(pano);
@@ -248,6 +264,16 @@ export class Game {
     if (lv.n === 3 || lv.n === 9 || lv.n === 15) {
       this.openingModel = new OpeningModel(this.world.scene, new THREE.Vector3(0, 1.4, -5));
       this.openingModel.start();
+      // 激光关开头语音：延迟到穿云结束后再播（雾气转场期间不播语音）
+      if (lv.n === 3) this._pendingOpenVoice = 'music/魔法师激光阵语音.wav';
+      else if (lv.n === 9) this._pendingOpenVoice = 'music/魔法师玻璃格子.wav';
+      else if (lv.n === 15) this._pendingOpenVoice = 'music/魔法师九宫格.wav';
+    } else if (lv.n === 18) {
+      // 第18关 Boss 开头语音：延迟到穿云结束后再播
+      this._pendingOpenVoice = 'music/魔术师Boss开头.wav';
+    } else if (lv.n === 6) {
+      // 第6关开局只播蓝色脸谱「儿郎冲锋」；红/黑阶段语音由脸谱Boss相位切换时播
+      this._pendingOpenVoice = 'music/儿郎冲锋.mp3';
     }
 
     // 快照场景子节点：稍后取差集即可自动采集「本关新建的场景物体」（穿云淡入用）
@@ -305,6 +331,7 @@ export class Game {
       this._introActive = false;
       this.world._restoreFade();    // 无穿云：确保无残留半透明材质
       this.world.setEnvOpacity(1);  // 无穿云：场景直接满显
+      this._startLevelAudio();      // 无穿云：直接启动本关 BGM + 开场语音
     }
 
     // ====== 关卡开场「雾气窗顺序预载」======
@@ -452,6 +479,16 @@ export class Game {
     if (this.waves && this.waves._winBanner) this.waves._winBanner.update(dt);
   }
 
+  // 穿云结束后统一启动本关 BGM + 开场语音（雾气转场期间一律静音）
+  _startLevelAudio() {
+    if (this._pendingBgmProc) this.audio?.startBGM();
+    else if (this._pendingBgmFile) this.audio?.playBGM(this._pendingBgmFile);
+    if (this._pendingOpenVoice) this.audio?.playVoice(this._pendingOpenVoice);
+    this._pendingBgmProc = false;
+    this._pendingBgmFile = null;
+    this._pendingOpenVoice = null;
+  }
+
   _updatePlaying(dt) {
     // ====== 关卡开场穿云：INTRO_DELAY 秒内冻结玩法（不移动/不开火/不触发技能），仅自然转头观察 ======
     if (this._introActive) {
@@ -473,6 +510,7 @@ export class Game {
         this.world.setEnvOpacity(1);       // 确保关卡正式开始时环境完全显现
         this.world.setObjectsOpacity(1);   // 物体淡入到 1 即自动恢复原始材质设置
         this.log('穿云结束 · 关卡正式开始');
+        this._startLevelAudio();   // 雾气转场结束 → 启动本关 BGM + 开场语音
       }
       return;
     }
@@ -872,6 +910,7 @@ export class Game {
     this.score -= this.player.skillCost;
     this.hud.setScore(this.score);
     this.log('如来神掌！');
+    this.audio?.playVoice('music/如来神掌.wav'); // 释放瞬间播「如来神掌」音效
     // 伤害不再瞬间全屏秒杀：改为随特效「变化(grow)/运动(move)」阶段实时结算（见 _updateBuddhaFx）
     this._buddhaHit = new Set(); // 本次神掌已命中的气球，避免被重复结算
     // 视觉：如来神掌从 START_POS 出现 → 放大 → 沿 +Z 横扫 → 停顿 → 消失

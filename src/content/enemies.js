@@ -51,6 +51,7 @@ export const ENEMY_TYPES = {
     id: 'ninja', name: '忍者怪',
     hp: 500, speed: 1.5, radius: 0.6, score: 24,
     behavior: 'ninja', selfDamage: 5,
+    scale: 3,   // 精英怪整体放大3倍：视觉(mesh.scale) + 受击范围(effectiveRadius/hitRadius) 同步放大
     model: 'Model/忍者.glb',
     blinkInterval: 3.0,  // 闪现间隔(s)
     blinkRange: 5.0,     // 闪现范围(m)
@@ -72,6 +73,7 @@ export const ENEMY_TYPES = {
     id: 'ghost', name: '幽灵怪',
     hp: 800, speed: 0, radius: 0.8, score: 34,
     behavior: 'ghost', selfDamage: 10,
+    scale: 3,   // 同上：放大3倍 + 受击范围同步
     model: 'Model/幽灵.glb',
     ghostFireInterval: 3.0, ghostFireCharge: 2.0, ghostFireDamage: 10, // 鬼火（蓄力2s后显形）
     tint: 0xdfe6e9,
@@ -101,6 +103,7 @@ export const ENEMY_TYPES = {
     id: 'octopus', name: '章鱼怪',
     hp: 1000, speed: 1.0, radius: 0.9, score: 30,
     behavior: 'octopus', selfDamage: 5,
+    scale: 3,   // 同上：放大3倍 + 受击范围同步
     model: 'Model/章鱼.glb',
     inkInterval: 3.0, inkDuration: 1.0, inkDamage: 5, // 喷墨污染视线（后续补齐屏幕遮挡）
     tint: 0x6c5ce7,

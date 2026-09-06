@@ -5,7 +5,9 @@ export class AudioManager {
   constructor() {
     this.ctx = null;
     this.master = null;
-    this.bgmNodes = null;
+    this.bgmNodes = null;       // 程序化 BGM 节点（startBGM 创建）
+    this._bgmEl = null;         // 文件 BGM 的 HTMLAudioElement（playBGM 创建）
+    this._bgmUrl = null;        // 当前文件 BGM 的 url（同曲跳过重复启动）
     this._unlocked = false;
   }
 
@@ -60,6 +62,7 @@ export class AudioManager {
 
   startBGM() {
     if (!this.ctx || this.bgmNodes) return;
+    this._stopBgmEl();   // 切到程序化 BGM 前先停掉文件 BGM
     const t = this.ctx.currentTime;
     const bus = this.ctx.createGain();
     bus.gain.value = 0.18;
@@ -95,6 +98,52 @@ export class AudioManager {
 }
 
 stopBGM() {
+  // 统一出口：程序化 BGM 与文件 BGM 都停
+  if (this.bgmNodes) {
+    try { this.bgmNodes.disconnect(); } catch (e) { /* 已断开 */ }
+    this.bgmNodes = null;
+  }
+  this._stopBgmEl();
+}
+
+// ===== 文件音频（music/ 下的 wav/mp3）=====
+// 用 HTMLAudioElement 播放，不依赖 AudioContext 解码，鲁棒且简单。
+// 相对路径与 GLB 同机制（项目根 index.html 为基址），中文文件名浏览器自动编码。
+
+// 文件 BGM（循环）：更换前先停掉旧 BGM（文件或程序化）
+playBGM(url, volume = 0.5) {
+  if (this._bgmUrl === url && this._bgmEl) return;   // 同曲已在播 → 跳过
+  this._stopBgmEl();
+  this.stopProceduralBGM();
+  if (!url) return;
+  const el = new Audio(url);
+  el.loop = true;
+  el.preload = 'auto';
+  el.volume = volume;
+  el.play().catch(() => {});
+  this._bgmEl = el;
+  this._bgmUrl = url;
+}
+
+// 一次性语音/音效（不循环），播完即弃（无引用由 GC 回收）
+playVoice(url, volume = 1) {
+  if (!url) return;
+  const el = new Audio(url);
+  el.preload = 'auto';
+  el.volume = volume;
+  el.play().catch(() => {});
+  return el;
+}
+
+_stopBgmEl() {
+  if (this._bgmEl) {
+    try { this._bgmEl.pause(); this._bgmEl.src = ''; } catch (e) { /* 忽略 */ }
+    this._bgmEl = null;
+    this._bgmUrl = null;
+  }
+}
+
+stopProceduralBGM() {
   if (this.bgmNodes) {
     try { this.bgmNodes.disconnect(); } catch (e) { /* 已断开 */ }
     this.bgmNodes = null;

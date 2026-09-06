@@ -28,6 +28,7 @@ export class WaveManager {
     this.damagePlayer = damagePlayer || (() => {}); // (dmg) => void  供 Boss 子系统伤害玩家（game.js 注入）
     this.camera = camera;                         // THREE.Camera  玩家相机（通关横幅锚定准星位置）
     this.onWinExit = onWinExit || null;           // () => void  通关横幅 10s 后自动退出（game.js 注入 → toMenu）
+    this.audio = null;                            // AudioManager 由 game.setSystems 注入（脸谱Boss 召唤语音）
     // —— 精英波（叠加于普通出怪之上，来自 ELITE_SCHEDULE）——
     this._eliteElapsed = 0;          // 精英波独立计时（秒），与 mode 的 elapsed 解耦
     this._elitePlan = null;          // 本关排程（ELITE_SCHEDULE[n] 或 null）
@@ -477,6 +478,11 @@ export class WaveManager {
     if (this.facePhase === 2) {
       preCaptureDepthSprite(FACE_BOSS.BLACK_CLONE_MODEL, ENEMY_TYPES.blackMaskClone.radius);
     }
+    // 脸谱Boss相位「登场」语音（仅阶段切换时播；穿云开场的蓝色儿郎冲锋由 game 延迟播）：
+    // 蓝(0)→儿郎冲锋 / 红(1)→帅字旗 / 黑(2)→身化万千，循环轮替
+    if (this.facePhase === 0) this.audio?.playVoice('music/儿郎冲锋.mp3');
+    else if (this.facePhase === 1) this.audio?.playVoice('music/帅字旗.wav');
+    else if (this.facePhase === 2) this.audio?.playVoice('music/身化万千.wav');
   }
 
   // 蓝色阶段：0-2s 留空 → 2-4s 渐进召唤左右两侧各 3×3（中心格骑士、其余basic） → 4-15s 小怪冲锋 + Boss 摆动 + 子实体上下浮动
@@ -484,6 +490,7 @@ export class WaveManager {
     const b = this.faceBoss;
     const perSide = FACE_BOSS.BLUE_FORMATION_ROWS * FACE_BOSS.BLUE_FORMATION_COLS; // 单侧 9
     const total = perSide * 2;                                                     // 左右两侧共 18
+    // 蓝阶段开场「儿郎冲锋」语音已由 game 在穿云结束后播；此处不再重复（红/黑阶段语音见 _faceNextPhase）
     // 2-4s: 渐进召唤（按阵型顺序逐格生成）
     if (t >= FACE_BOSS.BLUE_MINION_SPAWN_START && t < FACE_BOSS.BLUE_MINION_ACTIVE_START) {
       const span = FACE_BOSS.BLUE_MINION_ACTIVE_START - FACE_BOSS.BLUE_MINION_SPAWN_START;
@@ -596,6 +603,7 @@ export class WaveManager {
           },
         });
       }
+      // 「帅字旗」语音改在脸谱Boss红阶段「登场」时播（见 _faceNextPhase），此处不再重复
     }
     // 公转推进（仅公转阶段、未放置未释放的旗子）
     if (this._redSpawned && !this._redPlaced && b && b.alive) {
