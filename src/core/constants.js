@@ -136,7 +136,7 @@ export const BUDDHA = {            // 如来神掌（大招）
   COOLDOWN: 8,                     // 释放冷却 s
   HIT_MARGIN_XY: 1.3,             // 命中盒 XY 放大系数：以掌图平面半宽/半高为基准再乘该系数（1=完全贴合掌面）
   HIT_Z_BAND: 8,                  // 命中盒 Z 半厚（米）：掌图作「横扫墙」，仅命中其当前 Z 前后 ±HIT_Z_BAND 内的敌人（沿 +Z 扫过逐步清场）
-  DAMAGE: 200,                     // 命中盒内单体基础伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
+  DAMAGE: 700,                     // 命中盒内单体基础伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
   // —— 视觉参数（基于透明 PNG 贴图） ——
   TEXTURE_URL: 'assets/buddha-palm.jpg', // 贴图路径（相对 index.html）；若原图为 PNG 可换 .png
   COLOR_KEY_THRESHOLD: 0.92,       // 白底剔除阈值：R/G/B 均大于 0.92×255 的像素变透明（0~1，越低越激进）
@@ -162,7 +162,7 @@ export const LASER_SWORD = {
   SCALE:      1.0,                          // 整体缩放（过大/过小先 1.0 看效果再调）
   BLADE_AXIS: { x: -1, y: 0, z: 0 },       // 剑刃方向（root 本地轴）：GLB 解析真实刃长轴=本地 X（extent 1.1994m）；配 ROTATION.y:270 映射到世界前向，与可见剑刃一致
   BLADE_LENGTH: 1.2,                        // 剑刃本地长度（米）；命中线段 = ×SCALE(4.0)=4.8m，与可见剑刃一致
-  DAMAGE:     400,                          // 笔记：激光剑单次命中伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
+  DAMAGE:     700,                          // 笔记：激光剑单次命中伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
   DURATION:   5,                            // 激活后伤害状态持续秒数
   COOLDOWN:   5,                            // 激活后复用冷却秒数（HUD 显示）
   COST:       500,                          // 消耗积分
@@ -428,7 +428,7 @@ export const DRAGON = {
 export const DEPTH_SPRITE_MODE = true;
 // 白名单：已扩到全部普通小怪（ghost 的隐身已让立绘跟随主体 visible，见 balloons.js）。
 // 想单独压测某类型，把数组缩到该 id 即可。
-export const DEPTH_SPRITE_TYPES = ['basic', 'ninja', 'shield', 'octopus', 'ghost', 'summoner', 'heart', 'chest', 'blackMaskClone'];
+export const DEPTH_SPRITE_TYPES = ['basic', 'ninja', 'shield', 'octopus', 'ghost', 'summoner', 'heart', 'chest', 'blackMaskClone', 'eliteKnight'];
 // 同屏压测：>0 时关卡启动后额外生成 N 个 basic 立绘同屏阵列（controlled 站定，仍可受击/视差）。
 // 设 150 即「同屏 150 个 DepthSprite」压测；设 0 关闭。
 export const DEPTH_SPRITE_STRESS = 150;

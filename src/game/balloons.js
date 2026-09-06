@@ -30,11 +30,14 @@ const _shieldSp  = new THREE.Vector3();   // getShieldBlock() 盾牌世界坐标
 const _shieldCt  = new THREE.Vector3();   // getShieldBlock() 气球中心世界坐标
 
 class Balloon {
-  constructor(typeId) {
+  constructor(typeId, opts = null) {
     const t = ENEMY_TYPES[typeId] || ENEMY_TYPES.basic;
     this.type = t;
     this.maxHp = t.hp;
     this.hp = t.hp;
+    // 精英怪：允许外部覆盖血量（由 waves._fireElitePhase 按敌种计算 = ELITE_BASE_HP[型] + DPS×秒，叠加式）并标记
+    if (opts && opts.hp != null) { this.maxHp = opts.hp; this.hp = opts.hp; }
+    this.isElite = !!(opts && opts.isElite);
     this.speed = t.speed;
     this.radius = t.radius;
     this.effectiveRadius = t.radius * (t.scale || 1); // 碰撞/分离/血条用的实际半径
@@ -63,8 +66,8 @@ class Balloon {
     if (t.model) {
       this._hasModel = true;
       this.mesh.material.visible = false;
-      // 盾兵怪复用骑士模型但需正常体型（Boss 骑士用 MODEL_TUNING 默认缩小），此处覆盖 scale
-      const knightTuning = (t.id === 'shield') ? { scale: 1.0 } : null;
+      // 盾兵怪/精英骑士复用骑士模型但需正常体型（Boss 骑士用 MODEL_TUNING 默认缩小），此处覆盖 scale
+      const knightTuning = (t.id === 'shield' || t.id === 'eliteKnight') ? { scale: 1.0 } : null;
       attachBalloonModel(this, t.model, t.radius, null, knightTuning, 1, t.id);
     } else if (t.dragonSegment) {
       // 2b) 龙身/龙爪：外观装配延后到 dragonLevel._spawnBalloons 显式调用 attachDragonSegment，
@@ -372,8 +375,8 @@ export class BalloonManager {
     this.depthDebug = false; // DepthSprite 深度调试：按 D 切换（中心亮=凸、边缘亮=凹）
   }
 
-  spawn(typeId, position) {
-    const b = new Balloon(typeId);
+  spawn(typeId, position, opts = null) {
+    const b = new Balloon(typeId, opts);
     b.mesh.position.copy(position);
     this.scene.add(b.mesh);
     this.list.push(b);

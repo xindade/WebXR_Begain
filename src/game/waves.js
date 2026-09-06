@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM, SPAWN_RING } from '../core/constants.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
+import { ELITE_SCHEDULE, ELITE_WINDOW, ELITE_BASE_HP } from '../content/eliteMonsters.js';
 import { isBoss } from '../content/levels.js';
 import { LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { swapBalloonModel, loadBalloonModel, preCaptureDepthSprite } from './balloonModels.js';
@@ -23,6 +24,10 @@ export class WaveManager {
     this.getPortals = getPortals || null; // () => game._portals；null 视为无门 → 直接 spawn
     this.getPlayerDPS = getPlayerDPS;             // () => number  玩家当前 DPS（game 注入）
     this.getSkillCd = getSkillCd || (() => 0);    // () => number  技能剩余冷却（>3=最近5秒放过技能）
+    // —— 精英波（叠加于普通出怪之上，来自 ELITE_SCHEDULE）——
+    this._eliteElapsed = 0;          // 精英波独立计时（秒），与 mode 的 elapsed 解耦
+    this._elitePlan = null;          // 本关排程（ELITE_SCHEDULE[n] 或 null）
+    this._eliteFired = null;         // {early,mid,late} 各期是否已触发
     // —— 新调度（DPS 内外圈）状态 ——
     this.levelScale = SPAWN_RING.LEVEL_BASE; // 关卡常数
     this.baseSpawn = 0;          // 基础出怪量
@@ -83,6 +88,10 @@ export class WaveManager {
     this.bossSpawned = false;
     this.boss = null;
     this.spawnTimer = 0;
+    // 精英波初始化：Boss/激光关无排程（ELITE_SCHEDULE 不含这些关 → null），普通/危机关按表载入
+    this._eliteElapsed = 0;
+    this._elitePlan = ELITE_SCHEDULE[level.n] || null;
+    this._eliteFired = this._elitePlan ? { early: false, mid: false, late: false } : null;
     // 重置脸谱 Boss 状态（防止上一关残留引用）
     this.faceBoss = null;
     this.facePhase = 0;
@@ -139,12 +148,18 @@ export class WaveManager {
     const spawnDist = opts?.dist ?? (this.mode === 'normalTest' ? NORMAL_TEST.distance : WAVE.SPAWN_DISTANCE);
     const spawnSpread = opts?.spread ?? (this.mode === 'normalTest' ? NORMAL_TEST.spread : WAVE.SPAWN_SPREAD);
     const phaseOverride = opts?.phase;
+    const centerDeg = opts?.centerDeg;   // 新增：方向中心角(度)；提供时按 (centerDeg ± arcDeg/2) 取角（精英波定向出生用）
+    const arcDeg = opts?.arcDeg ?? 70;
     do {
-      const phase = phaseOverride ?? this._phase();
       let a;
-      if (phase === 1) a = (-40 + Math.random() * 80) * Math.PI / 180;
-      else if (phase === 2) a = (-110 + Math.random() * 220) * Math.PI / 180;
-      else a = Math.random() * Math.PI * 2;
+      if (centerDeg != null) {
+        a = (centerDeg + (Math.random() - 0.5) * arcDeg) * Math.PI / 180;
+      } else {
+        const phase = phaseOverride ?? this._phase();
+        if (phase === 1) a = (-40 + Math.random() * 80) * Math.PI / 180;
+        else if (phase === 2) a = (-110 + Math.random() * 220) * Math.PI / 180;
+        else a = Math.random() * Math.PI * 2;
+      }
       // 前方为 -Z
       const dir = new THREE.Vector3(Math.sin(a), 0, -Math.cos(a));
       pos = new THREE.Vector3(0, 0, 0).addScaledVector(dir, spawnDist);
@@ -307,6 +322,66 @@ export class WaveManager {
         this.bossSpawned = true;   // 落地才置位，避免飞行期 cleared 误判
       },
     });
+  }
+
+  // ===== 精英波（叠加于普通出怪之上，来自 ELITE_SCHEDULE）=====
+
+  // 取某敌种的「默认血量」：优先用 Excel 跨关聚合的全局表 ELITE_BASE_HP
+  // （骑士1000/盾兵2000/心形5000/幽灵7000/忍者8000/章鱼20000）。
+  // 未收录的敌种回退到其基础血量（ENEMY_TYPES.hp），再不行给 500。
+  _eliteBaseHP(type) {
+    if (ELITE_BASE_HP[type] != null) return ELITE_BASE_HP[type];
+    const t = ENEMY_TYPES[type];
+    return t ? t.hp : 500;
+  }
+
+  // 每帧推进精英波计时，按时间窗触发三期（前期5s/中期20s/后期40s，进入即生成一次）
+  _updateEliteWaves(dt) {
+    if (!this._elitePlan || !this._eliteFired) return;
+    this._eliteElapsed += dt;
+    const e = this._eliteElapsed;
+    if (!this._eliteFired.early && e >= ELITE_WINDOW.early) { this._eliteFired.early = true; this._fireElitePhase('early'); }
+    if (!this._eliteFired.mid   && e >= ELITE_WINDOW.mid)   { this._eliteFired.mid   = true; this._fireElitePhase('mid'); }
+    if (!this._eliteFired.late  && e >= ELITE_WINDOW.late)  { this._eliteFired.late  = true; this._fireElitePhase('late'); }
+  }
+
+  // 触发某期精英波：按各敌种分别计算血量并逐个生成组合敌种
+  // ⚠️ 血量按「敌种」分别计算（互不串用）：HP(某型) = ELITE_BASE_HP[该型]（固定默认血量，已去掉「增幅血量」DPS 缩放）。
+  //   · 例：L02 后期 shield=2000、eliteKnight=1000（各型按自己默认血量，互不串用）。
+  _fireElitePhase(phase) {
+    const plan = this._elitePlan[phase];
+    if (!plan) return;
+    const positions = this._eliteSpawnPositions(plan.dir, plan.combos);
+    let pi = 0;
+    for (const combo of plan.combos) {
+      // 本型血量 = 该型默认血量（ELITE_BASE_HP），不随玩家 DPS 缩放
+      const hp = this._eliteBaseHP(combo.type);
+      for (let k = 0; k < combo.count; k++) {
+        const pos = positions[pi++ % positions.length];
+        this._queueSpawn(combo.type, pos, {
+          onSpawn: (b) => {
+            b.maxHp = hp; b.hp = hp;     // 用按型计算的血量覆盖基础血量
+            b.isElite = true;
+          },
+        });
+      }
+    }
+  }
+
+  // 按方向生成一组出生点（精英波在指定方位成簇出现）
+  //   front      → 正前方(0°)     frontLeft → 前偏左(-45°)   frontRight → 前偏右(+45°)
+  _eliteSpawnPositions(dir, combos) {
+    const total = combos.reduce((s, c) => s + c.count, 0);
+    let centerDeg, arcDeg;
+    if (dir === 'frontLeft')       { centerDeg = -45; arcDeg = 70; }
+    else if (dir === 'frontRight') { centerDeg =  45; arcDeg = 70; }
+    else                           { centerDeg =   0; arcDeg = 70; } // front
+    const out = [];
+    const r0 = ENEMY_TYPES[combos[0]?.type]?.radius || 0.9;
+    for (let i = 0; i < total; i++) {
+      out.push(this._spawnPos(r0, { dist: 15, spread: 6, centerDeg, arcDeg }));
+    }
+    return out;
   }
 
   // ===== 脸谱 Boss（单 Boss 多阶段循环）=====
@@ -633,6 +708,9 @@ export class WaveManager {
   update(dt) {
     this._updatePendingSpawns(dt);   // 光点推进 + 落地 spawn（任何模式都执行）
     if (!this.level || this.cleared) return;
+
+    // 精英波叠加（独立于普通出怪；Boss/激光关 _elitePlan 为 null，无操作）
+    if (!isBoss(this.level)) this._updateEliteWaves(dt);
 
     // 正常测试模式：升级式同屏出怪（boss 关不会走到这里，startLevel 已分流）
     if (this.mode === 'normalTest') {
