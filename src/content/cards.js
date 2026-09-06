@@ -59,7 +59,7 @@ export const SKILL_CARDS = [
   },
   {
     id: 'lightsaber', label: '激光剑', rarity: 'gold', color: '#ff3b3b', icon: 'lightsaber',
-    desc: '左手激光剑近战，伤害400（×倍率），持续5秒',
+    desc: '左手激光剑近战，伤害700（×倍率），持续5秒',
     apply: () => { /* 伤害由 game._castLaserSword 执行（需场景上下文）*/ },
   },
   {

@@ -114,6 +114,18 @@ export const ENEMY_TYPES = {
     model: 'Model/骑士.glb',
   },
 
+  // —— 精英骑士（Excel「骑士」精英怪变体；第 01/02/04/05/07/08/11 关精英波登场）——
+  // 复用骑士模型，behavior=basic 直冲玩家，普通体型（scale:1，覆盖 Boss 的 3）。
+  // 与盾兵怪同为「骑士模型 + scale:1」分支（见 balloons.js 的 knightTuning 覆盖），但行为不同（盾兵自转盾、精英直冲）。
+  eliteKnight: {
+    id: 'eliteKnight', name: '精英骑士',
+    hp: 500, speed: 0.5, radius: 0.9, score: 60,
+    behavior: 'basic', selfDamage: 5,
+    model: 'Model/骑士.glb',
+    scale: 1,            // 普通体型（Boss 骑士用 scale:3，此处覆盖为 1）
+    isElite: true,       // 标记：精英怪（目前仅用于语义区分，不改外观）
+  },
+
   // —— 脸谱 Boss（第6/18关专用，非小怪）——
   // 单 Boss 3000 HP + 95% 减伤，3 阶段循环（蓝→红→黑），变脸换位
   faceMask: {

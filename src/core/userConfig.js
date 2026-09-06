@@ -127,7 +127,7 @@ export const USER_CONFIG = {
     SCALE: 4.0,                              // 整体缩放
     BLADE_AXIS: { x: -1, y: 0, z: 0 },       // 剑刃方向（root 本地轴）：真实刃长轴=本地 X；配 ROTATION.y:270 映射到世界前向
     BLADE_LENGTH: 1.2,                        // 剑刃本地长度（米）；命中线段 = ×SCALE(4.0)=4.8m
-    DAMAGE: 500,                              // 单次命中伤害
+    DAMAGE: 700,                              // 单次命中伤害
     DURATION: 5,                              // 激活后伤害状态持续秒数
     COOLDOWN: 5,                              // 激活后复用冷却秒数
     COST: 500,                                // 消耗积分

@@ -16,6 +16,7 @@ import { Portal } from './portal.js';
 import { BuddhaFx } from './buddhaFx.js';
 import { LEVELS, isLaser, isBoss } from '../content/levels.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
+import { ELITE_SCHEDULE } from '../content/eliteMonsters.js';
 import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
 import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, CLOUD, SCORE_CAP, DRAGON } from '../core/constants.js';
@@ -340,6 +341,14 @@ export class Game {
       if (NORMAL_TEST.enabled) NORMAL_TEST.pool.forEach((t) => types.add(t));
       const le = LEVEL_ENEMY[lv.n];
       if (le && le.type) types.add(le.type);
+      // 本关精英波敌种（ELITE_SCHEDULE）也纳入预载：避免首只精英骑士在 5s 时同步抓帧卡顿
+      const es = ELITE_SCHEDULE[lv.n];
+      if (es) {
+        for (const key of ['early', 'mid', 'late']) {
+          const ph = es[key];
+          if (ph) ph.combos.forEach((c) => types.add(c.type));
+        }
+      }
       types.forEach(addType);
     }
     // 去重（同一模型只预载一次；如盾兵怪与骑士 Boss 共用 Model/骑士.glb）
@@ -987,6 +996,7 @@ export class Game {
     // 仅在「变化/运动」阶段结算伤害：掌图作横扫墙，只命中其当前位置附近命中盒内的敌人（不再全屏秒杀）
     const fx = this._buddhaFx;
     if (fx.isDamaging) {
+      // 如来神掌伤害 = 固定 BUDDHA.DAMAGE（×skillDamageMul 倍率）；对精英怪有效（命中循环无 isElite 排除）
       const dmg = BUDDHA.DAMAGE * this.player.skillDamageMul;
       const s = fx.scale;                                   // 当前缩放倍数
       const halfW = BUDDHA.PLANE_WIDTH  * s * 0.5 * BUDDHA.HIT_MARGIN_XY; // 命中盒 X 半宽
