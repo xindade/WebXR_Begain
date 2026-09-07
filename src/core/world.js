@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { MOVE, SKY_BRIGHTNESS, PANO_DOME_YAW, RENDER, SKY_PANO_MIPMAPS } from './constants.js';
-import { makeTextSprite } from './canvasTexture.js';
+import { Carpet } from './carpet.js';
 import { EXRLoader } from '../../vendor/EXRLoader.js';
 
 // 世界：渲染器、场景、相机、灯光、天空、星空
@@ -23,10 +23,7 @@ void main() {
   gl_FragColor = vec4(mix(bottomColor, topColor, smoothstep(0.0, 1.0, h)), 1.0);
 }`;
 
-// 生成文字精灵：始终面向相机，用于坐标系数字标注（复用 core/canvasTexture.js 工厂）
-function _textSprite(text, color) {
-  return makeTextSprite({ text, color });
-}
+// 生成文字精灵工厂(canvasTexture.makeTextSprite)已不再需要：坐标网格移除后无数字标注需求。
 
 export class World {
   constructor(canvas) {
@@ -57,8 +54,7 @@ export class World {
     this._buildLights();
     this._buildSky();
     this._buildStars();
-    this._buildBoundary();
-    this._buildCoordGrid();
+    this._buildCarpet();          // 玩家脚下飞毯（替代原蓝色活动边界 4×8 + 坐标网格）
 
     window.addEventListener('resize', () => this._onResize());
   }
@@ -215,9 +211,8 @@ export class World {
       this._skydome.material.transparent = true;
       this._skydome.material.opacity = o;
     }
-    if (this.boundary) {
-      this.boundary.material.transparent = true;
-      this.boundary.material.opacity = 0.14 * o;  // 地面边界基准不透明度 0.14
+    if (this.carpet) {
+      this.carpet.setEnvOpacity(o);  // 飞毯淡入：仅改 uOpacity uniform + 流苏 opacity（不切 transparent，避免重编译卡顿）
     }
     if (this._starLayers) {
       for (const l of this._starLayers) { l.material.transparent = true; l.material.opacity = 0.9 * o; }
@@ -327,94 +322,13 @@ export class World {
     this._updateSky(dt);
   }
 
-  // 玩家可移动区域占位：以 rig 原点(0,0,0) 为中心、BOUND_X*2 × BOUND_Z*2 的长方体地板。
-  // 半透明板 + 高亮边框，让玩家在 VR 里清楚看到脚下行动边界（临时占位，后续可换美术边界）。
-  _buildBoundary() {
-    const w = MOVE.BOUND_X * 2;
-    const d = MOVE.BOUND_Z * 2;
-    const geo = new THREE.BoxGeometry(w, 0.1, d);
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0x4dabf7, transparent: true, opacity: 0.14, depthWrite: false,
-    });
-    this.boundary = new THREE.Mesh(geo, mat);
-    this.boundary.position.set(0, 0.05, 0); // 贴地
-    this.scene.add(this.boundary);
-
-    const edges = new THREE.LineSegments(
-      new THREE.EdgesGeometry(geo),
-      new THREE.LineBasicMaterial({ color: 0x4dabf7 })
-    );
-    edges.position.copy(this.boundary.position);
-    this.scene.add(edges);
+  // 玩家脚下飞毯：替代原蓝色活动边界，world 固定铺在原点(0,0,0)，尺寸 = 活动区域(MOVE 边界)。
+  // 三层混合布料效果见 src/core/carpet.js；第9关玻璃走格子时由 game 调 setVisible(false) 隐藏。
+  _buildCarpet() {
+    this.carpet = new Carpet(this.scene);
   }
 
-  // 场地坐标系：以 rig 原点(0,0,0) 为中心，0.5m 为单位的网格 + 数字标注。
-  // X 轴范围 [-BOUND_X, BOUND_X]，Z 轴范围 [-BOUND_Z, BOUND_Z]。
-  // 用法：玩家移动被钳制在该范围内，网格帮其在 VR 里建立空间参照。
-  _buildCoordGrid() {
-    const step = 0.5;
-    const xMin = -MOVE.BOUND_X, xMax = MOVE.BOUND_X;
-    const zMin = -MOVE.BOUND_Z, zMax = MOVE.BOUND_Z;
-    const y = 0.06; // 略高于边界地板(0.05)，避免 z-fighting
-
-    // --- 1) 淡色网格线（每 0.5m 一条）---
-    const gridPts = [];
-    for (let x = xMin; x <= xMax + 1e-6; x += step) {
-      const vx = Math.round(x * 2) / 2;
-      gridPts.push(vx, y, zMin, vx, y, zMax);
-    }
-    for (let z = zMin; z <= zMax + 1e-6; z += step) {
-      const vz = Math.round(z * 2) / 2;
-      gridPts.push(xMin, y, vz, xMax, y, vz);
-    }
-    const gridGeo = new THREE.BufferGeometry();
-    gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(gridPts, 3));
-    this.scene.add(new THREE.LineSegments(
-      gridGeo,
-      new THREE.LineBasicMaterial({ color: 0x2c4a6e, transparent: true, opacity: 0.55 })
-    ));
-
-    // --- 2) 坐标轴加亮：X 轴(红) 沿 z=0；Z 轴(绿) 沿 x=0 ---
-    const axisPts = [
-      xMin, y, 0, xMax, y, 0,   // X 轴
-      0, y, zMin, 0, y, zMax,   // Z 轴
-    ];
-    const axisGeo = new THREE.BufferGeometry();
-    axisGeo.setAttribute('position', new THREE.Float32BufferAttribute(axisPts, 3));
-    this.scene.add(new THREE.LineSegments(
-      axisGeo,
-      new THREE.LineBasicMaterial({ color: 0xffd43b, transparent: true, opacity: 0.9 })
-    ));
-
-    // --- 3) 数字标注（沿两轴每 0.5m 一个，单位：米）---
-    const fmt = (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
-    const labelY = 0.22;
-    for (let x = xMin; x <= xMax + 1e-6; x += step) {
-      const vx = Math.round(x * 2) / 2;
-      if (vx === 0) continue; // 原点单独标
-      const sp = _textSprite(fmt(vx), '#ff8787');
-      sp.position.set(vx, labelY, 0);
-      this.scene.add(sp);
-    }
-    for (let z = zMin; z <= zMax + 1e-6; z += step) {
-      const vz = Math.round(z * 2) / 2;
-      if (vz === 0) continue;
-      const sp = _textSprite(fmt(vz), '#69db7c');
-      sp.position.set(0, labelY, vz);
-      this.scene.add(sp);
-    }
-
-    // --- 4) 原点标记 + 标注 “0” ---
-    const origin = new THREE.Mesh(
-      new THREE.BoxGeometry(0.12, 0.12, 0.12),
-      new THREE.MeshBasicMaterial({ color: 0xffffff })
-    );
-    origin.position.set(0, y + 0.03, 0);
-    this.scene.add(origin);
-    const oLabel = _textSprite('0', '#ffffff');
-    oLabel.position.set(0, labelY + 0.05, 0);
-    this.scene.add(oLabel);
-  }
+  // 场地坐标系已移除：玩家脚下由飞毯(4×8)作为地板与空间参照，不再绘制网格/坐标线/数字标注。
 
   _onResize() {
     this.camera.aspect = window.innerWidth / window.innerHeight;

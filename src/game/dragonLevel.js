@@ -73,11 +73,12 @@ export function preloadDragonAssets(onProgress) {
       });
     }
 
-    // 预加载所有 NODE_DEFS 里出现的模型（含兜底 NODE_MODEL）：进龙关时直接命中缓存，避免开打后才异步加载出现短暂空缺
+    // 预加载龙身/龙爪固定模型（BODY_MODEL / CLAW_MODEL）+ 兜底 NODE_MODEL：进龙关时直接命中缓存，避免开打后才异步加载出现短暂空缺
     const modelsToPreload = new Set([DRAGON.NODE_MODEL]);
-    for (const d of (DRAGON.NODE_DEFS || [])) { if (d && d.model) modelsToPreload.add(d.model); }
+    if (DRAGON.BODY_MODEL) modelsToPreload.add(DRAGON.BODY_MODEL);
+    if (DRAGON.CLAW_MODEL) modelsToPreload.add(DRAGON.CLAW_MODEL);
     for (const m of modelsToPreload) {
-      try { await loadBalloonModel(m); } catch (e) { console.warn('[DragonBoss] 预加载龙身节点模型失败:', m, e); }
+      try { await loadBalloonModel(m); } catch (e) { console.warn('[DragonBoss] 预加载龙身模型失败:', m, e); }
     }
   })();
   return _preloadPromise;
@@ -132,6 +133,9 @@ export class DragonBoss {
     this._deathFx = [];                 // 连爆爆炸特效列表
     this.audio = null;                  // 由 game 注入（播放爆炸音效）
     this._t = 0;                        // 全局时间累加（波动/动画用）
+    this._revealed = false;             // 是否已揭示：龙身/龙头在「首次 update 摆到脊柱上」前保持隐形，避免开场瞬间龙头停在原点(玩家脚下)被直接看到
+
+    // 龙身/龙爪外观固定（BODY_MODEL=骑士 / CLAW_MODEL=忍者），无轮换状态
 
     // 蛇形波动参数（来自 DRAGON，带默认）
     this._idleAmp = DRAGON.IDLE_AMP ?? 0.45;
@@ -305,52 +309,37 @@ export class DragonBoss {
     const bodyCount = this.bodyCount;       // ① 来自 constants DRAGON.BODY_COUNT（_buildFromData 已赋值）
     const hpMult = DRAGON.HP_MULT;
 
-    // ②/③ 由 NODE_DEFS 构建「节号 → 节点定义」映射（显式指定节点位置 / 模型 / 缩放 / 旋转）
-    const nodeMap = new Map();
-    for (const d of (DRAGON.NODE_DEFS || [])) {
-      if (d && d.at != null) nodeMap.set(d.at, d);
-    }
-
-    // 龙身
+    // 龙身：固定「骑士」模型（DRAGON.BODY_MODEL），每节血量 = 骑士默认血量(DRAGON.BODY_HP=500)
     for (let i = 1; i <= bodyCount; i++) {
-      const def = nodeMap.get(i);            // 该节是否有模型节点定义（有即模型节点）
-      const isNode = !!def;
-      const b = this.balloons.spawn(isNode ? DRAGON.NODE_TYPE : DRAGON.BODY_TYPE, new THREE.Vector3(0, -999, 0));
+      const b = this.balloons.spawn(DRAGON.BODY_TYPE, new THREE.Vector3(0, -999, 0));
       b.controlled = true; // 跳过自动朝玩家移动 + 分离力
       b.isDragonPart = true; // 标记为龙部件：击破后由本类管理「1秒复活」而非永久移除
+      b.mesh.visible = false; // 开场隐形：待首次 update 摆到脊柱后再揭示（见 update 末尾 _revealed）
+      b.maxHp = DRAGON.BODY_HP; b.hp = DRAGON.BODY_HP; // 龙身血量固定为骑士血量（覆盖 dragonBody 默认 100）
       if (hpMult !== 1) { b.maxHp = Math.round(b.maxHp * hpMult); b.hp = b.maxHp; }
       // 龙身由头(i=1)到尾(i=bodyCount)渐细：仅改外观，不影响碰撞半径
       const taper = 1.4 - 0.9 * ((i - 1) / Math.max(1, bodyCount - 1));
-      if (isNode) {
-        // ②/③ 模型节点：用 NODE_DEFS[].model（缺省回退 NODE_MODEL）、scale、rot[绕X,绕Y,绕Z](度)
-        attachDragonSegment(
-          b, b.radius, 'model', taper,
-          def.model || null,
-          { rot: def.rot || [0, 0, 0] },
-          def.scale != null ? def.scale : 1.0
-        );
-      } else {
-        // 其余段：黑红程序化圆柱
-        attachDragonSegment(b, b.radius, 'cylinder', taper);
-      }
+      // 统一 scale:1.0（抵消各模型 MODEL_TUNING 默认比例，保证骑士贴合身体半径），taper 逐段渐细
+      attachDragonSegment(b, b.radius, 'model', taper, DRAGON.BODY_MODEL, { scale: 1.0 });
+      this.bodyParts.push({ balloon: b, i, kind: 'model', taper });
       this.maxHpPool += b.maxHp;
-      this.bodyParts.push({ balloon: b, i, kind: isNode ? 'model' : 'cylinder' });
       this.allParts.push(b);
     }
 
-    // 龙爪（每个挂点 CLAW_NODES 左右各1爪 → 默认 [3,7] 共4爪）：统一黑红圆柱
+    // 龙爪：固定「忍者」模型（DRAGON.CLAW_MODEL），每个挂点 CLAW_NODES 左右各1爪 → 共4爪
     const clawNodes = Array.isArray(DRAGON.CLAW_NODES) ? DRAGON.CLAW_NODES : [DRAGON.CLAW_NODE];
     for (const node of clawNodes) {
       for (const side of [-1, 1]) {
         const b = this.balloons.spawn(DRAGON.CLAW_TYPE, new THREE.Vector3(0, -999, 0));
         b.controlled = true;
         b.isDragonPart = true;
+        b.mesh.visible = false; // 开场隐形：待首次 update 摆到脊柱后再揭示
         if (hpMult !== 1) { b.maxHp = Math.round(b.maxHp * hpMult); b.hp = b.maxHp; }
         // 龙爪 taper 取所在节点位置（中等粗细）
         const taper = 1.4 - 0.9 * ((node - 1) / Math.max(1, bodyCount - 1));
-        attachDragonSegment(b, b.radius, 'cylinder', taper);
+        attachDragonSegment(b, b.radius, 'model', taper, DRAGON.CLAW_MODEL, { scale: 1.0 });
         this.maxHpPool += b.maxHp;
-        this.clawParts.push({ balloon: b, side, node, kind: 'cylinder' });
+        this.clawParts.push({ balloon: b, side, node, kind: 'model' });
         this.allParts.push(b);
       }
     }
@@ -360,6 +349,7 @@ export class DragonBoss {
   }
 
   _loadHead() {
+    this.headGroup.visible = false; // 开场隐形：待首次 update 摆到脊柱后再揭示（见 update 末尾 _revealed）
     // 命中预览预加载缓存：直接复用已加载的 GLB（不重复下载/解码）
     if (_headGltf) {
       this.headModel = _headGltf.scene;
@@ -499,6 +489,14 @@ export class DragonBoss {
       this._orientAlongSpine(part.balloon.mesh, nodeArc);
     }
 
+    // —— 首次 update：龙身/龙头已摆到脊柱正确位置，此时才揭示（开场隐形，避免龙头停原点被看到）——
+    if (!this._revealed) {
+      this._revealed = true;
+      this.headGroup.visible = true;
+      for (const p of this.bodyParts) if (p.balloon.mesh) p.balloon.mesh.visible = true;
+      for (const p of this.clawParts) if (p.balloon.mesh) p.balloon.mesh.visible = true;
+    }
+
     // —— 通关判定：仅死亡连爆结束后由 _updateFinale 置 cleared（打爆即复活，故不以全灭判定）——
     let alive = 0;
     for (const b of this.allParts) if (b.alive) alive++;
@@ -528,6 +526,7 @@ export class DragonBoss {
 
   // 血量清零 → 进入死亡连爆阶段（冻结运动）
   _startDeath() {
+    this.audio?.stopBGM(); // 龙 Boss 死亡即停背景音乐（龙Boss.wav），转场/选项卡不再续播
     this.dying = true;
     // 顺序：龙尾(i 大) → 龙头(i 小)，最后龙爪
     const order = [...this.bodyParts]

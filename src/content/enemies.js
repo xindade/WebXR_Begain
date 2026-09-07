@@ -40,6 +40,7 @@ export const ENEMY_TYPES = {
     id: 'heart', name: '心型怪',
     hp: 1000, speed: 0, radius: 0.9, score: 40,
     behavior: 'heal', selfDamage: 0,
+    scale: 3,   // 缩放倍率(单位:倍)：与忍者/幽灵/章鱼同类精英同放大3倍 → 视觉 + 受击范围 同步放大（治疗光环 healRadius 固定 6m，不受影响）
     model: 'Model/心形怪.glb',
     healAura: 10,        // 每秒为周围敌人恢复血量
     healRadius: 6,       // 治疗光环半径(m)
@@ -103,7 +104,7 @@ export const ENEMY_TYPES = {
     id: 'octopus', name: '章鱼怪',
     hp: 1000, speed: 1.0, radius: 0.9, score: 30,
     behavior: 'octopus', selfDamage: 5,
-    scale: 3,   // 同上：放大3倍 + 受击范围同步
+    scale: 3,   // 缩放倍率(单位:倍)：精英怪整体放大3倍 → 视觉 + 受击范围 同步放大；不写则默认 1 倍
     model: 'Model/章鱼.glb',
     inkInterval: 3.0, inkDuration: 1.0, inkDamage: 5, // 喷墨污染视线（后续补齐屏幕遮挡）
     tint: 0x6c5ce7,
@@ -159,23 +160,14 @@ export const ENEMY_TYPES = {
   // —— 龙身/龙爪（Boss 专用，非小怪；由 dragonLevel 逐帧接管位置）——
   // 关键优化：dragonSegment=true → 走 balloonModels.attachDragonSegment 的极轻量程序化几何体，
   // 而非克隆 48万面 基础怪.glb。14 节合计仅约 4500 三角形（原 14×48万≈677万），是龙 Boss 关掉帧的核心修复。
+  // 第12关龙身固定挂「骑士」模型、龙爪固定挂「忍者」模型（外观由 dragonLevel._spawnBalloons 的
+  // attachDragonSegment(..., 'model', ..., BODY_MODEL/CLAW_MODEL) 决定），此处仅定义基础属性。
   dragonBody: {
     id: 'dragonBody', name: '龙身',
     hp: 100, speed: 0, radius: 0.5, score: 10,
     behavior: 'basic', selfDamage: 0,
     dragonSegment: true,  // 触发 balloonModels.attachDragonSegment（黑红圆柱，不加载 48万面 GLB）
     noHealthBar: true,    // 龙用全局血量池(d.hpPool 显示在手腕 UI)，逐节血条多余
-  },
-
-  // —— 龙身「模型节点」（Boss 专用）：与 dragonBody 同属龙部件，但外观是「完整小怪模型」——
-  // 哪些节挂模型、用哪个模型、缩放/旋转，由 constants.js 的 DRAGON.NODE_DEFS 显式指定；
-  // 其余段仍是黑红圆柱，形成「模型串 + 圆柱串」混合龙身。
-  dragonNode: {
-    id: 'dragonNode', name: '龙身(模型)',
-    hp: 100, speed: 0, radius: 0.5, score: 10,
-    behavior: 'basic', selfDamage: 0,
-    dragonSegment: true,  // 同样走 balloonModels.attachDragonSegment，但 kind='model' → 挂 NODE_MODEL（减面版基础怪）
-    noHealthBar: true,    // 龙用全局血量池，逐节血条多余
   },
 };
 

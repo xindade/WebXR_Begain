@@ -150,6 +150,14 @@ async function enterVR() {
     }
 
     await world.renderer.xr.setSession(session);
+    // 规避 three.js r168 在 PICO 上首帧 referenceSpace 仍为空导致
+    // onAnimationFrame 调 frame.getPose(gripSpace, null) 抛非致命报错的坑：
+    // 预解析并强制设置自定义参考空间（与会话 'local-floor' 一致），
+    // 使每帧用 customReferenceSpace 覆盖库内可能暂为空的 referenceSpace。
+    try {
+      const rs = await session.requestReferenceSpace('local-floor');
+      world.renderer.xr.setReferenceSpace(rs);
+    } catch (_) { /* 忽略：库内部 onSessionStart 也会自行解析 */ }
     enterVRBtn.style.display = 'none';
     if (statusMsg) statusMsg.style.display = 'none';
   } catch (err) {
@@ -223,6 +231,8 @@ world.renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   // 单帧异常只记录、不向上抛：否则会中断 XR 动画循环的排帧，导致 VR 黑屏
   try { game.update(dt); } catch (e) { console.error('[主循环] game.update 异常:', e); }
+  // 飞毯每帧更新：dt 钳制到 1/30，避免掉帧时 Verlet 积分爆炸（见飞毯文档坑#7）；运动与玩家移动无关（恒定基线 + 缓慢自震荡）
+  try { world.carpet?.update(Math.min(dt, 1 / 30)); } catch (e) { console.error('[主循环] carpet.update 异常:', e); }
   try { world.render(); } catch (e) { console.error('[主循环] world.render 异常:', e); }
 });
 

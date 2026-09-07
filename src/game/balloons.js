@@ -41,6 +41,7 @@ class Balloon {
     this.speed = t.speed;
     this.radius = t.radius;
     this.effectiveRadius = t.radius * (t.scale || 1); // 碰撞/分离/血条用的实际半径
+    this.healthBarRadius = t.barRadius != null ? t.barRadius : t.radius; // 血条宽度半径(米)：默认=基础半径(不含 scale)。血条是 mesh.scale 子节点，会被 scale 放大 → 最终宽度≈模型直径，各型一致；可用 barRadius 单独覆盖
     this.hitRadius = this.effectiveRadius;            // 子弹命中球半径（模型加载后按视觉尺寸放大；占位怪构造里再放大）
     this.score = t.score;
     this.behavior = t.behavior;
@@ -86,7 +87,7 @@ class Balloon {
     if (t.shieldModel) this._buildShield(t);
 
     // 血条：所有非基础怪显示（含盾兵/召唤/心/忍者/宝箱/幽灵/龙头/聚宝盆/章鱼）；龙身(noHealthBar)除外——龙用全局血量池
-    if (t.id !== 'basic' && !t.noHealthBar) this._makeHealthBar(this.effectiveRadius);
+    if (t.id !== 'basic' && !t.noHealthBar) this._makeHealthBar(this.healthBarRadius);
     if (t.scale) this.mesh.scale.setScalar(t.scale);
 
     // 幽灵怪：默认隐身，仅在自身蓄力攻击时显形（见 update）
@@ -217,7 +218,7 @@ class Balloon {
     if (this._hpBar) {
       const k = Math.max(0, this.hp / this.maxHp);
       this._hpFg.scale.x = k;
-      this._hpFg.position.x = -((1 - k) * this.effectiveRadius);
+      this._hpFg.position.x = -((1 - k) * this.healthBarRadius);
       this._hpFg.material.color.setHSL(0.33 * k, 0.7, 0.5);
     }
     if (this.hp <= 0) { this.alive = false; return true; }

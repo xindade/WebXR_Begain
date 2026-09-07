@@ -144,8 +144,7 @@ playing ──(清空当前波次)──▶ card ──(选 1 张卡)──▶ p
 | 抽卡卡牌生成在身后 | 同上的方向坑（`camera.getWorldDirection` 未取反） | 取世界前向后再 `negate()` |
 | 左/右手柄分不清 | 只靠 `getController(i)` 索引，PICO 可能左右颠倒 | 用 `connected` 事件读 `handedness` 区分 |
 | 眼前挡视线的飞船 | 占位飞船贴在相机前 | 隐藏 `_buildShip`（保留空 Group 引用），改由边界长方体标示范围 |
-| 看不到行动边界 | 移动被钳制但无视觉 | `_buildBoundary()`：半透明长方体 + 高亮边框 |
-| 头显里没空间参照 | 纯空场 | `_buildCoordGrid()`：0.5m 网格 + 数字标注 |
+| 看不到行动边界 | 移动被钳制但无视觉 | 飞毯(`src/core/carpet.js`)：4×8 波斯地毯作为脚下地板与空间参照（替代原 `_buildBoundary` + `_buildCoordGrid` 网格/坐标线/数字标注） |
 | 日志面板太大 | 左手 Canvas 物理尺寸偏大 | 缩小到 1/6（保持 Canvas 分辨率，文字仍清晰） |
 
 ---

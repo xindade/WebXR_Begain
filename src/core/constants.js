@@ -375,36 +375,22 @@ export const DRAGON = {
   ROLL:  0,                               // 整体绕Z旋转(度)：修正龙的「翻滚」偏差
   // ↑ 三轴组成全局刚体旋转，头/身/爪一起绕 HOME 转动；线下手动调这三个值对齐数据系与游戏系
 
-  BODY_TYPE: 'dragonBody',               // 龙身「圆柱段」气球类型：黑红程序化几何体（见 enemies.dragonBody）
-  CLAW_TYPE: 'dragonBody',               // 龙爪气球类型（同上，黑红圆柱）
+  BODY_TYPE: 'dragonBody',               // 龙身气球类型：dragonSegment=true → 走 attachDragonSegment 挂 BODY_MODEL(骑士)；noHealthBar（龙用全局血量池，逐节血条多余）
+  CLAW_TYPE: 'dragonBody',               // 龙爪气球类型：同上，attachDragonSegment 挂 CLAW_MODEL(忍者)
   BODY_COUNT: 24,          // ① 龙身总段数（= 圆柱段 + 模型节点 总数；覆盖 JSON 里的 config.bodyCount）
   BODY_SPACING: 15,        // ① 相邻两段之间的「弧长间距」（越大龙身越长；覆盖 JSON 里的 config.bodySpacing）
 
-  NODE_TYPE:  'dragonNode',              // ②/③ 模型节点气球类型（见 enemies.dragonNode）
-  NODE_MODEL: 'Model/基础怪.glb',        // ②/③ 兜底默认模型（NODE_DEFS 里未写 model 时回退到它）
-  // ②/③ 特殊模型节点：显式指定「出现在哪一段 + 用哪个模型 + 缩放 + 三轴旋转」
-  //   at   : 节点所在「身体节号」（1..BODY_COUNT，1 = 紧挨龙头那节，BODY_COUNT = 尾节）
-  //   model: 该节点挂载的小怪 GLB（可选模型见本文件末尾注释）
-  //   scale: 相对身体半径的额外缩放（1.0 = 正常贴合；>1 更大，<1 更小）
-  //   rot  : 三轴旋转 [绕X, 绕Y, 绕Z]（度）——模型节点保持竖直、不沿脊柱倾斜，纯做自身朝向微调
-  // —— 默认 6 个节点（≈ pickEvenly(24,6)），全部用基础怪、scale=1、rot=0，保持原外观 ——
-  NODE_DEFS: [
-    { at: 1,  model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
-    { at: 6,  model: 'Model/忍者.glb', scale: 1.0, rot: [0, 0, 0] },
-    { at: 10, model: 'Model/幽灵.glb', scale: 1.0, rot: [0, 0, 0] },
-    { at: 15, model: 'Model/骑士.glb', scale: 1.0, rot: [0, 0, 0] },
-    { at: 19, model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
-    { at: 23, model: 'Model/基础怪.glb', scale: 1.0, rot: [0, 0, 0] },
-  ],
-  // ③ 可选小怪模型清单（把 NODE_DEFS[].model 换掉即可；挑已跟踪的更稳）：
-  //    Model/基础怪.glb   （默认，已跟踪）
-  //    Model/召唤师.glb   （MODEL_TUNING.scale = 3.0，挂上会明显更大）
-  //    Model/骑士.glb      （scale = 0.5，偏小）
-  //    Model/心形怪.glb   Model/忍者.glb   Model/宝箱.glb   Model/幽灵.glb   Model/章鱼.glb
-  //    Model/龙头.glb      （谨慎：本身就是龙头，套在身上略怪）
-  //    —— 未跟踪、需先 `git add` 才能加载：Model/魔术师.glb、Model/变脸.glb ——
-  //    —— 不推荐（细长/扁平道具经 fitToRadius 归一化会严重变形）：Ak枪/如来神掌/火焰/扇子/喇叭/魔术棒 ——
+  NODE_MODEL: 'Model/基础怪.glb',        // 龙身/龙爪挂模型时的兜底默认模型（attachDragonSegment 的 model 参数缺省时回退；仍被 balloonModels.attachBalloonModel 引用，保留）
   CLAW_NODES: [7, 14],                     // 龙爪生成点（身体节号数组）：每个挂点左右各1爪 → 共4爪；增删挂点只改此数组
+
+  // —— 龙身/龙爪外观（固定，不再轮换）——
+  //   需求：龙身固定为「骑士」模型、龙爪固定为「忍者」模型。
+  //   取舍：此前「龙身轮换忍者」因 24 段全忍者≈24×21.8万≈520万三角面 → PICO4(Adreno XR2) 掉帧；
+  //        现龙身统一骑士(≈4.9万面)、忍者仅 4 爪，合计≈24×4.9万+4×21.8万≈2M 三角面，落在舒适区。
+  //   模型均按身体半径 fitToRadius 归一化（scale 仅抵消 MODEL_TUNING 默认比例），故整条龙尺寸与旧圆柱版一致。
+  BODY_MODEL: 'Model/骑士.glb',   // 龙身统一外观模型（第12关 Boss）
+  CLAW_MODEL: 'Model/忍者.glb',  // 龙爪统一外观模型（第12关 Boss）
+  BODY_HP:    500,               // 龙身每节血量 = 骑士默认血量(500)；24 节合计≈12000 全局血量池（respawns 不回血，打爆即扣固定值）
 
   HEAD_SCALE: 1.0,                        // 龙头模型额外缩放倍率（模型已按包围盒自动贴合身体尺寸，此项做微调）
   HEAD_YAW:   0,                          // 龙头模型自身前向轴修正(度)：在全局旋转之后，lookAt 路径切线时额外绕 Y 旋转
@@ -600,18 +586,22 @@ export const MAGICIAN_BOSS = {
   SCALE: 2.0,                 // 模型基准高度（米）：先按此把 GLB 缩放到 2m，再 ×MODEL_SCALE
   MODEL_SCALE: 5,             // 整体再放大倍数（用户要求缩小一半 → 5 倍 → 最终约 10m 高）
   MODEL_ROTATION: { x: 0, y: 0, z: 0 }, // 模型三轴旋转（度）：x=俯仰 y=偏航 z=翻滚
-  MODEL_POSITION: { x: 0, y: 0, z: 0 }, // 相对命中代理的偏移（米）：x=右 y=上 z=前(朝玩家为 -Z)
+  MODEL_POSITION: { x: 0, y: 0, z: 0 }, // 视觉模型相对「命中代理」的偏移(米)：x=右 y=上 z=前(朝玩家为 -Z)；默认 0=完全贴合代理中心（改此可让模型浮在代理上方/侧方）
   PHASE: {
     INTRO: 10,                // 开场动画时长 s（0-10s）
     LASER: 10,                // 激光阶段 s（第 11-20s）
     GLASS: 10,                // 玻璃墙阶段 s（第 21-30s）
     NINE: 10,                 // 九宫格阶段 s（第 31-40s）
   },
-  // 三个闪现位置（距玩家约 30m）：0=前(-Z) 1=左(-X) 2=右(+X)
+  // —— 生成 / 闪现位置（Boss 命中代理 与 视觉模型都落在此；单位米，坐标相对「玩家出生原点」）——
+  //   坐标约定：[x, y, z]  —— y=离地高度(m)；z 负=玩家正前方(玩家朝 -Z 看向 Boss)、z 正=身后；
+  //                          x 负=玩家左手边(-X)、x 正=右手边(+X)。
+  //   三槽位对应阶段闪现：0=开场·正前(-Z)  1=玻璃墙阶段·闪现左边(-X)  2=九宫格阶段·闪现右边(+X)。
+  //   调「距玩家距离」统一改三个数组的 x/z 绝对值(现 30m)；调「高度」改中间的 y(现 2m)。
   POSITIONS: [
-    [0, 2, -30],
-    [-30, 2, 0],
-    [30, 2, 0],
+    [0, 2, -30],    // 0 · 开场位：玩家正前方 30m（z=-30 朝 Boss）
+    [-30, 2, 0],    // 1 · 玻璃墙阶段：玩家左手边 30m（x=-30）
+    [30, 2, 0],     // 2 · 九宫格阶段：玩家右手边 30m（x=+30）
   ],
 
   // —— 每相位精英召唤（每阶段仅 2 种精英，数量 1/2/1；分帧错峰消费，见 bossMagician._summonElites）——

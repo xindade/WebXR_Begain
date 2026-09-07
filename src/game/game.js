@@ -235,6 +235,8 @@ export class Game {
     this.bullets.clear();        // 防跨关残留子弹误击
     this.hud.clearCountdown();   // 关倒计时显示
     this.world.setSkyMood(lv.mood);
+    // 飞毯显隐：第9关(laserMode='drive' 玻璃走格子)隐藏飞毯、保留脚下玻璃区域；其余关显示飞毯作玩家脚下活动区
+    this.world.carpet?.setVisible(lv.laserMode !== 'drive');
     // ===== 关卡 BGM 选择：先停旧曲，按关卡类型预置，待「穿云结束」后再播 =====
     // 规则①：雾气转场(穿云)期间不播任何语音/音乐 → 一律延迟到 _startLevelAudio()
     this.audio?.stopBGM();

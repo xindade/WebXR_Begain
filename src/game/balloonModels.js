@@ -94,7 +94,10 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
     srcPromise
       .then(({ albedo, depth, frameCount, cols, rows }) => {
         if (!balloon.alive) return; // 加载期间已被打死：不挂
-        const dsSize = radius * 2 * (tune.scale ?? 1) * extraScale;
+        // 敌人整体缩放倍率（enemies.js 的 scale:3 等）：DepthSprite 挂在 scene（非 balloon.mesh），
+        // 不会继承 mesh.scale，故此处手动乘上，保证视觉与 3D 模型怪/基础怪一致地放大。
+        const enemyScale = balloon.effectiveRadius ? balloon.effectiveRadius / radius : 1;
+        const dsSize = radius * 2 * (tune.scale ?? 1) * extraScale * enemyScale;
         const ds = new DepthSprite({ albedo, depth, frameCount, cols, rows, depthScale: DEPTH_SPRITE_SCALE, size: dsSize });
         balloon.mesh.parent.add(ds.mesh);   // 挂到 scene（与 balloon.mesh 平级）
         balloon.depthSprite = ds;
@@ -154,9 +157,11 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
     });
 }
 
-// 脸谱 Boss 专用：移除旧模型并挂载新模型（用于每 10 秒变脸）
+// 脸谱 Boss 专用：移除旧模型并挂载新模型（用于每 10 秒变脸 / 龙身模型轮换）
 // typeId 传 null 确保走 3D GLB 路径（不走 DepthSprite）
-export function swapBalloonModel(balloon, newUrl, radius) {
+// tuningOverride：可选，覆盖 MODEL_TUNING 的 {pos,rot,scale}（如龙身统一 scale:1.0 抵消骑士默认 0.5）
+// extraScale    ：可选，叠加在「自动贴合」之上的额外缩放（龙身逐段 taper 经此传入）
+export function swapBalloonModel(balloon, newUrl, radius, tuningOverride = null, extraScale = 1) {
   // 移除并释放旧模型
   if (balloon.bodyModel) {
     balloon.mesh.remove(balloon.bodyModel);
@@ -167,7 +172,7 @@ export function swapBalloonModel(balloon, newUrl, radius) {
     balloon._modelMats = null;
   }
   // 挂载新模型（模型已在 _cache 中，克隆很快）
-  attachBalloonModel(balloon, newUrl, radius, null, null, 1, null);
+  attachBalloonModel(balloon, newUrl, radius, null, tuningOverride, extraScale, null);
 }
 
 // 预捕获 DepthSprite 数据源：黑阶段留空期提前触发捕获，
@@ -185,10 +190,10 @@ export function preCaptureDepthSprite(url, radius) {
 //   'model'    → 挂模型节点（默认 DRAGON.NODE_MODEL，可被 modelUrl 覆盖），taper*nodeScale 经 extraScale 应用
 //   'cylinder' → 程序化黑红圆柱（黑底炭灰 + 红色发光环），沿本地 Z 躺平，像龙脊椎骨节
 // taper       ：逐段缩放（头粗尾细），由 dragonLevel 按节号传入。
-// modelUrl    ：仅 kind='model' 时生效，覆盖 NODE_MODEL（指向 NODE_DEFS[].model）。
-// tuningOverride：仅 kind='model' 时生效，传给 attachBalloonModel 的 { pos, rot(度) }，rot 做三轴自身旋转。
-// nodeScale   ：仅 kind='model' 时生效，叠加在 taper 之上的额外缩放（指向 NODE_DEFS[].scale）。
-// 注意：dragonBody/dragonNode 气球在 balloons.js 构造时仅隐藏球体，此处由 dragonLevel._spawnBalloons 显式调用。
+// modelUrl    ：仅 kind='model' 时生效，覆盖 NODE_MODEL（龙身固定用 DRAGON.BODY_MODEL=骑士、龙爪固定用 DRAGON.CLAW_MODEL=忍者）。
+// tuningOverride：仅 kind='model' 时生效，传给 attachBalloonModel 的 { pos, rot(度), scale }，scale 抵消各模型 MODEL_TUNING 默认比例。
+// nodeScale   ：仅 kind='model' 时生效，叠加在 taper 之上的额外缩放（本版龙身/龙爪统一传 1.0）。
+// 注意：dragonBody 气球在 balloons.js 构造时仅隐藏球体，此处由 dragonLevel._spawnBalloons 显式调用。
 export function attachDragonSegment(balloon, radius, kind = 'cylinder', taper = 1, modelUrl = null, tuningOverride = null, nodeScale = 1) {
   if (kind === 'model') {
     // 模型节点：异步挂 GLB（命中 preload 缓存，几乎无等待）；taper*nodeScale 作为 extraScale 应用到缩放
