@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from '../../vendor/GLTFLoader.js';
 import { DRACOLoader } from '../../vendor/DRACOLoader.js';
-import { DRAGON, EXPLOSION } from '../core/constants.js';
+import { DRAGON, DRAGON_SUMMON, DRAGON_VOICE, EXPLOSION } from '../core/constants.js';
 import { attachDragonSegment, loadBalloonModel } from './balloonModels.js';
 
 // 第十二关「龙 Boss」
@@ -131,9 +131,17 @@ export class DragonBoss {
     this.dying = false;                 // 死亡连爆阶段（冻结运动）
     this._finale = null;                // 死亡连爆状态机
     this._deathFx = [];                 // 连爆爆炸特效列表
+    this._summonFx = [];                 // 召唤光点列表（龙身 → 落点，落点才生成小兵）
     this.audio = null;                  // 由 game 注入（播放爆炸音效）
     this._t = 0;                        // 全局时间累加（波动/动画用）
     this._revealed = false;             // 是否已揭示：龙身/龙头在「首次 update 摆到脊柱上」前保持隐形，避免开场瞬间龙头停在原点(玩家脚下)被直接看到
+    this._voicePlayed = false;          // 龙 Boss 登场语音是否已播放（仅播一次）
+    this._voiceTimer = 0;               // Boss 开始运动(揭示)后计时(s)，到 DELAY 才播语音
+
+    // 龙 Boss 召唤（每 INTERVAL 秒召唤基础怪 + 忍者；见 _summonMinions）
+    this._summonTimer = 0;                              // 召唤冷却累加(s)
+    this._summonIndex = 0;                             // 已召唤次数（首召=基准 25，之后才走加压规则）
+    this._lastSummonCount = DRAGON_SUMMON.BASE_COUNT;  // 上次实际召唤的基础怪数（加压基数）
 
     // 龙身/龙爪外观固定（BODY_MODEL=骑士 / CLAW_MODEL=忍者），无轮换状态
 
@@ -405,6 +413,13 @@ export class DragonBoss {
       return;
     }
 
+    // —— 龙 Boss 召唤：每 INTERVAL 秒召唤基础怪 + 忍者（见 _summonMinions）——
+    this._summonTimer += dt;
+    if (this._summonTimer >= DRAGON_SUMMON.INTERVAL) {
+      this._summonTimer -= DRAGON_SUMMON.INTERVAL;
+      this._summonMinions();
+    }
+
     // —— 推进弧长（含 pause 冻结）——
     if (this.pauseTimer > 0) {
       this.pauseTimer -= dt;
@@ -487,6 +502,9 @@ export class DragonBoss {
       part.balloon.mesh.position.copy(nodeWorld);
       // 龙爪统一黑红圆柱，沿脊柱躺平
       this._orientAlongSpine(part.balloon.mesh, nodeArc);
+
+    // —— 召唤光点推进（龙身 → 落点，到达才生成小兵）——
+    this._updateSummonFx(dt);
     }
 
     // —— 首次 update：龙身/龙头已摆到脊柱正确位置，此时才揭示（开场隐形，避免龙头停原点被看到）——
@@ -497,10 +515,119 @@ export class DragonBoss {
       for (const p of this.clawParts) if (p.balloon.mesh) p.balloon.mesh.visible = true;
     }
 
+    // —— 龙 Boss 登场语音：Boss 揭示(开始运动)后延迟 DELAY 秒启动（LOOP=true 则循环，直到死亡/切关停止）——
+    if (DRAGON_VOICE.ENABLED && !this._voicePlayed && this._revealed) {
+      this._voiceTimer += dt;
+      if (this._voiceTimer >= DRAGON_VOICE.DELAY) {
+        if (DRAGON_VOICE.LOOP) this.audio?.playLoopVoice(DRAGON_VOICE.URL, DRAGON_VOICE.VOLUME);
+        else this.audio?.playVoice(DRAGON_VOICE.URL, DRAGON_VOICE.VOLUME);
+        this._voicePlayed = true;
+      }
+    }
+
     // —— 通关判定：仅死亡连爆结束后由 _updateFinale 置 cleared（打爆即复活，故不以全灭判定）——
     let alive = 0;
     for (const b of this.allParts) if (b.alive) alive++;
     this.aliveCount = alive;
+  }
+
+  // ── 龙 Boss 召唤：每 INTERVAL 秒召唤基础怪 + 忍者 ──
+  _summonMinions() {
+    const S = DRAGON_SUMMON;
+    // 统计场上基础怪数量（排除龙身/龙爪部件：部件 behavior 也是 'basic' 但 isDragonPart=true）
+    let field = 0;
+    const list = this.balloons.list;
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      if (b.alive && !b.isDragonPart && b.behavior === 'basic') field++;
+    }
+    // 召唤数量：首召=基准；之后若场上 < LOW_THRESHOLD（玩家清得快）则在上次数量 +RAMP_ADD 加压，否则回基准
+    let n;
+    if (this._summonIndex === 0) n = S.BASE_COUNT;
+    else if (field < S.LOW_THRESHOLD) n = this._lastSummonCount + S.RAMP_ADD;
+    else n = S.BASE_COUNT;
+    n = Math.min(n, S.MAX_BASIC);            // 保护 PICO：硬上限截断（设更大/Infinity 解除）
+    this._lastSummonCount = n;
+    this._summonIndex++;
+
+    // 基础怪 ×n（出生在 10~15m 随机方向环带）
+    let _idx = 0;
+    const emit = (type) => {
+      const ang = Math.random() * Math.PI * 2;
+      const r = S.RING_MIN + Math.random() * (S.RING_MAX - S.RING_MIN);
+      const to = new THREE.Vector3(Math.cos(ang) * r, S.SPAWN_Y, Math.sin(ang) * r);
+      this._emitSummonFx(type, to, _idx++);
+    };
+    for (let i = 0; i < n; i++) emit('basic');
+    // 每次召唤必带忍者（出生在环带内；之后由 balloons._clampToRing 维持 ≥RING_MIN，遵守不靠近 10m 内）
+    for (let i = 0; i < S.NINJA_PER_SUMMON; i++) emit('ninja');
+  }
+
+  // —— 召唤光点：从最近龙身部件飞出光点到落点，到达才生成小兵 ——
+  // 视觉意图：小兵不是从环带凭空冒出，而是龙 Boss"扔下"的——光点从龙身射向落点，落地化形为怪。
+  _emitSummonFx(type, to, idx) {
+    if (!DRAGON_SUMMON.BEAM.ENABLED) { this.balloons.spawn(type, to.clone()); return; } // 开关关 → 直接生成
+    const B = DRAGON_SUMMON.BEAM;
+    const from = this._pickBodySource(to);   // 最近的存活龙身部件世界坐标
+    from.y += B.Y_OFFSET;                    // 从龙身"上方/口部"飞出更明显
+    const dur = THREE.MathUtils.clamp(from.distanceTo(to) / B.SPEED, 0.25, 1.2);
+    const mesh = this._makeSummonBeam();
+    mesh.position.copy(from);
+    this.scene.add(mesh);
+    this._summonFx.push({ type, to: to.clone(), from, mesh, dur, t: dur, delay: idx * B.STAGGER });
+  }
+
+  // 选最近的存活龙身部件（无则龙头，再无则落点兜底），作为光点出发点
+  _pickBodySource(to) {
+    let best = null, bestD = Infinity;
+    const v = new THREE.Vector3();
+    for (const p of this.bodyParts) {
+      if (!p.balloon.alive || !p.balloon.mesh) continue;
+      p.balloon.mesh.getWorldPosition(v);
+      const d = v.distanceToSquared(to);
+      if (d < bestD) { bestD = d; best = v.clone(); }
+    }
+    if (!best && this.headGroup) { this.headGroup.getWorldPosition(v); best = v.clone(); }
+    return best || to.clone();
+  }
+
+  // 光点 mesh：小球 + AdditiveBlending 发光（与传送门出怪光点同款风格）
+  _makeSummonBeam() {
+    const B = DRAGON_SUMMON.BEAM;
+    return new THREE.Mesh(
+      new THREE.SphereGeometry(B.SIZE, 10, 8),
+      new THREE.MeshBasicMaterial({ color: B.COLOR, transparent: true, opacity: B.OPACITY, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+  }
+
+  // 每帧推进召唤光点（非死亡阶段跑；光点落地才生成小兵）
+  _updateSummonFx(dt) {
+    for (let i = this._summonFx.length - 1; i >= 0; i--) {
+      const it = this._summonFx[i];
+      if (it.delay > 0) { it.delay -= dt; continue; }   // 还没出发：停在龙身（脉动由下方 scale 处理）
+      it.t -= dt;
+      if (it.t <= 0) {                                   // 到达落点：化形为小兵
+        it.mesh.position.copy(it.to);
+        this.balloons.spawn(it.type, it.to.clone());
+        this._removeBeam(it.mesh);
+        this._summonFx.splice(i, 1);
+      } else {                                           // 飞行中：smoothstep 插值 + 轻微脉动
+        const k = 1 - it.t / it.dur;
+        const e = k * k * (3 - 2 * k);
+        it.mesh.position.set(
+          it.from.x + (it.to.x - it.from.x) * e,
+          it.from.y + (it.to.y - it.from.y) * e,
+          it.from.z + (it.to.z - it.from.z) * e
+        );
+        it.mesh.scale.setScalar(1 + 0.3 * Math.sin(k * Math.PI * 4));
+      }
+    }
+  }
+
+  _removeBeam(mesh) {
+    this.scene.remove(mesh);
+    mesh.geometry.dispose();
+    mesh.material.dispose();
   }
 
   // 蛇形波动偏移：沿龙身流动的侧向摆动 + 轻微起伏（世界空间）
@@ -527,7 +654,16 @@ export class DragonBoss {
   // 血量清零 → 进入死亡连爆阶段（冻结运动）
   _startDeath() {
     this.audio?.stopBGM(); // 龙 Boss 死亡即停背景音乐（龙Boss.wav），转场/选项卡不再续播
+    this.audio?.stopLoopVoice(); // 龙 Boss 死亡即停登场循环语音（氛围音不续播）
     this.dying = true;
+    // 清场：中止进行中的召唤光点（其落点生成的小兵不再出现），避免死亡后还冒出新兵
+    for (const it of this._summonFx) if (it.mesh) this._removeBeam(it.mesh);
+    this._summonFx = [];
+    // 清场：龙 Boss 死亡即清除全部被召唤小怪（基础怪/忍者），仅保留龙身/龙爪部件留待连爆演出
+    for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+      const b = this.balloons.list[i];
+      if (!b.isDragonPart) this.balloons.remove(b); // 非龙部件的小怪直接移除（含 dispose 光球/立绘/DepthSprite）
+    }
     // 顺序：龙尾(i 大) → 龙头(i 小)，最后龙爪
     const order = [...this.bodyParts]
       .sort((a, b) => b.i - a.i)
@@ -564,7 +700,10 @@ export class DragonBoss {
         this.headGroup.visible = false; // 龙头也炸完 → 消失
         this.cleared = true;            // 触发 game._enterCard（选项卡）
         // 清理残留特效，避免进入选项卡后还残留冻结的爆炸球
-        for (const fx of this._deathFx) {
+        // 清理召唤光点（若有残留）
+    for (const it of this._summonFx) if (it.mesh) this._removeBeam(it.mesh);
+    this._summonFx = [];
+    for (const fx of this._deathFx) {
           this.scene.remove(fx.mesh);
           fx.mesh.geometry.dispose();
           fx.mesh.material.dispose();
@@ -622,6 +761,7 @@ export class DragonBoss {
     this._respawns = [];
     this._finale = null;
     this.dying = false;
+    this.audio?.stopLoopVoice(); // 切关/退出：停止仍在播的龙 Boss 循环语音
     this.cleared = false;
 
     // 移除龙头：龙头模型是预览预加载的共享缓存（_headGltf），只从 headGroup 摘下，

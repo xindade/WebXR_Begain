@@ -139,6 +139,8 @@ export class Game {
     this._tmp2 = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
     this._camPos = new THREE.Vector3(); // 每帧刷新相机世界坐标，供 2D 立绘薄板命中(法线=朝相机)
+    this.attackBonus = 0;       // 死亡重开攻击力加成（每次 +50，可累计）；归零于 start()/toMenu()
+    this._attackHint = null;    // 面前 2m 文字提示精灵（攻击力 +50），2 秒后淡出
   }
 
   setSystems(audio, input, wristUI = null, pageLog = null) {
@@ -174,6 +176,8 @@ export class Game {
     this.hud.setHp(this.player.hp, this.player.maxHp);
     this.audio?.unlock();
     this._clearExplosions();
+    this.attackBonus = 0;     // 新一局：攻击力加成重置，从 0 重新累计
+    this._clearAttackHint();  // 清残留攻击力提示
     this.log('游戏开始');
     this._loadLevel(this.levelIndex);
     this.state = 'playing';
@@ -206,6 +210,8 @@ export class Game {
     // 重置数值
     this.player.reset();
     this.score = 0;
+    this.attackBonus = 0;     // 回菜单清零攻击力加成
+    this._clearAttackHint();  // 清残留攻击力提示
     this.levelIndex = 0;
     this.gridPhase = false;
     this.flipPhase = false; this.flipTimer = 0;
@@ -376,6 +382,7 @@ export class Game {
 
     if (lv.boss === 'dragon') {
       addUrl(DRAGON.HEAD_MODEL);                  // 第12关龙 Boss 龙头 GLB（未被 main 预载）
+      addType('basic');  addType('ninja');       // 龙 Boss 召唤用基础怪/忍者 GLB + DepthSprite 立绘：进关预载，避免首召冷加载卡顿
     } else if (!isBoss(lv) && !isLaser(lv)) {
       // 普通/危机关（waves）：收集所有可能出怪类型
       const types = new Set();
@@ -484,6 +491,7 @@ export class Game {
     this.leftSword.update(dt, this.input);        // 左手柄激光剑（VR 手持，桌面忽略）
     this._updateBuddhaFx(dt);
     this._updateExplosions(dt);
+    this._updateAttackHint(dt);   // 推进攻击力提示淡出/移除（2 秒后消失）
 
     if (this.state === 'playing') this._updatePlaying(dt);
     else if (this.state === 'card') this._updateCard(dt);
@@ -1227,8 +1235,69 @@ export class Game {
     // 不调 _clearExplosions()：让死亡爆炸特效在 0.4s 内自然消亡
     this.rig.position.set(0, 0, 0);
     this._loadLevel(this.levelIndex); // 会重新拍快照（恢复后的状态）
+    // 死亡重开：攻击力加成 +50（可累计叠加），立即生效并弹面前 2m 文字提示
+    this.attackBonus += 50;
+    this.player.atk = 100 + this.attackBonus;
+    this._showAttackHint();
     this.hud.setScore(this.score);
     this.hud.setHp(this.player.hp, this.player.maxHp);
+  }
+
+  // 死亡重开文字提示：玩家面前 2m（相机视线方向）处悬浮文字「攻击力 +50」，2 秒后淡出消失。
+  _clearAttackHint() {
+    const h = this._attackHint;
+    if (!h) return;
+    if (this.world && this.world.scene) this.world.scene.remove(h.sprite);
+    h.sprite.material.map?.dispose();
+    h.sprite.material.dispose();
+    this._attackHint = null;
+  }
+
+  _showAttackHint() {
+    this._clearAttackHint();   // 先清旧提示，避免快速连续死亡叠加多个精灵
+    if (!this.world || !this.world.camera || !this.world.scene) return;
+    const cam = this.world.camera;
+    const fwd = new THREE.Vector3();
+    cam.getWorldDirection(fwd); fwd.negate(); fwd.y = 0; // 相机朝向前方（水平）；与抽卡卡牌同款「面前」算法
+    if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1);
+    fwd.normalize();
+    const pos = cam.getWorldPosition(new THREE.Vector3());
+    pos.addScaledVector(fwd, 2.0);          // 面前 2m
+    pos.y = Math.max(pos.y, 1.4);           // 抬到视线高度，便于看清
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 256;
+    const x = c.getContext('2d');
+    x.fillStyle = 'rgba(0,0,0,0.55)'; x.fillRect(0, 0, 512, 256);
+    x.strokeStyle = '#ffd166'; x.lineWidth = 6; x.strokeRect(8, 8, 496, 240);
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillStyle = '#ffd166'; x.font = 'bold 80px sans-serif';
+    x.fillText('攻击力 +50', 256, 100);
+    x.fillStyle = '#ffffff'; x.font = 'bold 44px sans-serif';
+    x.fillText('当前 ' + this.player.atk, 256, 185);
+    const tex = new THREE.CanvasTexture(c);
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
+    const sp = new THREE.Sprite(mat);
+    sp.scale.set(2.0, 1.0, 1);
+    sp.position.copy(pos);
+    sp.renderOrder = 1000;
+    this.world.scene.add(sp);
+    this._attackHint = { sprite: sp, t: 0, life: 2.0 };
+  }
+
+  // 每帧推进攻击力提示的淡出/移除（2 秒后消失）
+  _updateAttackHint(dt) {
+    const h = this._attackHint;
+    if (!h) return;
+    h.t += dt;
+    const k = 1 - h.t / h.life;
+    if (k <= 0) {
+      this.world.scene.remove(h.sprite);
+      h.sprite.material.map?.dispose();
+      h.sprite.material.dispose();
+      this._attackHint = null;
+    } else {
+      h.sprite.material.opacity = k;
+    }
   }
 
   _enterCard() {
