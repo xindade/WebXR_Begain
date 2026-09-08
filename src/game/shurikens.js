@@ -53,11 +53,10 @@ export class ShurikenManager {
   setOnHit(fn) { this._onHit = fn; }
   setAudio(a) { this._audio = a; }
 
-  // originPos：忍者气球世界坐标；targetPos：玩家世界坐标（多为头部/rig 位置）
+  // originPos：手里剑出生点（调用方已算到忍者头顶）；targetPos：玩家世界坐标（多为头部/rig 位置）
   spawn(originPos, targetPos) {
     const mesh = new THREE.Mesh(this._geo, this._mat);
-    // 头顶 1 米生成
-    mesh.position.set(originPos.x, originPos.y + 1.0, originPos.z);
+    mesh.position.copy(originPos); // 出生点由调用方决定（忍者头顶）
     mesh.lookAt(targetPos.x, targetPos.y, targetPos.z); // 面朝飞行方向，自旋绕本地 Z 才有「掷星」观感
     const dir = this._dir.copy(targetPos).sub(mesh.position);
     if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);

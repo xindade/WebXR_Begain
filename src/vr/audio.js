@@ -35,6 +35,7 @@ export class AudioManager {
     this.nextStepTime = 0;        // 下一个待排音符绝对时间
     this._bgmEl = null;           // 文件语音/音效的 HTMLAudioElement（playVoice 创建）
     this._bgmUrl = null;
+    this._loopVoiceEl = null;     // 循环语音元素（playLoopVoice 创建，stopLoopVoice 停止）
     this._unlocked = false;
     this._bgmVol = 1.0;       // 当前曲目 BGM 音量倍率（= BGM_VOLUME[track]），由 startBGM/_onBar 更新
     this._laserHums = {};     // 激光嗡鸣实例表：key('sword'|'level') → {osc,osc2,g,lfo}；按 key 独立开关
@@ -763,6 +764,26 @@ export class AudioManager {
     el.volume = volume;
     el.play().catch(() => {});
     return el;
+  }
+
+  // 循环语音（如龙 Boss 登场咆哮氛围音）：loop=true，需手动 stopLoopVoice 停止
+  playLoopVoice(url, volume = 1) {
+    if (!url) return null;
+    this.stopLoopVoice();                 // 先停上一个，避免叠加
+    const el = new Audio(url);
+    el.preload = 'auto';
+    el.loop = true;
+    el.volume = volume;
+    el.play().catch(() => {});
+    this._loopVoiceEl = el;
+    return el;
+  }
+
+  stopLoopVoice() {
+    if (this._loopVoiceEl) {
+      try { this._loopVoiceEl.pause(); this._loopVoiceEl.src = ''; } catch (e) { /* 忽略 */ }
+      this._loopVoiceEl = null;
+    }
   }
 
   _stopBgmEl() {

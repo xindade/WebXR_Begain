@@ -28,6 +28,7 @@ const _moveDir   = new THREE.Vector3();   // update() 朝玩家方向（每怪�
 const _camPos    = new THREE.Vector3();   // update() 血条 lookAt 的相机世界坐标
 const _shieldSp  = new THREE.Vector3();   // getShieldBlock() 盾牌世界坐标
 const _shieldCt  = new THREE.Vector3();   // getShieldBlock() 气球中心世界坐标
+const _orbTmp    = new THREE.Vector3();   // 忍者蓄力光球定位临时量（_updateChargeOrb 复用，消除每帧 new 的 GC 压力）
 
 class Balloon {
   constructor(typeId, opts = null) {
@@ -101,8 +102,12 @@ class Balloon {
       this._lifespan = t.lifespan || 10;
       this._killsDuringLife = 0;
     }
-    // 忍者怪：闪现计时
-    if (t.behavior === 'ninja') this._blinkTimer = Math.random() * (t.blinkInterval || 3);
+    // ninja lifecycle: 出现→蓄力→投掷→闪现（全局统一，非龙Boss专属）
+    if (t.behavior === 'ninja') {
+      this._ninjaPhase = 'appear';
+      this._ninjaTimer = 0;
+      this._chargeOrb = null;
+    }
     // 宝箱怪：跳跳计时
     if (t.behavior === 'chest') this._hopTimer = Math.random() * (t.hopInterval || 2);
 
@@ -299,17 +304,39 @@ class Balloon {
         this.mesh.position.z = THREE.MathUtils.clamp(target.z + Math.sin(a) * r, -8, 8);
       }
     }
-    // 忍者怪：闪现（3秒一次）。龙形 Boss 的组成忍者(isDragonPart)跳过，由龙逐帧接管位置。
-    // 闪现目标落在「朝向玩家、但距中心 10~15m 环带内」的随机点（与移动约束一致，避免闪到环带外）。
-    if (t.behavior === 'ninja' && !this.isDragonPart) {
-      this._blinkTimer += dt;
-      if (this._blinkTimer >= (t.blinkInterval || 3)) {
-        this._blinkTimer = 0;
-        const ang = Math.atan2(target.z, target.x) + (Math.random() - 0.5) * 1.2;
-        const r = SHURIKEN.RANGE_MIN + Math.random() * (SHURIKEN.RANGE_MAX - SHURIKEN.RANGE_MIN);
-        this.mesh.position.x = Math.cos(ang) * r;
-        this.mesh.position.z = Math.sin(ang) * r;
-        // 手里剑抛射改由 BalloonManager 全局冷却统一投掷（仅最靠近玩家的一个忍者投），见 update()
+    // 忍者怪：生命周期状态机（全局统一，非龙Boss关专属）。
+    // 出现(APPEAR秒) → 蓄力(CHARGE秒, 头顶显示蓄力光球) → 投掷(仅最近忍者) → 等待(BLINK_DELAY秒) → 闪现 → 回到蓄力。
+    // 龙形 Boss 的组成忍者(isDragonPart)与受控忍者(controlled)跳过，由龙逐帧接管位置。
+    if (t.behavior === 'ninja' && !this.isDragonPart && !this.controlled) {
+      this._ninjaTimer += dt;
+      const S = SHURIKEN;
+      switch (this._ninjaPhase) {
+        case 'appear':  // 出现期：仅存在，不蓄力/不投掷/不闪现
+          if (this._ninjaTimer >= S.APPEAR) { this._ninjaPhase = 'charge'; this._ninjaTimer = 0; this._showChargeOrb(true); }
+          break;
+        case 'charge':  // 蓄力期：头顶光球渐大脉动；结束即投掷（仅最近忍者真正投出）
+          this._updateChargeOrb(dt);
+          if (this._ninjaTimer >= S.CHARGE) {
+            if (this.manager && this.manager.isNearestNinja(this) && this.manager.shurikens && this.manager._playerPos) {
+              const hy = this.mesh.position.y + 1.0 * (this.mesh.scale.x || 1) + 0.3; // 头顶高度（按模型缩放）
+              this.manager.shurikens.spawn(new THREE.Vector3(this.mesh.position.x, hy, this.mesh.position.z), this.manager._playerPos);
+            }
+            this._showChargeOrb(false);
+            this._ninjaPhase = 'post'; this._ninjaTimer = 0;
+          }
+          break;
+        case 'post':    // 投掷后等待期：BLINK_DELAY 秒后开始闪现
+          if (this._ninjaTimer >= S.BLINK_DELAY) { this._ninjaPhase = 'blink'; this._ninjaTimer = 0; }
+          break;
+        case 'blink':   // 闪现：瞬移到「朝向玩家、距中心 10~15m 环带内」随机点，然后回到蓄力
+          {
+            const ang = Math.atan2(target.z, target.x) + (Math.random() - 0.5) * 1.2;
+            const r = S.RANGE_MIN + Math.random() * (S.RANGE_MAX - S.RANGE_MIN);
+            this.mesh.position.x = Math.cos(ang) * r;
+            this.mesh.position.z = Math.sin(ang) * r;
+          }
+          this._ninjaPhase = 'charge'; this._ninjaTimer = 0;
+          break;
       }
     }
     // 幽灵怪：隐身，仅自身蓄力攻击(最后 charge 秒)时显形并可被击中
@@ -345,7 +372,41 @@ class Balloon {
     else if (d > max) { const s = max / d; this.mesh.position.x *= s; this.mesh.position.z *= s; }
   }
 
+  // 蓄力光球：场景级小球，悬于忍者头顶上方，蓄力时渐大脉动，直观表现「手里剑蓄力」。
+  // 场景级（非 mesh 子节点）可避开父节点可见性（DepthSprite 模式主体不可见）影响。
+  _showChargeOrb(on) {
+    if (on) {
+      if (!this._chargeOrb && this.manager) {
+        const R = SHURIKEN.SIZE * 1.5;
+        const g = new THREE.SphereGeometry(R, 12, 10);
+        const m = new THREE.MeshBasicMaterial({ color: 0x66ccff, transparent: true, opacity: 0.85, depthWrite: false });
+        this._chargeOrb = new THREE.Mesh(g, m);
+        this._chargeOrb.renderOrder = 998;
+        this.manager.scene.add(this._chargeOrb);
+      }
+      if (this._chargeOrb) this._chargeOrb.visible = true;
+    } else if (this._chargeOrb) {
+      this._chargeOrb.visible = false;
+    }
+  }
+
+  _updateChargeOrb(dt) {
+    if (!this._chargeOrb || !this._chargeOrb.visible) return;
+    const p = this.mesh.getWorldPosition(_orbTmp);
+    const top = 1.2 * (this.mesh.scale.x || 1) + 0.3; // 头顶上方（按模型缩放）
+    this._chargeOrb.position.set(p.x, p.y + top, p.z);
+    const k = 0.4 + 0.6 * Math.min(1, this._ninjaTimer / Math.max(0.001, SHURIKEN.CHARGE)); // 随蓄力进度放大
+    const pulse = 1 + 0.15 * Math.sin(this._ninjaTimer * 18);                                // 脉动
+    this._chargeOrb.scale.setScalar(k * pulse);
+  }
+
   dispose() {
+    if (this._chargeOrb) {
+      this.manager?.scene?.remove(this._chargeOrb);
+      this._chargeOrb.geometry.dispose();
+      this._chargeOrb.material.dispose();
+      this._chargeOrb = null;
+    }
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();
     if (this.bodyModel) {
@@ -393,14 +454,30 @@ export class BalloonManager {
     this._sepVec = new THREE.Vector3();
     this.depthDebug = false; // DepthSprite 深度调试：按 D 切换（中心亮=凸、边缘亮=凹）
     this.shurikens = null;   // 手里剑管理器（由 game.js 注入）；非空时启用忍者投掷
-    this._shurikenCd = 0;    // 全局投掷冷却计时(秒)
+    this._playerPos = null;  // 每帧玩家位置（update 注入），供「最近忍者」判定
   }
 
   setShurikenManager(m) { this.shurikens = m; }
 
+  // 最近忍者判定：在「所有非龙部件/非受控/存活的 ninja」中，返回距玩家最近者。
+  // 用于保证「有且只有最靠近玩家的忍者投掷手里剑」（其余忍者不投）。
+  isNearestNinja(b) {
+    if (!b || b.behavior !== 'ninja' || b.isDragonPart || b.controlled || !b.alive) return false;
+    const pp = this._playerPos;
+    if (!pp) return false;
+    let best = b, bestD = b.mesh.position.distanceToSquared(pp);
+    for (const o of this.list) {
+      if (o === b || o.behavior !== 'ninja' || o.isDragonPart || o.controlled || !o.alive) continue;
+      const d = o.mesh.position.distanceToSquared(pp);
+      if (d < bestD) { bestD = d; best = o; }
+    }
+    return best === b;
+  }
+
   spawn(typeId, position, opts = null) {
     const b = new Balloon(typeId, opts);
     b.mesh.position.copy(position);
+    b.manager = this;        // 供忍者反查管理器（最近判定 / 投掷）
     this.scene.add(b.mesh);
     this.list.push(b);
     return b;
@@ -414,6 +491,7 @@ export class BalloonManager {
   }
 
   update(dt, target, camera, opts = {}) {
+    this._playerPos = target;   // cache player pos for nearest-ninja check
     const freezeNormal = !!opts.freezeNormal;
     const freezeBoss   = !!opts.freezeBoss;
     for (const b of this.list) {
@@ -426,26 +504,6 @@ export class BalloonManager {
     this._applySeparation();
     this._applyHealAura(dt);
 
-    // 手里剑全局投掷：冷却到点后，只让最靠近玩家的一个忍者投掷（其余忍者不投）。
-    // 龙形 Boss 的组成忍者(isDragonPart/controlled)与死亡忍者不参与。
-    // 冻结态(freezeNormal/freezeBoss)暂停投掷，避免「定身咒/Boss 阶段」期间仍乱飞。
-    if (this.shurikens && !freezeNormal && !freezeBoss) {
-      this._shurikenCd -= dt;
-      if (this._shurikenCd <= 0) {
-        let best = null, bestD = Infinity;
-        for (const b of this.list) {
-          if (b.behavior !== 'ninja' || b.isDragonPart || b.controlled || !b.alive) continue;
-          const d = b.mesh.position.distanceToSquared(target);
-          if (d < bestD) { bestD = d; best = b; }
-        }
-        if (best) {
-          this.shurikens.spawn(best.mesh.position, target);
-          this._shurikenCd = SHURIKEN.INTERVAL; // 投出 → 进入冷却
-        } else {
-          this._shurikenCd = 0; // 场上无可用忍者：下一帧立即重试（命中即投，不空耗冷却）
-        }
-      }
-    }
   }
 
   // 心型怪治疗光环：每秒为 healRadius 内的其他敌人恢复 healAura 血量

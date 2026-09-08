@@ -212,6 +212,9 @@ export const SHURIKEN = {
   SIZE:       0.18,  // 手里剑外接半径（米）：视觉尺寸
   RANGE_MIN:  10.0,  // 忍者可活动环带内界（米）：距中心点 ≥ 此值
   RANGE_MAX:  15.0,  // 忍者可活动环带外界（米）：距中心点 ≤ 此值
+  APPEAR:      3.0,  // 忍者出现后静止时长（秒）：此期间不蓄力/不投掷/不闪现
+  CHARGE:      2.0,  // 手里剑蓄力时长（秒）：蓄力时头顶显示蓄力光球，结束即投掷
+  BLINK_DELAY: 1.0,  // 投掷后到开始闪现的间隔（秒）：即「扔出去 1 秒后再开始闪现」
 };
 
 // Boss 关程序化 BGM 升压参数（见 src/vr/audio.js _stepBoss + game.js _updateBossIntensity）
@@ -449,6 +452,45 @@ export const DRAGON = {
   MOVE_AMP: 0.18,                         // 移动时蛇形波动幅度(m)：更细微的流动感
   IDLE_FREQ: 2.2,                         // 蛇形波动频率
   PHASE_STEP: 0.55,                       // 每节相位差(弧度)：使波形沿龙身从头流到尾
+};
+
+// ============================================================
+// 龙 Boss 召唤（dragonLevel.js → DragonBoss._summonMinions 引用）
+//   每 INTERVAL 秒召唤 BASE_COUNT 个基础怪 + NINJA_PER_SUMMON 个忍者；
+//   若场上基础怪 < LOW_THRESHOLD（玩家清得快）→ 在上次召唤数 + RAMP_ADD 加压；
+//   出生点：以世界原点(飞毯)为中心、半径 RING_MIN~RING_MAX 随机方向；忍者由 balloons._clampToRing 维持 ≥RING_MIN。
+// ============================================================
+export const DRAGON_SUMMON = {
+  INTERVAL: 10,             // 召唤周期(s)：每 10 秒一次
+  BASE_COUNT: 12,           // 基准基础怪数量（场上 ≥ LOW_THRESHOLD 时）
+  RAMP_ADD: 5,             // 场上 < LOW_THRESHOLD 时，在上次召唤数上 +10（加压）
+  LOW_THRESHOLD: 5,         // 场上基础怪低于此值 → 触发加压
+  MAX_BASIC: 50,           // 单次召唤基础怪硬上限(保护 PICO)：设更大或 Infinity 解除
+  NINJA_PER_SUMMON: 1,      // 每次召唤必带忍者数（遵守不靠近 10m 内）
+  RING_MIN: 10,             // 出生环带内半径(m)：距中心 ≥10 才出现
+  RING_MAX: 15,             // 出生环带外半径(m)
+  SPAWN_Y: 1.5,
+  // 召唤光点：被召唤小兵不从环带凭空出现，而是从最近龙身部件飞出光点、落点才生成（"龙 Boss 扔下小兵"观感）
+  BEAM: {
+    ENABLED: true,    // 总开关：false → 直接生成（无光点）
+    SPEED:   22,      // 光点飞行速度(m/s)：源在龙身、目标 10~15m 外 → 时长 ~0.5~0.7s
+    SIZE:    0.16,    // 光点球体半径(m)
+    COLOR:   0xffd24a,// 光点颜色（金黄，呼应龙 Boss 主题）
+    OPACITY: 0.95,    // 不透明度（AdditiveBlending 叠加发光）
+    STAGGER: 0.04,    // 每只光点出发间隔(s)：形成从龙身连续抛出的流
+    Y_OFFSET: 1.2,    // 光点起点相对龙身位置上抬(m)：从龙身"上方/口部"飞出更明显
+  },             // 出生高度(m)：与常规气球(1~3.5)一致
+};
+
+// ============================================================
+// 龙 Boss 登场语音（dragonLevel.js → DragonBoss.update 在 Boss 开始运动(揭示)后延迟播放一次）
+// ============================================================
+export const DRAGON_VOICE = {
+  ENABLED: true,                  // 是否播放龙 Boss 登场语音（关 → 不播）
+  LOOP:    true,                  // 是否循环播放：true=作为 Boss 战氛围音持续循环，直到死亡/切关停止；false=只播一次
+  URL:     'music/龙Boss.wav',    // 语音文件（相对 index.html；放在 music/ 下）
+  VOLUME:  1.0,                   // 音量(0~1)：默认满音量，觉得吵可调小
+  DELAY:   0.6,                   // Boss 开始运动(揭示)后延迟播放(秒)：出场→吼叫的先后感
 };
 
 // ============================================================
@@ -852,6 +894,9 @@ const _OVERRIDES = [
   ['INPUT', INPUT, USER_CONFIG.INPUT],
   ['TEST', TEST, USER_CONFIG.TEST],
   ['BGM_VOLUME', BGM_VOLUME, USER_CONFIG.BGM_VOLUME],
+  ['SHURIKEN',       SHURIKEN,       USER_CONFIG.SHURIKEN],
+  ['DRAGON_SUMMON', DRAGON_SUMMON, USER_CONFIG.DRAGON_SUMMON],
+  ['DRAGON_VOICE', DRAGON_VOICE, USER_CONFIG.DRAGON_VOICE],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

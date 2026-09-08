@@ -173,6 +173,42 @@ export const USER_CONFIG = {
     SIZE:       0.18,  // 视觉外接半径（米）
     RANGE_MIN:  10.0,  // 忍者活动环带内界（米）
     RANGE_MAX:  15.0,  // 忍者活动环带外界（米）
+    APPEAR:      3.0,  // 忍者出现静止时长（秒）
+    CHARGE:      2.0,  // 手里剑蓄力时长（秒）
+    BLINK_DELAY: 1.0,  // 投掷后到闪现的间隔（秒）
+  },
+
+  // ==================== 龙 Boss 召唤（dragonLevel.js） ====================
+  // 与 constants.DRAGON_SUMMON 同名；改这里刷新即生效，不用动源码。详见 constants.js 注释。
+  DRAGON_SUMMON: {
+    INTERVAL:   10.0,  // 召唤周期（秒）：每 10 秒一次
+    BASE_COUNT: 12,    // 基准基础怪数量（场上 ≥ LOW_THRESHOLD 时）
+    RAMP_ADD: 5,    // 场上 < LOW_THRESHOLD 时，在上次召唤数上 +10（加压）
+    LOW_THRESHOLD: 5,  // 场上基础怪低于此值 → 触发加压
+    MAX_BASIC: 50,   // 单次召唤基础怪硬上限(保护 PICO)：设更大或 Infinity 解除
+    NINJA_PER_SUMMON: 1, // 每次召唤必带忍者数（遵守不靠近 10m 内）
+    RING_MIN:   10.0,  // 出生环带内半径（米）：距中心 ≥10 才出现
+    RING_MAX:   15.0,  // 出生环带外半径（米）
+    SPAWN_Y:    1.5,
+    // 召唤光点（详见 constants.DRAGON_SUMMON.BEAM 注释）；改这里刷新即生效
+    BEAM: {
+      ENABLED: true,    // 总开关：false → 直接生成（无光点）
+      SPEED:   22,      // 光点飞行速度（米/秒）
+      SIZE:    0.16,    // 光点球体半径（米）
+      COLOR:   0xffd24a,// 光点颜色（金黄）
+      OPACITY: 0.95,    // 不透明度
+      STAGGER: 0.04,    // 每只光点出发间隔（秒）：连续抛出的流
+      Y_OFFSET: 1.2,    // 光点起点相对龙身位置上抬（米）
+    },   // 出生高度（米）：与常规气球(1~3.5)一致
+  },
+
+  // ==================== 龙 Boss 登场语音 ====================
+  DRAGON_VOICE: {
+    ENABLED: true,                // 是否播放龙 Boss 登场语音（关 → 不播）
+    LOOP:    true,                // 是否循环播放：true=持续循环到死亡/切关；false=只播一次
+    URL:     'music/龙Boss.wav',  // 语音文件（相对 index.html；放在 music/ 下）
+    VOLUME:  1.0,                 // 音量(0~1)：默认满音量，觉得吵可调小
+    DELAY:   0.6,                 // Boss 开始运动(揭示)后延迟播放(秒)
   },
 
   // ==================== 如来神掌（大招） ====================
