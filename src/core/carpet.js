@@ -13,8 +13,8 @@ const CARPET_D = MOVE.BOUND_Z * 2;   // 纵深(Z，沿飞行前进方向) = 2×4
 const BASE_AMP = 0.16;               // 波纹基础幅度（与滑块相乘）
 const REF_LEN  = 2.0;                // 调参时的参考纵深（当初把幅度调成 0.5 时的纵深）
 const AMP_SCALE = CARPET_D / REF_LEN; // 8/2 = 4：幅度随尺寸等比，大尺寸才"看得动"
-const AMP_SLIDER = 0.5;              // 运行时幅度倍率（文档已确认 0.5）
-const FOOT_OFFSET = 0.0;             // 地毯平面基准高度（玩家 rig 在 y=0，脚底即贴毯面）
+const AMP_SLIDER = 0.5 / 3;          // 运行时幅度倍率：原确认值 0.5，现按需求降至 1/3（≈0.167）→ 飞毯波纹/运动幅度同步降至原 1/3
+const FOOT_OFFSET = 0.0;             // 飞毯离地高度 / Y 位置（米）：玩家 rig 在 y=0，脚底即贴毯面；改此值整体抬升(+)/下沉(-)飞毯
 
 // 飞毯运动与玩家移动完全无关：uSpeed 用恒定基线 + 缓慢自震荡（仅制造"活"感，不随玩家速度突变）
 const CARPET_BASE_SPEED    = 0.35;   // 运动基线速度（恒定，不依赖玩家移动）
@@ -193,7 +193,7 @@ export class Carpet {
       transparent: true,         // 支持穿云淡入（仅改 uOpacity uniform，不切 transparent 避免重编译）
     });
     this.mesh = new THREE.Mesh(geo, mat);
-    this.mesh.position.set(0, FOOT_OFFSET, 0);   // 贴地，长边(Z)对齐活动区域纵深
+    this.mesh.position.set(0, FOOT_OFFSET, 0);   // 飞毯世界位置：固定铺在原点(X=0, Z=0)，Y=FOOT_OFFSET（离地高度）。位置/高度均由此处与上方 FOOT_OFFSET 控制
     this.mesh.rotation.order = 'YXZ';
     scene.add(this.mesh);
 

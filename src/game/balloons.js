@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ENEMY_TYPES } from '../content/enemies.js';
-import { BALLOON, MOVE } from '../core/constants.js';
+import { BALLOON, MOVE, SHURIKEN } from '../core/constants.js';
 import { attachBalloonModel, fitToRadius, loadBalloonModel, attachDragonSegment } from './balloonModels.js';
 
 // 程序化笑脸贴图（按颜色缓存）——占位怪也复用调色板
@@ -233,6 +233,8 @@ class Balloon {
       const dist = _moveDir.length();
       if (dist > 0.001) _moveDir.normalize();
       this.mesh.position.addScaledVector(_moveDir, this.speed * dt);
+      // 普通忍者：约束在距中心点(世界原点) 10~15m 环带内（龙形 Boss 的组成忍者 isDragonPart 跳过）
+      if (this.behavior === 'ninja' && !this.isDragonPart) this._clampToRing();
     }
 
     // 盾牌绕骑士旋转（盾兵怪核心机制）
@@ -297,16 +299,17 @@ class Balloon {
         this.mesh.position.z = THREE.MathUtils.clamp(target.z + Math.sin(a) * r, -8, 8);
       }
     }
-    // 忍者怪：闪现（3秒一次，5米范围内）
-    if (t.behavior === 'ninja') {
+    // 忍者怪：闪现（3秒一次）。龙形 Boss 的组成忍者(isDragonPart)跳过，由龙逐帧接管位置。
+    // 闪现目标落在「朝向玩家、但距中心 10~15m 环带内」的随机点（与移动约束一致，避免闪到环带外）。
+    if (t.behavior === 'ninja' && !this.isDragonPart) {
       this._blinkTimer += dt;
       if (this._blinkTimer >= (t.blinkInterval || 3)) {
         this._blinkTimer = 0;
-        const a = Math.random() * Math.PI * 2;
-        const r = 1.0 + Math.random() * (t.blinkRange || 5);
-        this.mesh.position.x = THREE.MathUtils.clamp(target.x + Math.cos(a) * r, -6, 6);
-        this.mesh.position.z = THREE.MathUtils.clamp(target.z + Math.sin(a) * r, -8, 8);
-        // TODO: 手里剑抛射（每3秒一次，伤害5）后续补齐 enemyProjectiles 系统
+        const ang = Math.atan2(target.z, target.x) + (Math.random() - 0.5) * 1.2;
+        const r = SHURIKEN.RANGE_MIN + Math.random() * (SHURIKEN.RANGE_MAX - SHURIKEN.RANGE_MIN);
+        this.mesh.position.x = Math.cos(ang) * r;
+        this.mesh.position.z = Math.sin(ang) * r;
+        // 手里剑抛射改由 BalloonManager 全局冷却统一投掷（仅最靠近玩家的一个忍者投），见 update()
       }
     }
     // 幽灵怪：隐身，仅自身蓄力攻击(最后 charge 秒)时显形并可被击中
@@ -325,6 +328,21 @@ class Balloon {
       if (this._lifespan <= 0) this._pendingKill = true;
     }
     // TODO: 龙头怪 cloud(造云隐身)/fireball(火球)、章鱼怪 ink(喷墨遮视线) 的特殊攻击后续补齐
+  }
+
+  // 将水平位置夹紧到距中心(世界原点) RANGE_MIN~RANGE_MAX 的环带内（忍者活动范围约束）
+  _clampToRing() {
+    const min = SHURIKEN.RANGE_MIN, max = SHURIKEN.RANGE_MAX;
+    const x = this.mesh.position.x, z = this.mesh.position.z;
+    const d = Math.hypot(x, z);
+    if (d < 1e-4) {                       // 落在正中心：随机推到环带内界
+      const a = Math.random() * Math.PI * 2;
+      this.mesh.position.x = Math.cos(a) * min;
+      this.mesh.position.z = Math.sin(a) * min;
+      return;
+    }
+    if (d < min) { const s = min / d; this.mesh.position.x *= s; this.mesh.position.z *= s; }
+    else if (d > max) { const s = max / d; this.mesh.position.x *= s; this.mesh.position.z *= s; }
   }
 
   dispose() {
@@ -374,7 +392,11 @@ export class BalloonManager {
     this.list = [];
     this._sepVec = new THREE.Vector3();
     this.depthDebug = false; // DepthSprite 深度调试：按 D 切换（中心亮=凸、边缘亮=凹）
+    this.shurikens = null;   // 手里剑管理器（由 game.js 注入）；非空时启用忍者投掷
+    this._shurikenCd = 0;    // 全局投掷冷却计时(秒)
   }
+
+  setShurikenManager(m) { this.shurikens = m; }
 
   spawn(typeId, position, opts = null) {
     const b = new Balloon(typeId, opts);
@@ -403,6 +425,27 @@ export class BalloonManager {
     }
     this._applySeparation();
     this._applyHealAura(dt);
+
+    // 手里剑全局投掷：冷却到点后，只让最靠近玩家的一个忍者投掷（其余忍者不投）。
+    // 龙形 Boss 的组成忍者(isDragonPart/controlled)与死亡忍者不参与。
+    // 冻结态(freezeNormal/freezeBoss)暂停投掷，避免「定身咒/Boss 阶段」期间仍乱飞。
+    if (this.shurikens && !freezeNormal && !freezeBoss) {
+      this._shurikenCd -= dt;
+      if (this._shurikenCd <= 0) {
+        let best = null, bestD = Infinity;
+        for (const b of this.list) {
+          if (b.behavior !== 'ninja' || b.isDragonPart || b.controlled || !b.alive) continue;
+          const d = b.mesh.position.distanceToSquared(target);
+          if (d < bestD) { bestD = d; best = b; }
+        }
+        if (best) {
+          this.shurikens.spawn(best.mesh.position, target);
+          this._shurikenCd = SHURIKEN.INTERVAL; // 投出 → 进入冷却
+        } else {
+          this._shurikenCd = 0; // 场上无可用忍者：下一帧立即重试（命中即投，不空耗冷却）
+        }
+      }
+    }
   }
 
   // 心型怪治疗光环：每秒为 healRadius 内的其他敌人恢复 healAura 血量

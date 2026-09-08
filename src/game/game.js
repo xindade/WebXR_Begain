@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Player } from './player.js';
 import { BalloonManager } from './balloons.js';
+import { ShurikenManager } from './shurikens.js';
 import { BulletManager } from './bullets.js';
 import { WaveManager } from './waves.js';
 import { CardDraft } from './cardDraft.js';
@@ -19,7 +20,7 @@ import { ENEMY_TYPES } from '../content/enemies.js';
 import { ELITE_SCHEDULE } from '../content/eliteMonsters.js';
 import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, CLOUD, SCORE_CAP, DRAGON } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON } from '../core/constants.js';
 import { setRenderer, loadBalloonModel, preCaptureDepthSprite } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 
@@ -78,6 +79,9 @@ export class Game {
 
     this.player = new Player(world.scene, this.rig);
     this.balloons = new BalloonManager(world.scene);
+    this.shurikens = new ShurikenManager(world.scene); // 忍者气球投掷物管理器
+    this.balloons.setShurikenManager(this.shurikens);  // 让气球系统驱动「最近忍者投掷」
+    this.shurikens.setOnHit((d) => this.player.takeDamage(d)); // 命中扣飞船血量（飞毯无独立 HP）
     this.bullets = new BulletManager(world.scene);
     // DDA：内置战斗监测（每帧由 _ddaMetrics() 读取玩家/场上状态），喂给 WaveManager 调度出怪
     this.dda = new DifficultyController(() => this._ddaMetrics());
@@ -109,7 +113,7 @@ export class Game {
     this.dragon = null;      // 第十二关龙 Boss 实例（boss==='dragon' 时存在）
     this.cloudFx = null;       // 关卡开场穿云特效（cloudFx.js），4秒后自动移除
     this._introActive = false; // 开场门控：true 时冻结出怪/Boss/机制动画（仅自然转头）
-    this._pendingBgmFile = null; this._pendingBgmProc = false; this._pendingOpenVoice = null; // 穿云结束后启动的本关音频（雾气转场静音）
+    this._pendingBgm = null; this._pendingOpenVoice = null; this._bossT = 0; this._bossInten = BOSS_BGM.START_INTENSITY; // 穿云结束后启动的本关音频（程序化 BGM 轨道 + Boss 升压状态）
     this._introT = 0;          // 开场计时（秒）
     this._introPreloadQueue = null; // 穿云窗顺序预载队列（[{url,radius,capture}]）
     this._introPreloadIdx = 0;     // 队列处理游标
@@ -139,7 +143,9 @@ export class Game {
 
   setSystems(audio, input, wristUI = null, pageLog = null) {
     this.audio = audio; this.input = input; this.wristUI = wristUI; this.pageLog = pageLog;
+    this.leftSword.setAudio(this.audio); // 注入音效管理器，供激光剑嗡鸣随剑出现/消失
     this.waves.audio = audio; // 注入音频到波次管理器（脸谱Boss 召唤语音用）
+    this.shurikens.setAudio(this.audio); // 注入音频，供手里剑投掷/命中音效
   }
 
   // 游戏内日志：同时送往左手腕面板（VR 可见）和页面日志（预览可见、最高优先）
@@ -154,6 +160,7 @@ export class Game {
     this.input?.setGunMode(gunMode);
     this.player.input = this.input; // 让射速卡能触达真实节流源（input.setFireRateMul）
     this.balloons.clear();
+    this.shurikens.clear(); // 清忍者投掷物（与气球一并复位）
     this.bullets.clear();
     this.score = 0;
     this.levelIndex = atIndex;
@@ -176,7 +183,7 @@ export class Game {
   toMenu() {
     this.state = 'menu';                       // 关键：让 sessionstart 的 game.start 守卫重新生效
     // 释放关卡专属实例（沿用 _loadLevel 头部写法）
-    if (this.laser)    { this.laser.dispose();    this.laser = null; }
+    if (this.laser)    { this.audio?.stopLaserHum('level'); this.laser.dispose();    this.laser = null; }
     if (this.grid)     { this.grid.dispose();     this.grid = null; }
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon)   { this.dragon.dispose();   this.dragon = null; }
@@ -189,6 +196,7 @@ export class Game {
     this.waves.clearPending();   // 清出怪光点（防回菜单残留）
     // 清理实体
     this.balloons.clear();
+    this.shurikens.clear(); // 清忍者投掷物（回菜单一并清理）
     this.bullets.clear();
     this._clearExplosions();
     if (this._buddhaFx) { this._buddhaFx.dispose(); this._buddhaFx = null; }
@@ -219,7 +227,7 @@ export class Game {
     const lv = LEVELS[i];
     this.normalTest = false; // 默认非测试；仅普通关且 NORMAL_TEST.enabled 时被 startLevel 翻为 true
     // 离开上一关时清理激光关实例与玻璃网格
-    if (this.laser) { this.laser.dispose(); this.laser = null; }
+    if (this.laser) { this.audio?.stopLaserHum('level'); this.laser.dispose(); this.laser = null; }
     if (this.grid) { this.grid.dispose(); this.grid = null; }
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon) { this.dragon.dispose(); this.dragon = null; }
@@ -232,25 +240,27 @@ export class Game {
     this._lastCell = 0;
     this._firstCardOfLevel = true;   // 每关首次抽卡才强制攻击紫（02关）
     this.balloons.clear();      // 防跨关残留气球（脸谱 Boss 装饰等）
+    this.shurikens.clear();     // 防跨关残留手里剑
     this.bullets.clear();        // 防跨关残留子弹误击
     this.hud.clearCountdown();   // 关倒计时显示
     this.world.setSkyMood(lv.mood);
     // 飞毯显隐：第9关(laserMode='drive' 玻璃走格子)隐藏飞毯、保留脚下玻璃区域；其余关显示飞毯作玩家脚下活动区
     this.world.carpet?.setVisible(lv.laserMode !== 'drive');
-    // ===== 关卡 BGM 选择：先停旧曲，按关卡类型预置，待「穿云结束」后再播 =====
-    // 规则①：雾气转场(穿云)期间不播任何语音/音乐 → 一律延迟到 _startLevelAudio()
+    // ===== 关卡 BGM 选择（程序化，分普通关/机制关/Boss关；雾气转场期间不播，统一延迟到 _startLevelAudio）=====
+    // 普通关(normal)+危机关(crisis) → 'normal'（mood=night 用黑夜变体）；机制关(laser) → 'laser'；Boss 关 → 'boss'
+    // 全部由 AUDIO-SPEC.md 程序化合成（零音频文件），替换原 music/*.wav 文件 BGM。语音(_pendingOpenVoice)另走文件。
     this.audio?.stopBGM();
-    this._pendingBgmFile = null;   // 文件 BGM（普通/危机关/第6关/第12关），null=无
-    this._pendingBgmProc = false;  // true=程序化 BGM（激光/魔术师Boss 沿用原行为）
-    this._pendingOpenVoice = null; // 开场语音（L3/6/9/15/18），null=无
-    if (lv.kind === 'normal' || lv.kind === 'crisis') {
-      this._pendingBgmFile = 'music/01游戏背景音.wav';   // 普通关 + 机制关(危机关)
-    } else if (lv.n === 6) {
-      this._pendingBgmFile = 'music/戏曲背景音.wav';        // 第6关(脸谱Boss)
-    } else if (lv.n === 12) {
-      this._pendingBgmFile = 'music/龙Boss.wav';            // 第12关(龙Boss)
+    this._pendingBgm = null;        // {kind, variant, intensity} 或 null
+    this._pendingOpenVoice = null;  // 开场语音（L3/6/9/15/18），null=无
+    this._bossT = 0;                // Boss 升压计时（秒）
+    this._bossInten = BOSS_BGM.START_INTENSITY; // Boss 升压当前值（与 audio.intensity 同步）
+    if (isLaser(lv)) {
+      this._pendingBgm = { kind: 'laser', variant: null, intensity: 0.2 };          // 机制关：起步 0.2
+    } else if (isBoss(lv)) {
+      this._pendingBgm = { kind: 'boss',  variant: null, intensity: BOSS_BGM.START_INTENSITY }; // Boss：0.45
     } else {
-      this._pendingBgmProc = true;                          // 其余(激光3/9/15、魔术师Boss18)沿用程序化 BGM
+      // normal / crisis：程序化 normal 关；危机(mood=night)用黑夜变体
+      this._pendingBgm = { kind: 'normal', variant: lv.mood === 'night' ? 'night' : 'dusk', intensity: 0 };
     }
     // 有全景配置的关卡（如第3/15关）用全景图作天空，覆盖渐变；无配置则维持渐变天空
     const pano = SKY_PANORAMA[lv.n];
@@ -483,15 +493,36 @@ export class Game {
 
   // 穿云结束后统一启动本关 BGM + 开场语音（雾气转场期间一律静音）
   _startLevelAudio() {
-    if (this._pendingBgmProc) this.audio?.startBGM();
-    else if (this._pendingBgmFile) this.audio?.playBGM(this._pendingBgmFile);
+    if (this._pendingBgm) {
+      const { kind, variant, intensity } = this._pendingBgm;
+      this.audio?.setTrack(kind, variant);   // 设置曲目（normal/laser/boss + 变体）
+      this.audio?.setIntensity(intensity);   // 起步强度
+      this.audio?.startBGM();                // 起播（雾气结束才响）
+      if (kind === 'boss') this.audio?.playBossSting(); // Boss 进场演出：升调+铜锣+三连太鼓
+    }
     if (this._pendingOpenVoice) this.audio?.playVoice(this._pendingOpenVoice);
-    this._pendingBgmProc = false;
-    this._pendingBgmFile = null;
+    this._pendingBgm = null;
     this._pendingOpenVoice = null;
   }
 
+  // Boss 关程序化 BGM 升压：按「战斗时长」与「掉血进度」取较大者，ramp 到目标强度（0.45→1.0）
+  _updateBossIntensity(dt) {
+    if (!this.audio || this.audio.track !== 'boss') return; // 仅 Boss 曲生效（非 Boss 关早退）
+    this._bossT += dt;                                       // 已战斗秒数
+    let prog = this._bossT / BOSS_BGM.TIME_TO_MAX;           // 时长进度
+    const boss = this.waves && (this.waves.faceBoss || this.waves.boss); // 脸谱/骑士 Boss
+    if (boss && boss.maxHp) prog = Math.max(prog, 1 - boss.hp / boss.maxHp);
+    if (this.dragon && this.dragon.maxHpPool) prog = Math.max(prog, 1 - this.dragon.hpPool / this.dragon.maxHpPool); // 龙 Boss 总血量池
+    prog = Math.min(1, prog);
+    const v = Math.min(BOSS_BGM.MAX_INTENSITY, BOSS_BGM.START_INTENSITY + prog * BOSS_BGM.RISE_RANGE);
+    if (Math.abs(v - this._bossInten) > 0.02) {              // 超阈值才下发，避免每帧重复赋值
+      this._bossInten = v;
+      this.audio.setIntensity(v);
+    }
+  }
+
   _updatePlaying(dt) {
+    this._updateBossIntensity(dt); // Boss 关每帧升压（非 Boss 关内部早退）
     // ====== 关卡开场穿云：INTRO_DELAY 秒内冻结玩法（不移动/不开火/不触发技能），仅自然转头观察 ======
     if (this._introActive) {
       this._introT += dt;
@@ -553,8 +584,9 @@ export class Game {
     }
 
     // ====== 普通关 ======
-    // 气球追踪原点(0,0,0)而非玩家位置
-    this.balloons.update(dt, ORIGIN, this.world.camera);
+    // 气球以玩家世界位置为终点移动（所有怪追玩家）；碰飞毯区域自爆逻辑不变（见 _checkExplosions）
+    this.balloons.update(dt, pp, this.world.camera);
+    this.shurikens.update(dt, pp); // 手里剑飞行/自旋/命中回收（玩家位置 pp = rig 头部世界坐标）
     if (this.dragon) {
       this.dragon.update(dt, pp);   // 龙 Boss：逐帧接管龙气球位置
     } else {
@@ -589,6 +621,9 @@ export class Game {
   // 激光关主循环：激光动画 + 保持期发光驱动 + 走格子/九宫格阶段分派
   _updateLaserLevel(dt, pp) {
     this.laser.update(dt, pp);
+    // 机制关激光嗡鸣：激光束出现(beamsVisible)时响起、消失时淡出（声音随激光出现/消失）
+    if (this.laser.beamsVisible) { this.audio?.startLaserHum('level'); this.audio?.setLaserHumLevel('level', 0.7); }
+    else this.audio?.stopLaserHum('level');
 
     // ===== flip 模式（第十五关：九宫格翻转射击）=====
     if (this.laser.mode === 'flip') {
@@ -627,6 +662,7 @@ export class Game {
         this.flipPhase = true;
         this.laser.enterGridPhase();
         this.flipTimer = FLIP.COUNTDOWN;
+        this.audio?.setIntensity(0.35); // 第十五关进入安全解谜期：降压到 0.35（AUDIO-SPEC §6.2）
         this.log('激光消散，180 秒倒计时解谜（解出→抽卡，归零→直接下一关）');
       }
       // 5) 安全期倒计时（用户修改②）
@@ -657,8 +693,10 @@ export class Game {
         this._lastCell = 0;
         this._failing = false;
         this.laser.enterGridPhase();
+        this.audio?.setIntensity(1); // 第九关进入走格子阶段：升压到 1.0（AUDIO-SPEC §6.2）
         this.log('激光消散，开始走格子：踩正确格子，踩错会破碎');
       } else {
+        this.audio?.stopLaserHum('level');
         this.laser.dispose();
         this.laser = null;
         this._enterCard(); // 第三关固定三张红色技能卡（如来神掌/激光剑/散射强化）
@@ -689,6 +727,7 @@ export class Game {
         return;
       }
       if (r === 'win') {
+        this.audio?.stopLaserHum('level');
         this.laser.dispose(); this.laser = null;
         if (this.grid) { this.grid.dispose(); this.grid = null; }
         this.gridPhase = false;
@@ -721,7 +760,7 @@ export class Game {
   // 第十五关收尾：解出→抽卡(withCard=true)；倒计时归零→直接下一关(withCard=false)
   _finishFlipLevel(withCard = true) {
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
-    if (this.laser) { this.laser.dispose(); this.laser = null; }
+    if (this.laser) { this.audio?.stopLaserHum('level'); this.laser.dispose(); this.laser = null; }
     this.flipPhase = false;
     this.flipTimer = 0;
     this.hud.clearCountdown();
@@ -1021,8 +1060,8 @@ export class Game {
     this.hud.setScore(this.score);
     this.leftSword.setActive(true);
     this._swordReadyMarked = false;
-    // 兜底结束时刻：展开动画正常完成时，会被「完全展开」那一刻的精确计时（_gameTime + DURATION）覆盖
-    const _grow = LASER_SWORD.SWORD_GROW_TIME + LASER_SWORD.SWORD_HOLD + LASER_SWORD.SWORD_GROW2_TIME;
+    // 兜底结束时刻：展开动画(EXTEND_TIME)正常完成时，会被「完全展开」那一刻的精确计时（_gameTime + DURATION）覆盖
+    const _grow = LASER_SWORD.EXTEND_TIME;
     this._swordUntil = this._gameTime + _grow + LASER_SWORD.DURATION;
     this.log(`激光剑激活！展开后 ${LASER_SWORD.DURATION} 秒内挥剑伤害`);
     return true;
@@ -1038,10 +1077,10 @@ export class Game {
       if (!b.alive) continue;
       const rr = b.hitRadius; // 含立绘 0.6 系数/薄板近似，球体足够
       if (_pointSegDistSq(b.mesh.position, this._hilt, this._tip) > rr * rr) continue; // 剑刃未扫到
-      if ((b._swordCdUntil || 0) > now) continue; // 每只怪 1 秒内只受一次
-      const killed = b.takeDamage(LASER_SWORD.DAMAGE * this.player.skillDamageMul, true); // ignoreReduction=true 穿透减伤，稳定 400×倍率
-      b._swordCdUntil = now + 1.0;
-      if (killed) this._onKilled(b);
+      if ((b._swordCdUntil || 0) > now) continue; // 同一只怪在 HIT_INTERVAL 内只受一次（剑刃持续扫到则可高频多次扣血）
+      const killed = b.takeDamage(LASER_SWORD.DAMAGE * this.player.skillDamageMul, true); // ignoreReduction=true 穿透减伤（实际伤害 = DAMAGE × player.skillDamageMul）
+      b._swordCdUntil = now + LASER_SWORD.HIT_INTERVAL; // 调小 HIT_INTERVAL = 更高 DPS（修复：原 1.0s 导致单次挥击只命中一次，#1）
+      if (killed) { this.audio?.playPop(); this._onKilled(b); } // 击毙音效（修复：原激光击杀静默，#2）
     }
   }
 
@@ -1183,6 +1222,7 @@ export class Game {
     this.log('飞船坠毁，本关重开');
     this._restoreSnapshot();
     this.balloons.clear();
+    this.shurikens.clear(); // 重开本关一并清手里剑
     this.bullets.clear();
     // 不调 _clearExplosions()：让死亡爆炸特效在 0.4s 内自然消亡
     this.rig.position.set(0, 0, 0);
@@ -1300,6 +1340,7 @@ export class Game {
     this.state = 'over';
     this.log('飞船坠落，游戏结束');
     this.balloons.clear();
+    this.shurikens.clear(); // 游戏结束清手里剑
     this.bullets.clear();
     this.hud.message('飞船坠落', `得分 ${this.score} · 按「开始游戏」重来`, '#e74c3c');
     this.hud.showStart();
@@ -1310,6 +1351,7 @@ export class Game {
     this.state = 'over';
     this.log('全部消灭，通关！');
     this.balloons.clear();
+    this.shurikens.clear(); // 通关清手里剑
     this.bullets.clear();
     this.hud.clearCountdown();
     this.hud.message('通关！', `得分 ${this.score} · 按「开始游戏」重新挑战`, '#2ecc71');

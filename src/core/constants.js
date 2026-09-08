@@ -152,28 +152,74 @@ export const BUDDHA = {            // 如来神掌（大招）
   FADE_TIME: 0.3,                  // 淡出消失时长 s
 };
 
-// 激光剑（左手柄近战武器，由「金箍棒」技能改造而来）
-// 选卡装备后常驻左手柄；按左手柄 grip 激活「5 秒伤害状态」，期间左手自由挥动，
-// 剑刃线段扫过怪物即扣血，每只怪 1 秒内只受一次。位置/旋转/缩放/伤害均可热调。
+// 激光剑（左手柄近战武器，程序化 shader 光剑，替代旧 Model/激光剑.glb 模型版）
+// 选卡装备后常驻左手柄（迷你态≈15cm 巴掌大小短剑）；按左手柄 grip 激活「5 秒伤害状态」，
+// 期间左手自由挥动，剑刃线段扫过怪物即扣血，每只怪 1 秒内只受一次。
+// 位置/旋转/缩放/伤害/剑刃尺寸均可热调（见 userConfig.js 同名块，生效值以 userConfig 为准）。
 export const LASER_SWORD = {
-  MODEL_URL:  'Model/激光剑.glb',           // 模型路径（相对 index.html，项目根 Model 目录）
   POSITION:   { x: 0.0, y: 0.0, z: 0.0 },  // 相对左手柄(grip)本地坐标（米）
-  ROTATION:   { x: 0, y: 0, z: 0 },        // 旋转（度，绕 XYZ）：模型默认朝向未知，上机后调
-  SCALE:      1.0,                          // 整体缩放（过大/过小先 1.0 看效果再调）
-  BLADE_AXIS: { x: -1, y: 0, z: 0 },       // 剑刃方向（root 本地轴）：GLB 解析真实刃长轴=本地 X（extent 1.1994m）；配 ROTATION.y:270 映射到世界前向，与可见剑刃一致
-  BLADE_LENGTH: 1.2,                        // 剑刃本地长度（米）；命中线段 = ×SCALE(4.0)=4.8m，与可见剑刃一致
-  DAMAGE:     700,                          // 笔记：激光剑单次命中伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
-  DURATION:   5,                            // 激活后伤害状态持续秒数
-  COOLDOWN:   5,                            // 激活后复用冷却秒数（HUD 显示）
-  COST:       500,                          // 消耗积分
-  // —— 释放缩放动画参数（未释放=base×IDLE；释放时放大到 base）——
-  SWORD_IDLE_SCALE: 0.1,   // 未释放视觉缩放 = SCALE × 此值（0.1 = 缩小10倍）
-  SWORD_GROW_TIME:  0.5,   // 第一段放大时长(s)：0.5s 内放大 GROW_STEP 倍
-  SWORD_GROW_STEP:  5.0,   // 第一段放大倍数（字面 5 倍：idle 0.1 → 0.5）
-  SWORD_HOLD:       0.2,   // 两段之间停顿(s)
-  SWORD_GROW2_TIME: 0.5,   // 第二段放大时长(s)
-  SWORD_GROW2_STEP: 2.0,   // 第二段放大倍数：0.5×2=1.0=回到 base（想更大改 5.0 → 最终 base×2.5）
-  SWORD_SHRINK_TIME:0.6,   // 结束/卸下时反向缩回 idle 的时长(s)
+  ROTATION:   { x: -90, y: 0, z: 0 },      // 旋转(度)：本地+Y剑刃经 -π/2 绕X → 世界 -Z（手柄前方）
+  SCALE:      1.0,                          // 整体缩放（恒等；剑尺寸由子网格 scale 决定，单位米）
+  BLADE_AXIS: { x: 0, y: 1, z: 0 },        // 剑刃方向（root 本地轴）= +Y（配合 ROTATION.x:-90 → 世界 -Z 前向）
+  // —— 伤害/技能 ——
+  DAMAGE:     700,        // 单次命中伤害（×player.skillDamageMul）
+  DURATION:   5,          // 激活后伤害状态持续秒数（击发后挥剑伤害的窗口）
+  HIT_INTERVAL: 0.15,    // 同一只怪被剑刃持续扫到时，两次扣血的最小间隔(秒)；调小=连续高 DPS(更接近真近战)，调大=更接近单次重击
+  COOLDOWN:   5,          // 复用冷却秒数（HUD 显示）
+  COST:       500,        // 消耗积分
+  // —— 程序化剑刃参数（文档《激光剑方案-接入文档》）——
+  BLADE_LEN_MIN:  0.05,   // 迷你态剑刃长度/米（巴掌大小短剑）
+  BLADE_LEN_MAX:  20.0,   // 剑刃展开长度/米（文档默认；伤害范围=此值）
+  BLADE_R_MIN:    0.009,  // 迷你态剑刃半径/米
+  BLADE_R_MAX:    0.07,   // 展开态剑刃半径/米
+  HILT_LEN:       0.10,   // 剑柄基础长度/米
+  HILT_SCALE_EXT: 3.0,    // 展开时剑柄放大倍数（10cm→30cm）
+  GLOW_SCALE:     1.8,    // 辉光层半径 / 核心半径
+  HALO_SCALE:     3.0,    // 外晕层半径 / 核心半径
+  GLOW_POWER:     2.2,    // 辉光衰减指数（越大越集中核心）
+  HALO_POWER:     1.4,    // 外晕衰减指数（越小越扩散）
+  GLOW_INTENSITY: 0.55,   // 辉光强度
+  HALO_INTENSITY: 0.22,   // 外晕强度
+  BLADE_COLOR:    0x66ccff, // 剑刃颜色（青蓝）
+  CORE_COLOR:     0xf2ffff, // 核心白热色（略偏青的白）
+  EXTEND_TIME:    0.45,   // 展开/收回动画时长/秒
+  BLADE_LIGHT_MAX: 45.0,  // 展开态剑刃点光强度(candela)
+  BLADE_LIGHT_DIST: 30.0, // 剑刃点光影响半径/米
+};
+
+// ==================== 各关卡 BGM 音量（程序化三套曲目共用总线 bgmBus 的目标增益倍率） ====================
+// 生效值 = 总线基准增益(0.18) × 该倍率；改此值即整体调响/调轻，无需动音频合成代码。
+// 普通关/危机关(normal)、机制关(激光 3/9/15, laser)、Boss 关(6/12/18, boss) 各一档。
+// 默认 laser 偏高(1.4)：机制关 BGM 在 PICO 小喇叭上偏轻，已据此调高；嫌响/嫌轻改这里即可（userConfig 同名块可热调）。
+export const BGM_VOLUME = {
+  normal: 1.0,  // 普通关/危机关 BGM 音量倍率
+  laser:  1.4,  // 机制关(激光 3/9/15) BGM 音量倍率（默认偏高，PICO 小喇叭偏轻）
+  boss:   1.0,  // Boss 关(6/12/18) BGM 音量倍率
+};
+
+// ==================== 手里剑（忍者气球投掷物） ====================
+// 忍者气球在头顶生成低多边形手里剑射向玩家；全游戏全局冷却 INTERVAL，到点只让最靠近玩家的一个忍者投掷。
+// 命中玩家扣 player.hp（飞毯无独立血量，伤害走飞船血量 takeDamage）。
+// 忍者移动被约束在距中心点(世界原点) RANGE_MIN~RANGE_MAX 的环带内（龙形 Boss 的组成忍者除外）。
+// 单位：SPEED=米/秒, DAMAGE=点, HIT_RADIUS=命中判定半径(米), MAX_LIFE=超时回收秒, SPIN=自旋角速度(度/秒), SIZE=手里剑外接半径(米)。
+export const SHURIKEN = {
+  INTERVAL:   3.0,   // 全局投掷冷却（秒）：到点才允许再投一次
+  SPEED:      14.0,  // 飞行速度（米/秒）
+  DAMAGE:     3.0,   // 命中玩家扣的血量（走 player.takeDamage，即飞船血量）
+  HIT_RADIUS: 0.6,   // 命中判定半径（米）：玩家控制器位置距手里剑 < 此值即判定命中
+  MAX_LIFE:   4.0,   // 最长存活时间（秒）：超时未命中自动回收
+  SPIN:       18.0,  // 自旋角速度（度/秒）
+  SIZE:       0.18,  // 手里剑外接半径（米）：视觉尺寸
+  RANGE_MIN:  10.0,  // 忍者可活动环带内界（米）：距中心点 ≥ 此值
+  RANGE_MAX:  15.0,  // 忍者可活动环带外界（米）：距中心点 ≤ 此值
+};
+
+// Boss 关程序化 BGM 升压参数（见 src/vr/audio.js _stepBoss + game.js _updateBossIntensity）
+export const BOSS_BGM = {
+  START_INTENSITY: 0.45,  // 进关起步强度（一进场就有 ostinato + 心跳）
+  MAX_INTENSITY:   1.0,   // 上限
+  TIME_TO_MAX:     75,    // 拿不到血量时，多久(秒)线性升满
+  RISE_RANGE:      0.55,  // 上升幅度：START + prog × RISE_RANGE
 };
 
 // 积分上限：玩家持有积分不超过此值（≈一次技能释放机会，因技能消耗 player.skillCost=500）。改此值即调上限。
@@ -518,9 +564,9 @@ export const FACE_BOSS = {
   FAN_MODEL: 'Model/京剧扇子.glb',
 
   // —— 子实体击杀 → Boss 扣血（× HP，绕过减伤）——
-  KILL_FLAG_HP_PCT:   0.02,  // 旗子 2% = 60HP
+  KILL_FLAG_HP_PCT:   0.01,  // 旗子 
   KILL_CLONE_HP_PCT:  0.01,  // 分身 1% = 30HP
-  KILL_MINION_HP_PCT: 0.02,  // 小怪 2% = 60HP
+  KILL_MINION_HP_PCT: 0.01,  // 小怪 
 
   // —— 蓝色阶段：左右两侧各一个 3×3 召唤阵（中心格=骑士，其余=basic；阵型排在 Boss 前方朝玩家）——
   BLUE_FORMATION_ROWS: 3,       // 每侧阵型的行数（沿 Z 纵深，朝玩家递进）
@@ -805,6 +851,7 @@ const _OVERRIDES = [
   ['CLOUD', CLOUD, USER_CONFIG.CLOUD],
   ['INPUT', INPUT, USER_CONFIG.INPUT],
   ['TEST', TEST, USER_CONFIG.TEST],
+  ['BGM_VOLUME', BGM_VOLUME, USER_CONFIG.BGM_VOLUME],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

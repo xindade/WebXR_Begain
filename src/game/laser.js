@@ -144,6 +144,7 @@ export class LaserLevel {
     this.r1 = { active: false, phase: 0, t: 0, y0: 0, y1: 0, y1t: 0 };
     this.r2 = { active: false, phase: 0, t: 0, z2: undefined, z3: undefined, x3: undefined };
     this.r3 = { active: false, phase: 0, t: 0, z4: undefined, x4: undefined, z5: undefined, z6: undefined, x6: undefined, z7: undefined };
+    this.beamsVisible = false;   // 激光束是否可见（驱动"机制关激光嗡鸣"音效开关；开场前/完全淡出后为 false）
   }
 
   start() {
@@ -305,6 +306,9 @@ export class LaserLevel {
     // 走格子阶段（gridActive）停止致命；否则生成期不致命、10s 后致命
     if (!this.gridActive) this.lethal = t >= LASER.SPAWN_DELAY;
     this.courseReady = this.mode === 'full' ? (t >= this.ROW3_AT) : (t >= this.HOLD_AT);
+
+    // 激光束可见性：首批激光淡入后(true) → 进入走格子阶段淡出完成后(false)。用于驱动激光嗡鸣音效。
+    this.beamsVisible = (t >= this.laserReveal[0].at) && !(this.fading && this.fadeT >= 1);
   }
 
   // 进入走格子阶段：停止致命并启动激光气球淡出（由 game.js 在保持期结束后调用）

@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { World } from './core/world.js';
-import { LASER_SWORD } from './core/constants.js';
 import { preloadDragonAssets } from './game/dragonLevel.js';
 import { HUD } from './ui/hud.js';
 import { AudioManager } from './vr/audio.js';
@@ -32,10 +31,11 @@ const world = new World(canvas);
   }).then(() => { dragonFrac = 1; })
     .catch(() => { dragonFrac = 1; });
 
-  // 传送门 + 激光剑 + 开场魔术师动画 GLB：下载+DRACO 解码+parse 一次性完成，进关零等待（glbCache 命中，零重复加载）。
+  // 传送门 + 开场魔术师动画 GLB：下载+DRACO 解码+parse 一次性完成，进关零等待（glbCache 命中，零重复加载）。
   // 注：马戏团(CIRCUS)模型已按需求移除、其 GLB 不再预载；开场魔术师动画已恢复——机制关(3/9/15)进关即播放、10秒后自动消失。
-  const glbParts = [0, 0, 0];
-  const glbTasks = [PORTAL_MODEL_URL, LASER_SWORD.MODEL_URL, OPENING_MODEL_URL].map((u, i) =>
+  // 激光剑已改为程序化 shader 光剑（不再预载 GLB，Model/激光剑.glb 仅留作资产备份）。
+  const glbParts = [0, 0];
+  const glbTasks = [PORTAL_MODEL_URL, OPENING_MODEL_URL].map((u, i) =>
     preloadGLB(u, (loaded, total) => {
       glbParts[i] = total ? Math.min(1, loaded / total) : 0;
     }).then(() => { glbParts[i] = 1; })
