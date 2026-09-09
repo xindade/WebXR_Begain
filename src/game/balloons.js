@@ -67,6 +67,8 @@ class Balloon {
     // 1) 有专用 GLB 模型 → 挂模型并隐藏程序化球体
     if (t.model) {
       this._hasModel = true;
+      // 程序化球体默认隐藏：模型加载成功由 attachBalloonModel 挂上模型（球体保持隐藏）；
+      // 加载失败也保持隐藏（不再用彩色球体兜底，避免破坏沉浸），仅 console.warn 暴露 404/解码问题。
       this.mesh.material.visible = false;
       // 盾兵怪/精英骑士复用骑士模型但需正常体型（Boss 骑士用 MODEL_TUNING 默认缩小），此处覆盖 scale
       const knightTuning = (t.id === 'shield' || t.id === 'eliteKnight') ? { scale: 1.0 } : null;
@@ -216,8 +218,8 @@ class Balloon {
     if (this.type.invincible) return false; // 聚宝盆：无敌，子弹不扣血
     if (!this.alive) return false;          // 已死亡：防止爆炸链重复触发 _onKilled 导致无限递归
     let final = dmg;
-    if (!ignoreReduction && this.damageReduction > 0)
-      final = dmg * (1 - this.damageReduction);  // 95% 减伤 → 实际 5%
+    if (this.damageReduction > 0 && (!ignoreReduction || this.isDragonPart))
+      final = dmg * (1 - this.damageReduction);  // 95% 减伤 → 实际 5%（isDragonPart 强制减伤，含激光剑穿透）
     this.hp -= final;
     this._flash = 0.1;
     if (this._hpBar) {

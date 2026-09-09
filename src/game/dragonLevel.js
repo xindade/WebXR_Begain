@@ -126,6 +126,7 @@ export class DragonBoss {
 
     // 血量池（固定总血，只降不升：打爆即复活但「不回血」）
     this.maxHpPool = 0;
+    this._basicKillCount = 0;                 // 基础怪击杀计数（每 BASIC_KILLS_PER_PERCENT 个扣 Boss 1% 血）
     this.hpPool = 0;
     this._respawns = [];                // 复活队列：{b, t}（t=剩余延迟秒）
     this.dying = false;                 // 死亡连爆阶段（冻结运动）
@@ -322,6 +323,7 @@ export class DragonBoss {
       const b = this.balloons.spawn(DRAGON.BODY_TYPE, new THREE.Vector3(0, -999, 0));
       b.controlled = true; // 跳过自动朝玩家移动 + 分离力
       b.isDragonPart = true; // 标记为龙部件：击破后由本类管理「1秒复活」而非永久移除
+      b.damageReduction = DRAGON.DAMAGE_REDUCTION; // 龙身气球减伤95%：受击只吃5%（含激光剑穿透，takeDamage 强制减伤）
       b.mesh.visible = false; // 开场隐形：待首次 update 摆到脊柱后再揭示（见 update 末尾 _revealed）
       b.maxHp = DRAGON.BODY_HP; b.hp = DRAGON.BODY_HP; // 龙身血量固定为骑士血量（覆盖 dragonBody 默认 100）
       if (hpMult !== 1) { b.maxHp = Math.round(b.maxHp * hpMult); b.hp = b.maxHp; }
@@ -341,6 +343,7 @@ export class DragonBoss {
         const b = this.balloons.spawn(DRAGON.CLAW_TYPE, new THREE.Vector3(0, -999, 0));
         b.controlled = true;
         b.isDragonPart = true;
+        b.damageReduction = DRAGON.DAMAGE_REDUCTION; // 龙爪气球同样减伤95%（龙身/龙爪统一减伤）
         b.mesh.visible = false; // 开场隐形：待首次 update 摆到脊柱后再揭示
         if (hpMult !== 1) { b.maxHp = Math.round(b.maxHp * hpMult); b.hp = b.maxHp; }
         // 龙爪 taper 取所在节点位置（中等粗细）
@@ -649,6 +652,19 @@ export class DragonBoss {
     this.hpPool -= balloon.maxHp;
     this._respawns.push({ b: balloon, t: DRAGON.RESPAWN_DELAY ?? 1.0 });
     if (this.hpPool <= 0) this._startDeath();
+  }
+
+  // 玩家每消灭 BASIC_KILLS_PER_PERCENT 个「基础怪(basic, 非龙部件)」→ 扣 Boss 1% 总血量（需求：每5个基础怪扣Boss 1%血）
+  //   由 game.js _onKilled 在击杀基础怪时调用；dying 阶段不计数（避免死亡连爆期间误扣）
+  notifyBasicKilled() {
+    if (this.dying) return;
+    this._basicKillCount++;
+    if (this._basicKillCount >= DRAGON.BASIC_KILLS_PER_PERCENT) {
+      this._basicKillCount -= DRAGON.BASIC_KILLS_PER_PERCENT;
+      const cut = this.maxHpPool * DRAGON.BASIC_KILL_PERCENT; // 1% 总血量
+      this.hpPool = Math.max(0, this.hpPool - cut);
+      if (this.hpPool <= 0) this._startDeath();
+    }
   }
 
   // 血量清零 → 进入死亡连爆阶段（冻结运动）

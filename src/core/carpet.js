@@ -10,16 +10,21 @@ import { MOVE } from './constants.js';
 // ===== 尺寸与幅度（与活动区域严格对齐，改 MOVE 边界即自动跟随）=====
 const CARPET_W = MOVE.BOUND_X * 2;   // 宽(X) = 2×2 = 4.0m
 const CARPET_D = MOVE.BOUND_Z * 2;   // 纵深(Z，沿飞行前进方向) = 2×4 = 8.0m
-const BASE_AMP = 0.16;               // 波纹基础幅度（与滑块相乘）
-const REF_LEN  = 2.0;                // 调参时的参考纵深（当初把幅度调成 0.5 时的纵深）
-const AMP_SCALE = CARPET_D / REF_LEN; // 8/2 = 4：幅度随尺寸等比，大尺寸才"看得动"
-const AMP_SLIDER = 0.5 / 3;          // 运行时幅度倍率：原确认值 0.5，现按需求降至 1/3（≈0.167）→ 飞毯波纹/运动幅度同步降至原 1/3
+// ===== 飞毯晃动幅度（关键可调项）=====
+// 最终顶点波纹/运动幅度 = BASE_AMP × AMP_SLIDER × AMP_SCALE（单位：米，叠加在顶点法线方向的位移）
+//   · 整体调大/调小晃动 → 改 BASE_AMP（基础幅度，米）
+//   · 按比例微调（不动尺寸跟随）→ 改 AMP_SLIDER（运行时倍率，无单位）
+//   · AMP_SCALE 由地毯纵深自动推导（大尺寸才"看得动"），一般不用动
+const BASE_AMP = 0.1;               // 【晃动幅度·基础值】波纹基础幅度（米）：最终幅度主旋钮；调大→起伏更明显，调小→更平稳
+const REF_LEN  = 2.0;                // 调参参考纵深（米）：当初把幅度调到 0.5 时的地毯纵深，仅用于推导 AMP_SCALE
+const AMP_SCALE = CARPET_D / REF_LEN; // 幅度尺寸跟随系数 = 纵深/参考纵深 = 8/2 = 4（大尺寸才"看得动"，一般不动）
+const AMP_SLIDER = 0.1;          // 【晃动幅度·运行时倍率】无单位；原确认值 0.5，现降至 1/3（≈0.167）→ 飞毯波纹/运动幅度同步降至原 1/3
 const FOOT_OFFSET = 0.0;             // 飞毯离地高度 / Y 位置（米）：玩家 rig 在 y=0，脚底即贴毯面；改此值整体抬升(+)/下沉(-)飞毯
 
 // 飞毯运动与玩家移动完全无关：uSpeed 用恒定基线 + 缓慢自震荡（仅制造"活"感，不随玩家速度突变）
 const CARPET_BASE_SPEED    = 0.35;   // 运动基线速度（恒定，不依赖玩家移动）
 const CARPET_SPEED_BREATH  = 0.12;   // 缓慢自震荡幅度（仅制造"活"感，不随玩家突变）
-const CARPET_BREATH_FREQ   = 0.4;    // 自震荡频率(rad/s)，慢 → 平滑无抖动
+const CARPET_BREATH_FREQ   = 0.25;    // 自震荡频率(rad/s)，慢 → 平滑无抖动
 
 // ===== 边缘流苏参数 =====
 const TASSELS_PER_EDGE = 15;                  // 每边流苏数量（前后缘各 15）

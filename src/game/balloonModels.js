@@ -107,7 +107,7 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
         // 不乘系数则命中按整张半幅算，比可见角色大 ~1.6 倍。×DEPTH_SPRITE_HIT_MUL(0.6) 修正。
         balloon.hitRadius = balloon.effectiveRadius * (tune.scale ?? 1) * extraScale * DEPTH_SPRITE_HIT_MUL;
       })
-      .catch(() => { balloon.mesh.material.visible = true; }); // 失败兜底保留程序化球体
+      .catch(() => { /* 失败：保持程序化球体隐藏，不显示彩色兜底（避免破坏沉浸）；问题由 console.warn 暴露 */ });
     return;
   }
   loadBalloonModel(url)
@@ -151,9 +151,8 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
       balloon.hitRadius = balloon.effectiveRadius * (tune.scale ?? 1.0) * extraScale;
     })
     .catch(() => {
-      // 加载失败：恢复程序化球体（笑脸）作为兜底，避免气球不可见
-      balloon.mesh.material.visible = true;
-      console.warn('[BalloonModels] 降级为程序化球体:', url);
+      // 加载失败：保持程序化球体隐藏（不再用彩色笑脸兜底，避免破坏沉浸）；仅告警便于定位 404/解码问题
+      console.warn('[BalloonModels] 模型加载失败，保持隐藏（无彩色兜底）:', url);
     });
 }
 

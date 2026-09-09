@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { GLTFLoader } from '../../vendor/GLTFLoader.js';
 import { DRACOLoader } from '../../vendor/DRACOLoader.js';
-import { GUN, GUN_MODES, INPUT } from '../core/constants.js';
+import { GUN, GUN_MODES, INPUT, SKILL_HINT } from '../core/constants.js';
+import { SkillHintPanel } from './skillHint.js';
 
 // 右手柄 AK 枪模型：加载 Ak枪.glb → 幂等挂到右手柄(grip) → 每帧从 GUN 配置应用变换
 // 纯视觉叠加，不影响射击/碰撞/血量逻辑。
@@ -19,6 +20,7 @@ export class RightGun {
     this._recoilZ = 0;               // 当前后坐力：沿本地 +Z 后退位移（米）
     this._recoilPitch = 0;           // 当前后坐力：绕本地 X 上抬角（弧度，枪口跳）
     this._lastShots = 0;             // 上一帧记录的开火计数（用于检测本帧新开了几枪）
+    this.skillHint = new SkillHintPanel();  // 技能就绪提示面板（右手枪中央，红框闪3下）
     this._load();
   }
 
@@ -50,12 +52,16 @@ export class RightGun {
   }
 
   // 每帧调用：幂等挂到右手柄，并从 GUN 配置实时应用变换（便于控制台/刷新即时调参）
-  update(dt, input) {
+  update(dt, input, game) {
     this._applyTransform();
     this._applyRecoil(dt, input);
-    if (this._attached) return;
     const anchor = input?.getGrip(INPUT.SWAP_HANDS ? 'left' : 'right');   // 右手握把空间（SWAP_HANDS 时交换到左手柄以校正 PICO 左右反）
-    if (anchor) { anchor.add(this.root); this._attached = true; }
+    if (anchor) {
+      if (!this._attached) { anchor.add(this.root); this._attached = true; }
+      this.skillHint.attach(anchor);          // 幂等：挂到右手柄(grip)，视觉落在右手腕（原右手信息框位置）
+    }
+    if (SKILL_HINT.DEBUG && input) this.skillHint.debugMove(input, dt);  // 调试：左手柄摇杆/XY键 实时微调提示框位置（调参用）
+    if (game) { this.skillHint.update(dt, game); }  // 每帧驱动闪烁/就绪状态（game 直接传给面板绘制）
   }
 
   // 后坐力：在 _applyTransform 把基准变换重置后，叠加一层「后退 + 枪口上跳」，并指数回正。

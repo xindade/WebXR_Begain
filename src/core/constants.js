@@ -345,6 +345,17 @@ export const FLIP = {
   ],
 };
 
+// ===== 开场魔术师模型（第3/9/15关机制关）位置与缩放 =====
+// 进关时在世界固定点循环播放「魔术师动画版」GLB，10秒后自动消失（见 openingModel.js）。
+// 3/9/15 三关默认同值，可分别微调；改完刷新页面即生效（userConfig.OPENING_MAGICIAN 可覆盖）。
+export const OPENING_MAGICIAN = {
+  // pos：模型根节点世界坐标（米，X右 / Y上 / Z前为负=玩家前方）；scaleHeight：目标身高（米，自动等比缩放 GLB 到该高度）
+  3:  { pos: [0, 1.4, -5], scaleHeight: 2.0 },   // 第3关 · 激光搭阵：玩家正前5米、离地1.4、约2米高
+  9:  { pos: [0, 1.4, -5], scaleHeight: 2.0 },   // 第9关 · 玻璃走格子：同上
+  15: { pos: [0, 1.4, -5], scaleHeight: 2.0 },   // 第15关 · 九宫格翻转：同上
+  SHOW_SECONDS: 10,   // 出现后循环播放时长（秒），到时自动消失
+};
+
 // 稀有度配置：权重、颜色、倍率
 export const RARITY = {
   white:  { name: '普通', weight: 60, color: '#dfe6e9', mult: 1 },
@@ -382,8 +393,8 @@ export const GUN = {
 
 // ============================================================
 // 手柄手腕 UI 面板放置参数（随时可调，改完刷新页面即生效）
-//   - RIGHT：右手柄战斗信息面板（青色边框）
-//   - LEFT ：左手柄日志面板（橙色边框）
+//   - LEFT ：左手柄战斗信息面板（橙色边框）—— 原右手信息框内容（关卡/剩余/船血/分数 + 龙Boss血条 + 攻/射/额外射击）
+//   - RIGHT：右手柄面板已隐藏；其手腕位置现由「技能提示框」(skillHint.js) 占用，故 RIGHT 配置仅供技能框参考/占位
 // 坐标系：相对手柄(grip)本地坐标；右手柄默认朝 -Z 为「前方」
 //   X = 右(玩家视角) / Y = 上 / Z = 前(正值更靠前)
 //   SCALE 越大面板越大（物理尺寸 = Canvas 像素 / 1024 × SCALE，1px≈1mm）
@@ -398,12 +409,40 @@ export const WRIST_UI = {
     CANVAS:   { w: 512, h: 512 },            // 画布分辨率（像素）：只影响清晰度，不影响物理大小
   },
   LEFT: {
-    SCALE:    1 / 2,                          // 大小：放大 3 倍（比右手大，约 0.25m×0.125m）
-    POSITION: { x: 0.0, y: -0.025, z: 0.045 }, // 位置（米）：略低于手背、前移一点
-    ROTATION: { x: -34, y: 0, z: 0 },       // 旋转（度）：向下倾斜约 34°
+    SCALE:    1 / 3,                          // 大小：与右手原信息框一致（约 0.167m×0.167m）
+    // —— 位置（米，相对【左手柄 grip】本地坐标；本地 +X=右、+Y=上、+Z=朝手指前方）——
+    POSITION: { x: 0.0, y: -0.025, z: 0.045 },  // 当前：x=0(居中手腕内侧) / y=-0.025(略低于手背) / z=0.045(略朝前)；左手柄调位改这三个值即可
+    // —— 旋转（度，绕本地 XYZ 欧拉角；x 为负=面板向前下倾，便于低头看手腕）——
+    ROTATION: { x: -34, y: 0, z: 0 },       // 当前：x=-34°(俯仰下倾) / y=0(无偏航) / z=0(无翻滚)；调 x 改俯仰、y 改左右偏航、z 改翻滚
     BORDER:   '#ff7a00',                      // 边框颜色（橙）
-    CANVAS:   { w: 512, h: 256 },            // 画布分辨率（像素）：只影响清晰度
+    CANVAS:   { w: 512, h: 512 },            // 画布分辨率（像素）：放大到 512×512 容纳战斗信息（龙Boss血条 + 攻/射/额外射击）
   },
+};
+
+// ============================================================
+// 技能提示面板（右手腕，占用原右手信息框位置）参数——改完刷新页面即生效
+// 始终浮现（进关即显示，不隐藏），三态：① 冷却中(显示剩余秒+进度条) ② 积分不足 ③ 就绪(红框闪 FLASH_COUNT 下→金框常亮)。
+// 仅当"释放技能后再次达标(score≥skillCost 且 skillCooldown=0)"才重新闪烁 FLASH_COUNT 下。
+// 坐标系：相对右手柄(grip)本地坐标，视觉落在右手腕处（与右手枪同源，故随右手移动）。
+// ============================================================
+export const SKILL_HINT = {
+  SCALE:    0.4,                          // 物理尺寸缩放（基于下方 CANVAS；1px≈1mm → 512px×0.4≈0.2m 宽）
+  POSITION: { x: 0.1, y: -0.0167, z: 0.03 }, // 位置（米）：右手柄本地坐标，落在右手腕处（原右手信息框位置，z+更靠前）
+  ROTATION: { x: -90, y: 0, z: 0 },       // 旋转（度）：向下倾斜便于直视（同右手腕面板风格）
+  CANVAS:   { w: 512, h: 320 },           // 画布分辨率（像素）：加高到 320 容纳冷却进度条 + 积分数
+  FLASH_COUNT:   3,                       // 达标时红框闪烁次数（下）：默认 3 下
+  FLASH_ON:     0.18,                     // 单次闪烁"红"持续时长（秒）
+  FLASH_OFF:    0.12,                     // 单次闪烁"灭"间隔（秒）；一明一灭 = FLASH_ON+FLASH_OFF
+  FLASH_BORDER: '#ff3b30',               // 闪烁时的红框/红字色
+  READY_BORDER: '#ffd24a',               // 就绪常亮边框色（金）
+  COOLDOWN_BORDER:    '#ff7a00',         // 冷却中边框色（橙）
+  COOLDOWN_BAR_COLOR: '#ff9d2e',         // 冷却恢复进度条填充色（橙亮）
+  COOLDOWN_BG:        'rgba(255,255,255,0.15)', // 冷却进度条底色
+  INSUFFICIENT_BORDER: '#8a93a6',        // 积分不足边框色（灰）
+  INSUFFICIENT_TEXT:   '#cfd6e4',        // 积分不足文字色（浅灰）
+  IDLE_BORDER:        '#5a6b85',         // 兜底默认边框色（一般不被用到，三态都会覆盖）
+  DEBUG:              true,              // 调试模式：开启后可用左手柄摇杆(前后左右)+X/Y键(上下)实时微调提示框位置（调参用，调完改 false）
+  DEBUG_STEP:         0.5,               // 调试移动速度（米/秒）：摇杆/XY键每秒推动的位移量（越小越精细）
 };
 
 // ============================================================
@@ -444,6 +483,11 @@ export const DRAGON = {
   HEAD_SCALE: 1.0,                        // 龙头模型额外缩放倍率（模型已按包围盒自动贴合身体尺寸，此项做微调）
   HEAD_YAW:   0,                          // 龙头模型自身前向轴修正(度)：在全局旋转之后，lookAt 路径切线时额外绕 Y 旋转
   HP_MULT:    1.0,                         // 龙气球血量倍率（>1 更肉，如 2.0 = 每节 200 血）
+
+  // —— 龙身减伤 & 击杀基础怪扣血（需求：龙身气球减伤95% / 每5个基础怪扣Boss 1%血）——
+  DAMAGE_REDUCTION: 0.95,          // 龙身/龙爪气球减伤比例（受击只吃 5%；含激光剑穿透，takeDamage 强制减伤）
+  BASIC_KILLS_PER_PERCENT: 5,      // 每消灭多少个「基础怪(basic)」扣 Boss 1% 总血量
+  BASIC_KILL_PERCENT: 0.01,        // 每次扣除 Boss 总血量的比例（1%）
 
   // ===== 龙 Boss 行为可调参数 =====
   RESPAWN_DELAY: 1.0,                     // 龙身/龙爪被打破后「外形复活」延迟(s)：1秒后回到龙形，但不回血
@@ -642,6 +686,11 @@ export const FACE_BOSS = {
   RED_FLAG_SPEED: 8,          // 释放后冲向玩家速度
   RED_FLAG_RADIUS: 1.5,        // 碰撞半径（视觉3倍后同步，原0.5）
   RED_FLAG_SCALE: 3,          // 旗子视觉缩放（变大3倍，原1）
+  // —— 红脸旗子「升空变大十倍砸向玩家」（转圈结束后触发）——
+  RED_FLAG_SLAM_RISE_Y: 8,         // 升空高度(m)：从已放置高度再抬升
+  RED_FLAG_SLAM_RISE_TIME: 1.0,   // 升空+放大耗时(s)
+  RED_FLAG_SLAM_SCALE: 10,        // 最终视觉放大倍数（约10倍，覆盖原3倍）
+  RED_FLAG_SLAM_SPEED: 26,        // 砸向玩家速度(m/s)：高速俯冲
 
   // —— 黑色阶段：分身（体型缩小一半，原 scale 2→1）——
   BLACK_CLONE_MODEL: 'Model/黑面脸谱.glb',
@@ -897,6 +946,11 @@ const _OVERRIDES = [
   ['SHURIKEN',       SHURIKEN,       USER_CONFIG.SHURIKEN],
   ['DRAGON_SUMMON', DRAGON_SUMMON, USER_CONFIG.DRAGON_SUMMON],
   ['DRAGON_VOICE', DRAGON_VOICE, USER_CONFIG.DRAGON_VOICE],
+  ['DRAGON', DRAGON, USER_CONFIG.DRAGON],
+  ['FACE_BOSS', FACE_BOSS, USER_CONFIG.FACE_BOSS],
+  ['OPENING_MAGICIAN', OPENING_MAGICIAN, USER_CONFIG.OPENING_MAGICIAN],
+  ['SKILL_HINT', SKILL_HINT, USER_CONFIG.SKILL_HINT],
+  ['WRIST_UI',  WRIST_UI,  USER_CONFIG.WRIST_UI],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

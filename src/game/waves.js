@@ -411,13 +411,14 @@ export class WaveManager {
   // 蓝(10s)→红(10s)→黑(10s)→蓝... 每次变脸换位置+清子实体
   // Boss 3000HP、95%减伤；击杀子实体按百分比扣 Boss 血（绕过减伤）
   _spawnFaceBoss() {
-    // 预加载所有脸谱模型 + 小怪模型
-    for (const url of FACE_BOSS.MODELS) loadBalloonModel(url);
-    loadBalloonModel(FACE_BOSS.FAN_MODEL);
-    loadBalloonModel(ENEMY_TYPES.flagMask.model);
+    // 预加载所有脸谱模型 + 小怪模型（每个 .catch 兜底，避免模型加载失败时变成 unhandled rejection 刷控制台）
+    const _swallow = (p) => { if (p && typeof p.catch === 'function') p.catch(() => {}); return p; };
+    for (const url of FACE_BOSS.MODELS) _swallow(loadBalloonModel(url));
+    _swallow(loadBalloonModel(FACE_BOSS.FAN_MODEL));
+    _swallow(loadBalloonModel(ENEMY_TYPES.flagMask.model));
     // 蓝阶段 3×3 阵型只用 basic（两侧列）与 knight（中心列）
-    loadBalloonModel(ENEMY_TYPES.basic.model);
-    loadBalloonModel(ENEMY_TYPES.knight.model);
+    _swallow(loadBalloonModel(ENEMY_TYPES.basic.model));
+    _swallow(loadBalloonModel(ENEMY_TYPES.knight.model));
 
     // 蓝阶段 = POSITIONS[0] = 前方
     const [x, y, z] = FACE_BOSS.POSITIONS[0];
@@ -598,6 +599,9 @@ export class WaveManager {
             f._flagAngleOffset = ang;
             f._flagLaunched = false;
             f._flagPlaced = false;
+            f._flagRiseT = 0;       // 升空+放大进度计时(s)
+            f._flagSlam = false;    // 是否已进入砸落(controlled=false 飞向玩家)
+            f._flagBaseY = 0;       // 升空基准Y(放置时写入)
             this.faceSubEntities.push(f);
             this.faceFlags.push(f);
           },
@@ -627,27 +631,23 @@ export class WaveManager {
         this._facePlaceRedFlag(f, i, b);
       });
     }
-    // 放置后：Boss 静止，逐帧锁定未释放旗子的两侧站位（展示用）
+    // 转圈结束(已放置)后：旗子升空 + 放大到十倍 → 高速砸向玩家（替换原8s匀速冲撞）
     if (this._redPlaced && b && b.alive) {
-      this.faceFlags.forEach((f, i) => {
-        if (!f.alive || !this.balloons.list.includes(f) || f._flagLaunched || !f._flagPlaced) return;
-        this._facePlaceRedFlag(f, i, b);
-      });
-    }
-    // 8s 起：每间隔释放一批(2面)旗子一起飞向玩家
-    if (t >= FACE_BOSS.RED_FLAG_LAUNCH_START) {
-      this.faceLaunchTimer -= dt;
-      if (this.faceLaunchTimer <= 0) {
-        this.faceLaunchTimer = FACE_BOSS.RED_FLAG_LAUNCH_INTERVAL;
-        let launched = 0;
-        for (const f of this.faceFlags) {
-          if (launched >= FACE_BOSS.RED_FLAG_LAUNCH_BATCH) break;
-          if (f.alive && this.balloons.list.includes(f) && !f._flagLaunched) {
-            f._flagLaunched = true;
-            f.controlled = false;
-            f.speed = FACE_BOSS.RED_FLAG_SPEED;
-            launched++;
-          }
+      for (const f of this.faceFlags) {
+        if (!f.alive || !this.balloons.list.includes(f) || f._flagSlam) continue;
+        if (f._flagLaunched) continue; // 兼容旧逻辑：理论上不再触发
+        f._flagRiseT = (f._flagRiseT || 0) + dt;
+        const k = Math.min(1, f._flagRiseT / FACE_BOSS.RED_FLAG_SLAM_RISE_TIME);
+        const ease = k * k * (3 - 2 * k); // smoothstep 缓动
+        // 升空：从放置高度抬升 RED_FLAG_SLAM_RISE_Y
+        f.mesh.position.y = f._flagBaseY + FACE_BOSS.RED_FLAG_SLAM_RISE_Y * ease;
+        // 放大：RED_FLAG_SCALE(3) → RED_FLAG_SLAM_SCALE(10)
+        const sc = FACE_BOSS.RED_FLAG_SCALE + (FACE_BOSS.RED_FLAG_SLAM_SCALE - FACE_BOSS.RED_FLAG_SCALE) * ease;
+        f.mesh.scale.setScalar(sc);
+        if (k >= 1) { // 升空+放大完成 → 进入砸落
+          f._flagSlam = true;
+          f.controlled = false;      // 交还自动朝玩家移动（balloon.update 朝 target）
+          f.speed = FACE_BOSS.RED_FLAG_SLAM_SPEED;
         }
       }
     }
@@ -665,6 +665,7 @@ export class WaveManager {
       b.mesh.position.z + fb * (rank + 1) * FACE_BOSS.RED_FLAG_FB_GAP  // 前后间隔 RED_FLAG_FB_GAP 米
     );
     f.mesh.rotation.z = FACE_BOSS.RED_FLAG_PLACED_ROT_Z; // 绕 Z 轴旋转（默认逆时针 90°）
+    f._flagBaseY = b.mesh.position.y + FACE_BOSS.RED_FLAG_ABOVE_Y; // 升空基准Y（砸落时从此外抬升）
     f._flagPlaced = true;
   }
 

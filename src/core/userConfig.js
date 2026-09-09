@@ -5,6 +5,59 @@
 // 原理：constants.js 末尾会 import 本文件并深合并覆盖对应对象。
 // ============================================================
 export const USER_CONFIG = {
+  // ==================== 开场魔术师模型（第3/9/15关机制关）位置与缩放 ====================
+  // 三关默认同值；只写想改的关。pos=[x,y,z]（米，Z负=玩家前方），scaleHeight=目标身高（米）。
+  OPENING_MAGICIAN: {
+    3:  { pos: [0, 5.4, -10], scaleHeight: 3.0 },   // 第3关 · 激光搭阵
+    9:  { pos: [0, 6.4, -10], scaleHeight: 4.0 },   // 第9关 · 玻璃走格子
+    15: { pos: [0, 7.4, -10], scaleHeight: 5.0 },   // 第15关 · 九宫格翻转
+    SHOW_SECONDS: 10,   // 循环播放时长（秒）
+  },
+
+  // ==================== 左手腕信息提示框（战斗信息）位置 / 旋转 / 大小 ====================
+  // 当前左手柄显示战斗信息（关卡/船血/分数 + 龙Boss血条 + 攻/射/额外射击）。
+  // 位置/旋转单位同 constants.WRIST_UI：POSITION 米(相对左手柄本地坐标 +X右/+Y上/+Z朝前)，
+  // ROTATION 度(绕本地XYZ，x负=面板下倾便于看手腕)。只调想改的键。
+  WRIST_UI: {
+    LEFT: {
+      SCALE:    1 / 3,                          // 大小：1/3 ≈ 0.167m×0.167m
+      POSITION: { x: 0.0, y: -0.025, z: 0.045 }, // 位置（米）：x=0(手腕居中) / y=-0.025(略低于手背) / z=0.045(略朝前)
+      ROTATION: { x: -45, y: 0, z: 0 },       // 旋转（度）：x=-34°(俯仰下倾) / y=0(无偏航) / z=0(无翻滚)
+      BORDER:   '#ff7a00',                      // 边框颜色（橙）
+      CANVAS:   { w: 512, h: 512 },            // 画布分辨率（像素）
+    },
+    // RIGHT 现由技能提示框(skillHint)占用、面板隐藏；参数保留以备切换/复用
+    RIGHT: {
+      SCALE:    1 / 3,
+      POSITION: { x: 0.1, y: -0.0167, z: 0.03 },
+      ROTATION: { x: -90, y: 0, z: 0 },
+      BORDER:   '#00e5ff',
+      CANVAS:   { w: 512, h: 512 },
+    },
+  },
+
+  // ==================== 技能就绪提示（右手枪中央）位置与闪烁 ====================
+  // 积分达标时红框闪 FLASH_COUNT 下后常亮；释放技能且积分再次达标再闪。仅调想改的键。
+  SKILL_HINT: {
+    SCALE: 0.4,
+    POSITION: { x: 0.119, y: -0.057, z: -0.018 },
+    ROTATION: { x: -90, y: 0, z: 0 },
+    CANVAS: { w: 512, h: 320 },
+    FLASH_COUNT: 3,
+    FLASH_ON: 0.18,
+    FLASH_OFF: 0.12,
+    FLASH_BORDER: '#ff3b30',
+    READY_BORDER: '#ffd24a',
+    COOLDOWN_BORDER: '#ff7a00',
+    COOLDOWN_BAR_COLOR: '#ff9d2e',
+    COOLDOWN_BG: 'rgba(255,255,255,0.15)',
+    INSUFFICIENT_BORDER: '#8a93a6',
+    INSUFFICIENT_TEXT: '#cfd6e4',
+    IDLE_BORDER: '#5a6b85',
+    DEBUG:           true,              // 调试模式：左手柄摇杆(前后左右)+X/Y键(上下)微调位置（调完改 false）
+    DEBUG_STEP:      0.5,               // 调试移动速度（米/秒）
+  },
+
   // ==================== 传送门（小怪关前后左右各一个） ====================
   PORTAL: {
     TARGET_HEIGHT: 2.2,    // 门整体高度（米）：基准高度，独立参数（与缩放倍数解耦）
@@ -95,7 +148,7 @@ export const USER_CONFIG = {
   // 左手柄 X 键（或桌面 G 键）按一下 +ADD_SCORE 积分，用于快速测试技能。
   // 正式上线把 ENABLED 改 false 即可关闭，避免误触加分。
   TEST: {
-    ENABLED: true,          // 总开关：false 关闭测试快捷键
+    ENABLED: false,          // 总开关：false 关闭测试快捷键
     ADD_SCORE: 500,         // 每次按下赠送的积分数（受 SCORE_CAP 上限裁剪）
     VR_BUTTON_LEFT_X: true, // 左手柄 X 键(buttons[4])触发
     DESKTOP_KEY_G: true,    // 桌面 G 键触发
@@ -127,7 +180,7 @@ export const USER_CONFIG = {
     BLADE_AXIS: { x: 0, y: 1, z: 0 },       // 剑刃方向（root 本地轴）= +Y（配合 ROTATION.x:-90 → 世界 -Z 前向）
     // —— 伤害/技能 ——
     DAMAGE: 700,                              // 单次命中伤害（×player.skillDamageMul）
-    DURATION: 5,                              // 激活后伤害状态持续秒数（击发后挥剑伤害的窗口）
+    DURATION: 7,                              // 激活后伤害状态持续秒数（击发后挥剑伤害的窗口）
     HIT_INTERVAL: 0.15,                      // 同一只怪被剑刃持续扫到时，两次扣血的最小间隔(秒)；调小=连续高 DPS
     COOLDOWN: 5,                              // 激活后复用冷却秒数（HUD 显示）
     COST: 500,                                // 消耗积分
@@ -209,6 +262,21 @@ export const USER_CONFIG = {
     URL:     'music/龙Boss.wav',  // 语音文件（相对 index.html；放在 music/ 下）
     VOLUME:  1.0,                 // 音量(0~1)：默认满音量，觉得吵可调小
     DELAY:   0.6,                 // Boss 开始运动(揭示)后延迟播放(秒)
+  },
+
+  // ==================== 龙 Boss 减伤 & 击杀基础怪扣血（热调） ====================
+  DRAGON: {
+    DAMAGE_REDUCTION: 0.95,       // 龙身/龙爪气球减伤比例（受击只吃 5%）
+    BASIC_KILLS_PER_PERCENT: 5,   // 每消灭多少个基础怪扣 Boss 1% 总血量
+    BASIC_KILL_PERCENT: 0.01,     // 每次扣 Boss 总血量比例（1%）
+  },
+
+  // ==================== 红脸旗子「升空十倍砸落」（热调） ====================
+  FACE_BOSS: {
+    RED_FLAG_SLAM_RISE_Y: 18,      // 升空高度(m)
+    RED_FLAG_SLAM_RISE_TIME: 1.0, // 升空+放大耗时(s)
+    RED_FLAG_SLAM_SCALE: 10,      // 最终视觉放大倍数（约10倍）
+    RED_FLAG_SLAM_SPEED: 26,      // 砸向玩家速度(m/s)
   },
 
   // ==================== 如来神掌（大招） ====================

@@ -20,7 +20,7 @@ import { ENEMY_TYPES } from '../content/enemies.js';
 import { ELITE_SCHEDULE } from '../content/eliteMonsters.js';
 import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN } from '../core/constants.js';
 import { setRenderer, loadBalloonModel, preCaptureDepthSprite } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 
@@ -280,7 +280,12 @@ export class Game {
     // 穿云期间(this._introActive)由 _updatePlaying 冻结其 update（不推进动画/计时），结束后才播放满 10 秒。
     // 模型经 glbCache 共享缓存、main.js 已预加载，进关即瞬时出现；淡入由穿云 extendFadeRoots 差集自动捕获。
     if (lv.n === 3 || lv.n === 9 || lv.n === 15) {
-      this.openingModel = new OpeningModel(this.world.scene, new THREE.Vector3(0, 1.4, -5));
+      const _omCfg = OPENING_MAGICIAN[lv.n];   // 第3/9/15关开场魔术师模型配置（位置/缩放见 constants.OPENING_MAGICIAN）
+      this.openingModel = new OpeningModel(
+        this.world.scene,
+        new THREE.Vector3(..._omCfg.pos),       // 模型根节点世界坐标（米：X右/Y上/Z前为负=玩家前方）
+        { scaleHeight: _omCfg.scaleHeight, showSeconds: OPENING_MAGICIAN.SHOW_SECONDS }  // 目标身高(米) + 播放时长(秒)
+      );
       this.openingModel.start();
       // 激光关开头语音：延迟到穿云结束后再播（雾气转场期间不播语音）
       if (lv.n === 3) this._pendingOpenVoice = 'music/魔法师激光阵语音.wav';
@@ -487,7 +492,7 @@ export class Game {
     const pp = this._playerPos();                     // 取一次玩家位置，所有门共用（同步读取，无异步滞留）
     this._portals.forEach((p) => p.update(dt, pp));   // 传送门动画 + 浮动 + 摇杆偏移 + 数值标签
     this.wristUI?.update(dt, this, this.input); // 手腕面板（VR 下显示，桌面忽略）
-    this.rightGun.update(dt, this.input);        // 右手柄 AK 枪（VR 手持，桌面忽略）
+    this.rightGun.update(dt, this.input, this);  // 右手柄 AK 枪 + 技能就绪提示面板（VR 手持，桌面忽略）
     this.leftSword.update(dt, this.input);        // 左手柄激光剑（VR 手持，桌面忽略）
     this._updateBuddhaFx(dt);
     this._updateExplosions(dt);
@@ -629,6 +634,9 @@ export class Game {
   // 激光关主循环：激光动画 + 保持期发光驱动 + 走格子/九宫格阶段分派
   _updateLaserLevel(dt, pp) {
     this.laser.update(dt, pp);
+    // 激光致死判定改用「玩家头部(相机)世界坐标」：rig 地板坐标 y≈0 与激光束高度 y=2~9.5 相差 >2m，
+    // 远超出 BEAM_LETHAL_R+PLAYER_R(0.55m)，用脚底判定会永远漏判 → 玩家贴脸也死不了。改头部坐标 y≈1.6 贴合受击体积。
+    const php = this.world.camera.getWorldPosition(new THREE.Vector3());
     // 机制关激光嗡鸣：激光束出现(beamsVisible)时响起、消失时淡出（声音随激光出现/消失）
     if (this.laser.beamsVisible) { this.audio?.startLaserHum('level'); this.audio?.setLaserHumLevel('level', 0.7); }
     else this.audio?.stopLaserHum('level');
@@ -662,7 +670,7 @@ export class Game {
       }
       // 3) 致命判定：进入安全期前激光仍致命（用户修改①：16–18s 致命）
       if (!this.flipPhase) {
-        const hit = this.laser.hitTest(pp, LASER.PLAYER_R);
+        const hit = this.laser.hitTest(php, LASER.PLAYER_R);
         if (hit) { this._dieInLaserLevel(); return; }
       }
       // 4) 18s 进入安全解谜期：激光淡出不致命 + 启动 180s 倒计时（用户修改②）
@@ -692,7 +700,7 @@ export class Game {
     if (this.gridPhase) { this._updateGridPhase(dt, pp); return; }
 
     // ---- 激光阶段（生成 / 驱赶 / 保持原地）----
-    const hit = this.laser.hitTest(pp, LASER.PLAYER_R);
+    const hit = this.laser.hitTest(php, LASER.PLAYER_R);
     if (hit) { this._dieInLaserLevel(); return; }
     if (this.laser.reachedGoal(pp)) {
       if (this.laser.mode === 'drive') {
@@ -914,6 +922,11 @@ export class Game {
     }
     this._addScore(balloon.score);
     this.dda?.notifyKill();   // DDA：记录一次击杀，用于滑窗击杀率统计
+
+    // 龙 Boss 关：每消灭1个基础怪(basic, 非龙部件) → 通知龙 Boss 计数（每5个扣1%总血量）
+    if (this.dragon && !this.dragon.dying && balloon.behavior === 'basic' && !balloon.isDragonPart) {
+      this.dragon.notifyBasicKilled();
+    }
 
     // 脸谱 Boss 子实体被击杀 → 按百分比直接扣 Boss 血量（绕过 95% 减伤）
     // 旗子 2%、分身 1%、小怪 2%；Boss 死亡则递归结算（Boss 非 isFaceSub，不会无限递归）
