@@ -356,6 +356,16 @@ export const OPENING_MAGICIAN = {
   SHOW_SECONDS: 10,   // 出现后循环播放时长（秒），到时自动消失
 };
 
+// ===== 基础怪群体语音（"冲冲冲"）=====
+// 场上存活基础怪数量 ≥ THRESHOLD 时播放一次语音，随后停顿 PAUSE 秒再重新判断；达标再次播放。
+// 改完刷新页面即生效（userConfig.BASIC_VOICE 可覆盖）。
+export const BASIC_VOICE = {
+  URL:       'music/冲冲冲.wav',   // 语音音频文件（一次性播放，不循环），放 music/ 目录
+  THRESHOLD: 10,                  // 触发阈值（个）：场上存活「基础怪」数量 ≥ 该值才播放
+  PAUSE:     5,                   // 停顿时间（秒）：播放一次后等待该秒数，再重新判断数量
+  VOLUME:    1.0,                 // 播放音量（0~1）
+};
+
 // 稀有度配置：权重、颜色、倍率
 export const RARITY = {
   white:  { name: '普通', weight: 60, color: '#dfe6e9', mult: 1 },
@@ -951,6 +961,7 @@ const _OVERRIDES = [
   ['OPENING_MAGICIAN', OPENING_MAGICIAN, USER_CONFIG.OPENING_MAGICIAN],
   ['SKILL_HINT', SKILL_HINT, USER_CONFIG.SKILL_HINT],
   ['WRIST_UI',  WRIST_UI,  USER_CONFIG.WRIST_UI],
+  ['BASIC_VOICE', BASIC_VOICE, USER_CONFIG.BASIC_VOICE],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

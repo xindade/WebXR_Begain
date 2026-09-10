@@ -20,7 +20,7 @@ import { ENEMY_TYPES } from '../content/enemies.js';
 import { ELITE_SCHEDULE } from '../content/eliteMonsters.js';
 import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE } from '../core/constants.js';
 import { setRenderer, loadBalloonModel, preCaptureDepthSprite } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 
@@ -141,6 +141,8 @@ export class Game {
     this._camPos = new THREE.Vector3(); // 每帧刷新相机世界坐标，供 2D 立绘薄板命中(法线=朝相机)
     this.attackBonus = 0;       // 死亡重开攻击力加成（每次 +50，可累计）；归零于 start()/toMenu()
     this._attackHint = null;    // 面前 2m 文字提示精灵（攻击力 +50），2 秒后淡出
+    this._basicVoiceTimer = 0;  // 基础怪语音停顿倒计时(s)：>0 时暂停判断（播放后停顿 PAUSE 秒）
+    this._basicVoiceEl = null;  // 当前播放的基础怪语音元素（重播前先暂停上一个，避免叠加）
   }
 
   setSystems(audio, input, wristUI = null, pageLog = null) {
@@ -599,6 +601,7 @@ export class Game {
     // ====== 普通关 ======
     // 气球以玩家世界位置为终点移动（所有怪追玩家）；碰飞毯区域自爆逻辑不变（见 _checkExplosions）
     this.balloons.update(dt, pp, this.world.camera);
+    this._updateBasicVoice(dt); // 基础怪群体语音：数量达标播放一次，停顿后再判断
     this.shurikens.update(dt, pp); // 手里剑飞行/自旋/命中回收（玩家位置 pp = rig 头部世界坐标）
     if (this.dragon) {
       this.dragon.update(dt, pp);   // 龙 Boss：逐帧接管龙气球位置
@@ -629,6 +632,21 @@ export class Game {
     const cleared = this.dragon ? this.dragon.cleared : this.waves.cleared;
     // 第18关魔术师Boss：通关横幅激活期间不走抽卡，改由横幅 10s 计时自动退出
     if (cleared && !(this.waves && this.waves._winBanner)) { this._enterCard(); }
+  }
+
+  // 基础怪群体语音：场上存活基础怪(排除龙身部件)≥ 阈值时播放一次，停顿 PAUSE 秒后再判断
+  _updateBasicVoice(dt) {
+    if (!this.audio) return;
+    if (this._basicVoiceTimer > 0) { this._basicVoiceTimer -= dt; return; } // 停顿中，暂不判断
+    let n = 0;
+    for (const b of this.balloons.list) {
+      if (b.behavior === 'basic' && !b.isDragonPart && b.alive) n++;
+    }
+    if (n >= BASIC_VOICE.THRESHOLD) {
+      if (this._basicVoiceEl) { try { this._basicVoiceEl.pause(); } catch (e) {} } // 重播前先停上一个，避免叠加
+      this._basicVoiceEl = this.audio.playVoice(BASIC_VOICE.URL, BASIC_VOICE.VOLUME); // 播放一次（不循环）
+      this._basicVoiceTimer = BASIC_VOICE.PAUSE; // 播放后停顿 PAUSE 秒再判断
+    }
   }
 
   // 激光关主循环：激光动画 + 保持期发光驱动 + 走格子/九宫格阶段分派
@@ -1243,6 +1261,7 @@ export class Game {
     this.log('飞船坠毁，本关重开');
     this._restoreSnapshot();
     this.balloons.clear();
+    this._basicVoiceTimer = 0; this._basicVoiceEl = null; // 重开：清零基础怪语音停顿计时
     this.shurikens.clear(); // 重开本关一并清手里剑
     this.bullets.clear();
     // 不调 _clearExplosions()：让死亡爆炸特效在 0.4s 内自然消亡
