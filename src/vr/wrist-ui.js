@@ -8,6 +8,15 @@ import { WRIST_UI } from '../core/constants.js';
 // 不依赖原项目的 ship.js / buddhaPalm.js，数据直接从 Game 读取。
 // 放置参数（位置/旋转/大小/边框/画布）统一在 constants.js 的 WRIST_UI 中，便于随时调整。
 
+// 血量文本格式化：最多保留 1 位小数（自我修复/回血卡会让 hp 变成 123.456789… 的长小数）。
+//   HP_DECIMALS = 显示精度（0=整数 / 1=保留 1 位小数）；整数不带 ".0"，避免 "400.0" 这类噪声。
+//   想改精度只改这一行即可（血量数值本身不受影响，仅影响显示）。
+const HP_DECIMALS = 1;
+function fmtHp(v) {
+  const r = Math.round((Number(v) || 0) * 10 ** HP_DECIMALS) / 10 ** HP_DECIMALS;
+  return Number.isInteger(r) ? String(r) : r.toFixed(HP_DECIMALS);
+}
+
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -106,7 +115,7 @@ export class WristUI {
       c.font = 'bold 30px sans-serif';
       c.fillText(`${cur} / ${max}`, bx, by + bh + 36);
       c.font = '34px sans-serif';
-      c.fillText(`船血 : ${game.player.hp} / ${game.player.maxHp}`, 28, by + bh + 92);
+      c.fillText(`船血 : ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`, 28, by + bh + 92);
       c.fillText(`分数 : ${game.score}`, 28, by + bh + 140);
       // —— 玩家战斗属性（攻击力 / 射速 / 额外射击）追加显示 ——
       const _p2 = game.player;
@@ -128,13 +137,13 @@ export class WristUI {
       ? [
           `关卡    : ${game.levelIndex + 1} (激光)`,
           `激光气球: ${game.laser ? game.laser.groups.length : 0}`,
-          `船血    : ${game.player.hp} / ${game.player.maxHp}`,
+          `船血    : ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`,
           `目标    : 到达底边过关`,
         ]
       : [
           `关卡    : ${game.levelIndex + 1}`,
           `剩余敌人: ${game.waves.remaining}`,
-          `船血    : ${game.player.hp} / ${game.player.maxHp}`,
+          `船血    : ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`,
           `分数    : ${game.score}`,
         ];
     c.fillStyle = '#ffffff';

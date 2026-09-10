@@ -69,6 +69,8 @@ export class WaveManager {
     this._blueSpawnedCount = 0;
     this._redSpawned = false;
     this._redPlaced = false;      // 红阶段旗子是否已移到 Boss 两侧（公转结束标记）
+    this._redMerged = false;      // 红阶段是否已融合成一面大旗
+    this._flagKeeper = null;      // 融合后保留的那面大旗
     this._cloneSpawnedCount = 0;
     this._pendingSpawns = [];   // 出怪光点队列 [{type,pos,from,dur,t,mesh,onSpawn,check,summonOwner,group,ring}]
     this._bossQueued = false;   // Boss 已在排队（防重复排队刷光点）
@@ -113,6 +115,8 @@ export class WaveManager {
     this._blueSpawnedCount = 0;
     this._redSpawned = false;
     this._redPlaced = false;
+    this._redMerged = false;
+    this._flagKeeper = null;
     this._cloneSpawnedCount = 0;
 
     // Boss 关（非龙）：直接走 _spawnBoss 流程，不走 NORMAL_TEST
@@ -460,7 +464,14 @@ export class WaveManager {
     }
     const t = this.facePhaseTimer;
     if (this.facePhase === 0) this._faceUpdateBlue(dt, t);
-    else if (this.facePhase === 1) this._faceUpdateRed(dt, t);
+    else if (this.facePhase === 1) {
+      this._faceUpdateRed(dt, t);
+      if (this._redEndNow) {          // 红阶段：Boss 已落地 → 立刻变脸进入下一阶段
+        this._redEndNow = false;
+        this._faceNextPhase();
+        return;
+      }
+    }
     else this._faceUpdateBlack(dt, t);
   }
 
@@ -569,6 +580,43 @@ export class WaveManager {
   // 红色阶段：0-2s 留空 → 2-6s 旗子绕Boss公转 → 6s 公转结束：旗子移到 Boss 两侧均匀分布 + 自身绕Z轴逆时针转90° → 8-14s 仍逐个飞向玩家
   _faceUpdateRed(dt, t) {
     const b = this.faceBoss;
+    // —— Boss 本体动作（红阶段：随旗子一起"原地旋转 / 原地升空 / 原地落地"）——
+    //   · 旗子公转期间：Boss 原地自转（角速度 RED_BOSS_SPIN_SPEED，方向与旗子公转同向）
+    //   · 升空/砸落：Boss 与"保留的大旗"同步升降（只动 Y，X/Z 钉在原位 → 就是"原地"升落）
+    // 注意：所有气球每帧都会 mesh.lookAt(玩家)，故朝向/高度必须在本方法里覆写（本方法晚于 balloons.update 执行）。
+    if (b && b.alive) {
+      const BP = FACE_BOSS.POSITIONS[1];
+      b.mesh.position.x = BP[0];
+      b.mesh.position.z = BP[2];
+      b._redBaseY = BP[1];                                  // 升降基准高度（落地时回到这里）
+      // 正面基准角：红阶段开始时"面向玩家"的那个角度，自转结束要精确回到它（用户要求：刚好转回正面）
+      if (b._spinFront == null) {
+        const pl = this.getPlayerPos ? this.getPlayerPos() : null;
+        b._spinFront = pl ? Math.atan2(pl.x - BP[0], pl.z - BP[2]) : 0;
+      }
+      // 自转：在可用窗口内推进"整数圈" —— 用进度(k)算角度而非逐帧累加，末端必然 = 正面 + 整数圈(视觉上即正面)。
+      //   圈数 = RED_BOSS_SPIN_TURNS(>0 固定) 或 最接近 RED_BOSS_SPIN_SPEED 的整数圈(自动)；
+      //   实际角速度 = 2π×圈数 / 窗口时长（所以想转更久就把 RED_FLAG_ORBIT_END 调大）。
+      const spinStart = FACE_BOSS.RED_FLAG_SPAWN_START;
+      const spinEnd = FACE_BOSS.RED_FLAG_ORBIT_END;
+      const spinning = t >= spinStart && t < spinEnd;
+      if (b._spinTurns == null && FACE_BOSS.RED_BOSS_SPIN_SPEED) {
+        const win = Math.max(0.1, spinEnd - spinStart);
+        b._spinTurns = FACE_BOSS.RED_BOSS_SPIN_TURNS > 0
+          ? FACE_BOSS.RED_BOSS_SPIN_TURNS
+          : Math.max(1, Math.round(FACE_BOSS.RED_BOSS_SPIN_SPEED * win / (Math.PI * 2)));
+        b._spinSpeed = (Math.PI * 2 * b._spinTurns) / win;   // 实际角速度（整圈折算后）
+      }
+      if (b._spinTurns != null) {
+        if (spinning) {
+          const k = Math.min(1, Math.max(0, (t - spinStart) / Math.max(0.1, spinEnd - spinStart)));
+          b._spinYaw = b._spinFront + Math.PI * 2 * b._spinTurns * k;
+        } else if (t >= spinEnd) {
+          b._spinYaw = b._spinFront + Math.PI * 2 * b._spinTurns;  // 定格：恰好正面（不受帧率累积误差影响）
+        }
+        if (b._spinYaw != null) b.mesh.rotation.set(0, b._spinYaw, 0); // 覆盖 lookAt，转完冻结在正面
+      }
+    }
     // 2-6s: 旗子出现 + 绕 Boss 公转
     if (t >= FACE_BOSS.RED_FLAG_SPAWN_START && !this._redSpawned) {
       this._redSpawned = true;
@@ -631,10 +679,49 @@ export class WaveManager {
         this._facePlaceRedFlag(f, i, b);
       });
     }
-    // 转圈结束(已放置)后：旗子升空 + 放大到十倍 → 高速砸向玩家（替换原8s匀速冲撞）
+    // —— 融合：转圈结束、升空前，多面旗合成一面大旗 ——
+    //   保留第 1 面（移正到 Boss 正上方），其余旗子飞向它并缩小 → 到位即移除（"其它旗子消失只保留一个旗子"）
+    if (this._redPlaced && b && b.alive && FACE_BOSS.RED_FLAG_MERGE && !this._redMerged) {
+      this._redMerged = true;
+      const live = this.faceFlags.filter((f) => f.alive && this.balloons.list.includes(f) && !f._flagLaunched);
+      this._flagKeeper = live[0] || null;
+      if (this._flagKeeper) {
+        const kp = this._flagKeeper;
+        kp.mesh.position.set(b.mesh.position.x, b.mesh.position.y + FACE_BOSS.RED_FLAG_ABOVE_Y, b.mesh.position.z);
+        kp._flagBaseY = b.mesh.position.y + FACE_BOSS.RED_FLAG_ABOVE_Y;   // 大旗升空基准（Boss 正上方）
+        for (let i = 1; i < live.length; i++) {
+          const f = live[i];
+          f._merging = true;                    // 融合中：跳过升空/下砸，由下方"融合推进"接管位置
+          f._mergeT = 0;
+          f._mergeFrom = f.mesh.position.clone();
+          f._mergeScale0 = f.mesh.scale.x;
+        }
+      }
+    }
+    // 融合推进：其余旗子飞向大旗并缩小，到位即从场上移除
+    if (this._flagKeeper) {
+      const dst = this._flagKeeper.mesh.position;
+      for (const f of this.faceFlags) {
+        if (!f._merging) continue;
+        f._mergeT += dt;
+        const k = FACE_BOSS.RED_FLAG_MERGE_TIME > 0 ? Math.min(1, f._mergeT / FACE_BOSS.RED_FLAG_MERGE_TIME) : 1;
+        if (k >= 1) {
+          f._merging = false;
+          if (this.balloons.list.includes(f)) this.balloons.remove(f);   // 融合完成：消失
+          continue;
+        }
+        f.mesh.position.set(
+          f._mergeFrom.x + (dst.x - f._mergeFrom.x) * k,
+          f._mergeFrom.y + (dst.y - f._mergeFrom.y) * k,
+          f._mergeFrom.z + (dst.z - f._mergeFrom.z) * k
+        );
+        f.mesh.scale.setScalar(f._mergeScale0 * (1 - k));
+      }
+    }
+    // 转圈结束(已放置)后：大旗升空 + 放大到十倍 → 高速砸向玩家
     if (this._redPlaced && b && b.alive) {
       for (const f of this.faceFlags) {
-        if (!f.alive || !this.balloons.list.includes(f) || f._flagSlam) continue;
+        if (!f.alive || !this.balloons.list.includes(f) || f._flagSlam || f._merging) continue;
         if (f._flagLaunched) continue; // 兼容旧逻辑：理论上不再触发
         f._flagRiseT = (f._flagRiseT || 0) + dt;
         const k = Math.min(1, f._flagRiseT / FACE_BOSS.RED_FLAG_SLAM_RISE_TIME);
@@ -648,8 +735,38 @@ export class WaveManager {
           f._flagSlam = true;
           f.controlled = false;      // 交还自动朝玩家移动（balloon.update 朝 target）
           f.speed = FACE_BOSS.RED_FLAG_SLAM_SPEED;
+          // 冻结下砸期间的朝向：旗子飞到玩家正上方时 mesh.lookAt 方向近似退化（yaw 每帧乱跳）→ 剧烈抖动
+          f._slamRot = { x: f.mesh.rotation.x, y: f.mesh.rotation.y, z: f.mesh.rotation.z };
         }
       }
+      // 下砸：升空后一边追玩家(XZ 由 balloon.update 接管)一边快速下降，
+      // 降到 RED_FLAG_HIT_Y 以下才允许结算命中（见 game._checkExplosions 的高度门限）→ 真正"砸到玩家"
+      for (const f of this.faceFlags) {
+        if (!f.alive || !this.balloons.list.includes(f) || !f._flagSlam) continue;
+        f.mesh.position.y = Math.max(FACE_BOSS.RED_FLAG_HIT_Y, f.mesh.position.y - FACE_BOSS.RED_FLAG_DIVE_SPEED * dt);
+        // 冻结朝向（覆盖 lookAt）：RED_FLAG_SLAM_LOCK_ROT=false 可关掉恢复原样
+        if (FACE_BOSS.RED_FLAG_SLAM_LOCK_ROT && f._slamRot) {
+          f.mesh.rotation.set(f._slamRot.x, f._slamRot.y, f._slamRot.z);
+        }
+      }
+      // —— Boss 随大旗"原地升空 / 原地落地"：高度与大旗完全同步（只改 Y，X/Z 不动）——
+      const kp = this._flagKeeper;
+      const kpAlive = !!(kp && kp.alive && this.balloons.list.includes(kp));
+      if (FACE_BOSS.RED_BOSS_RISE_WITH_FLAG && b._redBaseY != null) {
+        if (kpAlive && !kp._flagSlam) {  // 大旗升空中 → Boss 同步升空（同一缓动曲线）
+          const kk = Math.min(1, (kp._flagRiseT || 0) / FACE_BOSS.RED_FLAG_SLAM_RISE_TIME);
+          const ez = kk * kk * (3 - 2 * kk);
+          b.mesh.position.y = b._redBaseY + FACE_BOSS.RED_FLAG_SLAM_RISE_Y * ez;
+        } else {                         // 大旗下砸中（或大旗被打死/移除）→ Boss 同步落地，回到基准高度
+          b.mesh.position.y = Math.max(b._redBaseY, b.mesh.position.y - FACE_BOSS.RED_FLAG_DIVE_SPEED * dt);
+        }
+      }
+    }
+    // —— 落地即切阶段（用户要求）：大旗开始下砸后，Boss 一落回基准高度就请 _updateFaceBoss 切到下一阶段 ——
+    if (FACE_BOSS.RED_END_ON_LAND && this._flagKeeper && !this._redEndNow && b && b._redBaseY != null) {
+      const kpf = this._flagKeeper;
+      const slamStarted = !!kpf._flagSlam || !(kpf.alive && this.balloons.list.includes(kpf));
+      if (slamStarted && b.mesh.position.y <= b._redBaseY + 1e-3) this._redEndNow = true;
     }
   }
 
@@ -728,6 +845,17 @@ export class WaveManager {
     }
     this.faceSubEntities = [];
     this.faceFlags = [];
+    // 清红阶段 Boss 动作/自转缓存（下次进红阶段重新取"正面"基准角并重新算整圈）
+    if (this.faceBoss) {
+      this.faceBoss._spinYaw = null;
+      this.faceBoss._spinFront = null;
+      this.faceBoss._spinTurns = null;
+      this.faceBoss._spinSpeed = null;
+      this.faceBoss._redBaseY = null;
+    }
+    this._redEndNow = false;
+    this._redMerged = false;
+    this._flagKeeper = null;
     this._redSpawned = false;
     this._redPlaced = false;
     this._blueSpawnedCount = 0;

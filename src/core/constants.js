@@ -426,7 +426,7 @@ export const BASIC_VOICE = {
   URL:       'music/冲冲冲.wav',   // 语音音频文件（一次性播放，不循环），放 music/ 目录
   THRESHOLD: 10,                  // 触发阈值（个）：场上存活「基础怪」数量 ≥ 该值才播放
   PAUSE:     5,                   // 停顿时间（秒）：播放一次后等待该秒数，再重新判断数量
-  VOLUME:    1.0,                 // 播放音量（0~1）
+  VOLUME:    0.6,                 // 播放音量（0~1）
 };
 
 // 稀有度配置：权重、颜色、倍率
@@ -631,11 +631,11 @@ export const DEPTH_SPRITE_SWING = 0.18; // idle 摆动幅度(弧度)，绕 Y 小
 // 'Model/基础怪.glb': { albedo:'assets/basic_albedo.png', depth:'assets/basic_depth.png', frameCount:8, cols:8, rows:1 }
 export const DEPTH_SPRITE_HANDPAINTED = {}; // 清空即退回运行时 GLB 多帧捕获（basic 恢复 idle 摆动）
 export const DEPTH_SPRITE_SCALE = 0.08;
-// 立绘命中系数（范围大小的主旋钮）：captureGLB 用 45° 相机渲染，模型只占画幅 62.5%（相机距离按 0.8/tan(22.5°) 取景），
-// 立绘纹理其余是透明留边。但命中半径按「整张贴图半幅」算，导致命中范围≈可见角色的 1/0.625≈1.6 倍。
-// 这里把立绘命中半径 ×0.625（≈用户说的"缩小0.6倍"），折算取景留边，使命中等同可见角色。3D 模型怪不受影响。
+// 立绘命中倍率（手感微调）：命中半径 = 立绘里「可见角色」的半高 × 本倍率。
+//   1.0 = 完全贴合可见角色（默认，各怪按自己的 radius 自动折算取景留边，见 glbCapture.captureFrameFit）；
+//   <1 = 收紧，>1 = 放宽。注意：取景留边已按 radius 自动折算，这里不再需要「一刀切」的小系数。
 // 用 let 以便 userConfig.DEPTH_SPRITE.HIT_MUL 单独覆盖（见文件末尾）。
-export let DEPTH_SPRITE_HIT_MUL = 0.6;
+export let DEPTH_SPRITE_HIT_MUL = 1.0;
 
 // ============================================================
 // 正常测试模式（NORMAL_TEST）：覆盖普通关出怪曲线
@@ -723,7 +723,7 @@ export const FACE_BOSS = {
   FAN_MODEL: 'Model/京剧扇子.glb',
 
   // —— 子实体击杀 → Boss 扣血（× HP，绕过减伤）——
-  KILL_FLAG_HP_PCT:   0.01,  // 旗子 
+  KILL_FLAG_HP_PCT:   0.02,  // 旗子 
   KILL_CLONE_HP_PCT:  0.01,  // 分身 1% = 30HP
   KILL_MINION_HP_PCT: 0.01,  // 小怪 
 
@@ -754,7 +754,7 @@ export const FACE_BOSS = {
   RED_FLAG_ABOVE_Y: 3.0,        // 【转圈后·悬浮位置】悬浮高度 m：旗子位于 Boss 中心上方多少（Y 偏移）
   RED_FLAG_PLACED_ROT_Z: Math.PI / 4, // 【转圈后·旋转角度】定位后旗子绕 Z 轴旋转弧度(π/2=逆时针90°)；改此即改旗子朝向，无需动代码
   RED_FLAG_Y: 2,
-  RED_FLAG_HP: 200,
+  RED_FLAG_HP: 2000,
   RED_FLAG_SELF_DAMAGE: 5,
   RED_FLAG_SPEED: 8,          // 释放后冲向玩家速度
   RED_FLAG_RADIUS: 1.5,        // 碰撞半径（视觉3倍后同步，原0.5）
@@ -764,6 +764,16 @@ export const FACE_BOSS = {
   RED_FLAG_SLAM_RISE_TIME: 1.0,   // 升空+放大耗时(s)
   RED_FLAG_SLAM_SCALE: 10,        // 最终视觉放大倍数（约10倍，覆盖原3倍）
   RED_FLAG_SLAM_SPEED: 26,        // 砸向玩家速度(m/s)：高速俯冲
+  // —— 红阶段演出（2026-09-10）——
+  RED_FLAG_SLAM_LOCK_ROT: true,   // 【砸落】下砸期间冻结旗子朝向：修"飞临玩家正上方时 lookAt 方向退化 → 朝向每帧乱跳"的抖动；false=恢复原样
+  RED_FLAG_DIVE_SPEED: 20,        // 【砸落】旗子升空后俯冲的下降速度(m/s)：越大砸得越快
+  RED_FLAG_HIT_Y: 2.0,            // 【砸落】命中高度(m)：旗子高于此高度不结算命中(避免 23m 高空就爆)，降到该高度以下才炸到玩家
+  RED_BOSS_SPIN_SPEED: 2.0,       // 【Boss 动作】公转期间 Boss 原地自转角速度(rad/s)：0=不转。仅作"期望速度"，实际按整圈折算（见下）
+  RED_BOSS_SPIN_TURNS: 0,         // 【Boss 动作】自转圈数：0=自动(取最接近 RED_BOSS_SPIN_SPEED 的整数圈) / >0=固定圈数(如 2)。整数圈保证停下时刚好回到正面
+  RED_END_ON_LAND: true,          // 【节奏】Boss 落地瞬间即切换到下一阶段（false=按 PHASE_DURATION 15s 走完红阶段）
+  RED_BOSS_RISE_WITH_FLAG: true,  // 【Boss 动作】Boss 是否随大旗一起"原地升空/落地"：true=同步升降 / false=Boss 不动
+  RED_FLAG_MERGE: true,           // 【融合】转圈结束升空时多面旗融合成一面大旗（其余旗子飞向保留那面并消失）
+  RED_FLAG_MERGE_TIME: 0.35,      // 【融合】其余旗子飞向大旗的融合时长(s)：0=瞬间消失
 
   // —— 黑色阶段：分身（体型缩小一半，原 scale 2→1）——
   BLACK_CLONE_MODEL: 'Model/黑面脸谱.glb',

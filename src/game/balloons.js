@@ -239,7 +239,9 @@ class Balloon {
       _moveDir.y = 0;
       const dist = _moveDir.length();
       if (dist > 0.001) _moveDir.normalize();
-      this.mesh.position.addScaledVector(_moveDir, this.speed * dt);
+      // 步长钳制到「剩余距离」：否则单帧位移 > 剩余距离时会越过目标、下一帧再折返，
+      // 高速怪（红阶段大旗 26m/s → 每帧 0.36m）逼近玩家时表现为剧烈抖动。
+      this.mesh.position.addScaledVector(_moveDir, Math.min(this.speed * dt, dist));
       // 普通忍者：约束在距中心点(世界原点) 10~15m 环带内（龙形 Boss 的组成忍者 isDragonPart 跳过）
       if (this.behavior === 'ninja' && !this.isDragonPart) this._clampToRing();
     }
@@ -414,7 +416,12 @@ class Balloon {
     if (this.bodyModel) {
       this.mesh.remove(this.bodyModel);
       this.bodyModel.traverse((o) => {
-        if (o.isMesh) { o.geometry?.dispose?.(); o.material?.dispose?.(); }
+        if (o.isMesh) {
+          // GLB 克隆的几何体与 glbCache(_cache) 共享（userData.sharedGeo）：不能 dispose，
+          // 否则同一模型（如三张脸谱）下次使用要重新上传显存 → 变脸瞬间卡顿。
+          if (!o.userData.sharedGeo) o.geometry?.dispose?.();
+          o.material?.dispose?.();
+        }
       });
       this.bodyModel = null;
     }

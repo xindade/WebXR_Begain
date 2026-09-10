@@ -117,11 +117,13 @@ export const USER_CONFIG = {
   },
 
   // ==================== 命中判定微调（2D立绘怪 DepthSprite 专用） ====================
-  // HIT_MUL 是「范围大小」的主旋钮：captureGLB 用 45°相机渲染，模型仅占画幅 62.5%，
-  // 命中等比缩到此系数才贴合可见角色。当前 0.6（≈62.5%留边），仍略大就调小（如 0.55/0.5）。
+  // HIT_MUL 现在是「命中半径 = 立绘可见角色半高 × 本倍率」的倍率：
+  //   取景留边已由 glbCapture.captureFrameFit(radius) 按各自 radius 自动折算
+  //   （可见角色占画幅比例 = radius/1.2，半径越大填得越满），不再需要一刀切的小系数。
+  //   1.0 = 完全贴合可见角色（默认）；<1 收紧手感，>1 放宽。
   // 注：HIT_PAD / HIT_SLAB_DEPTH 在上面 SHOOT 块内（同名键），一起调。
   DEPTH_SPRITE: {
-    HIT_MUL: 0.4,        // 【范围大小】立绘命中半径系数：越小越贴合可见角色；0.625≈理论贴合值，略大就往小调
+    HIT_MUL: 1.0,        // 【范围大小】立绘命中半径倍率（相对"可见角色半高"）：1.0=贴合；想更紧用 0.85/0.7
   },
 
   // ==================== 积分散射技能（前期默认技能） ====================
@@ -286,6 +288,19 @@ export const USER_CONFIG = {
     RED_FLAG_SLAM_RISE_TIME: 1.0, // 升空+放大耗时(s)
     RED_FLAG_SLAM_SCALE: 10,      // 最终视觉放大倍数（约10倍）
     RED_FLAG_SLAM_SPEED: 26,      // 砸向玩家速度(m/s)
+    // —— 红阶段演出 ——
+    RED_FLAG_SLAM_LOCK_ROT: true, // 下砸期间冻结旗子朝向（修"正上方 lookAt 退化 → 抖动"）；false=恢复原样
+    RED_FLAG_DIVE_SPEED: 20,      // 旗子砸落俯冲下降速度(m/s)（大旗砸向玩家）
+    RED_FLAG_HIT_Y: 2.0,          // 砸落命中高度(m)：低于此高度才算砸到玩家
+    RED_BOSS_SPIN_SPEED: 2.0,     // 公转期间 Boss 原地自转角速度(rad/s)：0=不转（仅"期望速度"，实际按整圈折算）
+    RED_BOSS_SPIN_TURNS: 0,       // Boss 自转圈数：0=自动取最接近的整数圈；>0=固定圈数（整数圈 → 停下刚好回到正面）
+    RED_END_ON_LAND: true,        // Boss 落地瞬间切下一阶段（false=按 PHASE_DURATION 走完红阶段）
+    // 旗子转圈(公转)时间：要更长/更短的自转时间就调它们——自转窗口 = ORBIT_END - SPAWN_START
+    RED_FLAG_SPAWN_START: 2,      // 旗子出现时刻(s)：公转开始
+    RED_FLAG_ORBIT_END: 6,        // 公转结束时刻(s)：旗子定位 + Boss 自转结束（改大 → 自转更久/圈数更多）
+    RED_BOSS_RISE_WITH_FLAG: true,// Boss 是否随大旗一起原地升空/落地
+    RED_FLAG_MERGE: true,         // 升空时多旗融合成一面大旗
+    RED_FLAG_MERGE_TIME: 0.35,    // 融合动画时长(s)：0=瞬间消失
   },
 
   // ==================== 如来神掌（大招） ====================

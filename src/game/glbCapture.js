@@ -8,6 +8,15 @@ import { loadBalloonModel } from './balloonModels.js';
 
 const CAP = 512; // 离屏捕获分辨率（每帧）
 
+// —— 立绘取景系数（供 balloonModels 折算「可见角色」尺寸，勿各自写魔数）——
+// captureGLB 把模型缩放到 maxDim = 2*radius，再放进一个「固定高度」的正视画幅里居中；
+// 该画幅高度 = 2 * dist * tan(45°/2)，其中 dist = (0.8 / tan(45°/2)) * 1.5 → 恒为 2.4 世界单位。
+// 于是贴图里可见角色占画幅的比例 = min(1, 2*radius / 2.4)（半径越大填得越满，与相机无关）。
+export const CAPTURE_FRAME_H = 2.4;
+export function captureFrameFit(radius) {
+  return Math.min(1, (radius * 2) / CAPTURE_FRAME_H);
+}
+
 // 深度材质：把视空间 z 归一化到 0(最远/平面)..1(最近/最凸)
 const _depthMat = new THREE.ShaderMaterial({
   glslVersion: THREE.GLSL3,

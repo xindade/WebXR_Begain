@@ -387,7 +387,17 @@ export class Game {
     };
     const addUrl = (url) => { if (url) q.push({ url, radius: 1.0, capture: false }); };
 
-    if (lv.boss === 'dragon') {
+    if (lv.boss === 'face') {
+      // 第6关脸谱 Boss：穿云窗内预热三张脸谱 + 旗子 + 蓝阶段小怪 GLB，
+      // 并把「黑阶段分身」的 DepthSprite 抓帧也提前到这里 —— 抓帧 = 12 帧离屏渲染 + readRenderTargetPixels
+      // 同步回读，非常重；原先等红→黑切换那一刻才首次抓帧，正是切换卡顿的主因。
+      for (const url of FACE_BOSS.MODELS) addUrl(url);
+      addUrl(FACE_BOSS.FAN_MODEL);
+      addUrl(ENEMY_TYPES.flagMask.model);
+      addType('basic');   // 蓝阶段 3×3 小怪 GLB + 立绘抓帧
+      addType('knight');  // 蓝阶段中心格骑士
+      q.push({ url: FACE_BOSS.BLACK_CLONE_MODEL, radius: ENEMY_TYPES.blackMaskClone.radius, capture: true });
+    } else if (lv.boss === 'dragon') {
       addUrl(DRAGON.HEAD_MODEL);                  // 第12关龙 Boss 龙头 GLB（未被 main 预载）
       addType('basic');  addType('ninja');       // 龙 Boss 召唤用基础怪/忍者 GLB + DepthSprite 立绘：进关预载，避免首召冷加载卡顿
     } else if (!isBoss(lv) && !isLaser(lv)) {
@@ -1158,6 +1168,9 @@ export class Game {
       const balloon = this.balloons.list[i];
       if (balloon.controlled) continue; // 龙 Boss 气球：纯靶子，不进入4×8自爆、不伤飞船
       const pos = balloon.mesh.position;
+      // 红阶段旗子"砸落"途中：仍高于 RED_FLAG_HIT_Y 时不结算命中。
+      // 原判定只看 |x|/|z|（忽略高度），旗子在 23m 高空进入区域就爆 → 看不到"砸落"过程。
+      if (balloon._flagSlam && pos.y > FACE_BOSS.RED_FLAG_HIT_Y) continue;
       // 4×8区域 = |x|<=BOUND_X(2), |z|<=BOUND_Z(4)；气球边缘触及区域边界即触发
       const inArea = Math.abs(pos.x) <= (MOVE.BOUND_X + balloon.effectiveRadius)
                   && Math.abs(pos.z) <= (MOVE.BOUND_Z + balloon.effectiveRadius);

@@ -3,7 +3,7 @@ import { GLTFLoader } from '../../vendor/GLTFLoader.js';
 import { DRACOLoader } from '../../vendor/DRACOLoader.js';
 import { DRAGON, DEPTH_SPRITE_MODE, DEPTH_SPRITE_TYPES, DEPTH_SPRITE_SCALE, DEPTH_SPRITE_FRAMES, DEPTH_SPRITE_SWING, DEPTH_SPRITE_HANDPAINTED, DEPTH_SPRITE_HIT_MUL } from '../core/constants.js';
 import { DepthSprite } from './depthSprite.js';
-import { captureModelByUrl, loadDepthSpriteSheet } from './glbCapture.js';
+import { captureModelByUrl, loadDepthSpriteSheet, captureFrameFit } from './glbCapture.js';
 
 // 气球 GLB 模型加载/挂载助手。
 // 加载范式复用 rightGun.js / dragonLevel.js：GLTFLoader + 离线 DRACOLoader( vendor/draco/ )。
@@ -103,9 +103,13 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
         balloon.depthSprite = ds;
         balloon._dsScene = balloon.mesh.parent;
         balloon.mesh.material.visible = false; // 隐藏程序化球体
-        // 命中半径折算取景留边：captureGLB 模型只占画幅 62.5%，立绘纹理其余为透明边；
-        // 不乘系数则命中按整张半幅算，比可见角色大 ~1.6 倍。×DEPTH_SPRITE_HIT_MUL(0.6) 修正。
-        balloon.hitRadius = balloon.effectiveRadius * (tune.scale ?? 1) * extraScale * DEPTH_SPRITE_HIT_MUL;
+        // 命中半径 = 立绘里「可见角色」的半高，而不是整张贴图的半幅：
+        //   贴图四周是透明留边（captureGLB 固定画幅取景，留边比例随 radius 变化：可见占比 = radius/1.2），
+        //   故必须乘 captureFrameFit(radius) 折算，否则半径大的怪（骑士/章鱼…）命中圈会明显小于体型
+        //   —— 之前用固定系数(0.6/0.4)只在基础怪(radius 0.5)上刚好，骑士(0.9)就只剩中间一半，下半身打不到。
+        //   DEPTH_SPRITE_HIT_MUL 仍是整体倍率：1.0 = 完全贴合可见角色，<1 更紧。
+        balloon.hitRadius = balloon.effectiveRadius * (tune.scale ?? 1) * extraScale
+                          * captureFrameFit(radius) * DEPTH_SPRITE_HIT_MUL;
       })
       .catch(() => { /* 失败：保持程序化球体隐藏，不显示彩色兜底（避免破坏沉浸）；问题由 console.warn 暴露 */ });
     return;
@@ -138,6 +142,7 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
         if (o.isMesh) {
           o.material = o.material.clone();
           if (tint != null) o.material.color.setHex(tint); // 通用身体按类型 tint 染色
+          o.userData.sharedGeo = true; // 几何体与 _cache 里的 gltf.scene 共享：销毁气球时勿 dispose（否则复用要重传显存）
           modelMats.push(o.material);
         }
       });
@@ -165,7 +170,10 @@ export function swapBalloonModel(balloon, newUrl, radius, tuningOverride = null,
   if (balloon.bodyModel) {
     balloon.mesh.remove(balloon.bodyModel);
     balloon.bodyModel.traverse((o) => {
-      if (o.isMesh) { o.geometry?.dispose?.(); o.material?.dispose?.(); }
+      if (o.isMesh) {
+        if (!o.userData.sharedGeo) o.geometry?.dispose?.(); // 共享几何体（GLB 克隆）不释放：变脸时避免重复上传显存
+        o.material?.dispose?.();
+      }
     });
     balloon.bodyModel = null;
     balloon._modelMats = null;
