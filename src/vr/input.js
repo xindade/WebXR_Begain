@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MOVE, SHOOT, GUN_MODES, TEST } from '../core/constants.js';
+import { MOVE, SHOOT, GUN_MODES, TEST, SKILL_HINT } from '../core/constants.js';
 
 // 输入抽象层：一套接口同时支持
 //  - 桌面：WASD/方向键移动 + 鼠标视角(pointer lock) + 左键射击 + F 大招
@@ -296,7 +296,7 @@ export class InputManager {
         // 左手 X 键（buttons[4]，即「右:A / 左:X」的 X）边缘按下 → 测试积分（仅 TEST.ENABLED 时）
         if (ctrl) {
           const xNow = btnA;
-          if (xNow && !ctrl.userData.prevX && TEST.ENABLED && TEST.VR_BUTTON_LEFT_X) this._creditQueued = TEST.ADD_SCORE;
+          if (xNow && !ctrl.userData.prevX && TEST.ENABLED && TEST.VR_BUTTON_LEFT_X && !SKILL_HINT.DEBUG) this._creditQueued = TEST.ADD_SCORE;
           ctrl.userData.prevX = xNow;
         }
       }
@@ -317,6 +317,23 @@ export class InputManager {
   getController(hand) { return this._hands[hand]; }
   // 取握把（grip，用于挂手腕面板，更贴合手背）
   getGrip(hand) { return this._gripHands[hand]; }
+
+  // 调试：读取左手柄摇杆（axes[2]/[3]，回退[0]/[1]），供技能提示框调位。PICO 前推为负值。
+  getLeftStick() {
+    const gp = this._gamepadOf('left');
+    if (!gp) return { x: 0, y: 0 };
+    let sx = 0, sy = 0;
+    if (gp.axes.length >= 4) { sx = gp.axes[2]; sy = gp.axes[3]; }
+    else if (gp.axes.length >= 2) { sx = gp.axes[0]; sy = gp.axes[1]; }
+    return { x: sx, y: sy };
+  }
+
+  // 调试：读取左手柄 X/Y 按键（buttons[4]=X / buttons[5]=Y），供技能提示框上下微调。
+  getLeftButtons() {
+    const gp = this._gamepadOf('left');
+    if (!gp) return { x: false, y: false };
+    return { x: gp.buttons[4]?.pressed || false, y: gp.buttons[5]?.pressed || false };
+  }
 
   // 技能触发（桌面 F / VR 右手握柄）：返回本帧是否请求释放「选中技能」
   consumeSkill() { const v = this._skillQueued; this._skillQueued = false; return v; }

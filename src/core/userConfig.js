@@ -5,6 +5,68 @@
 // 原理：constants.js 末尾会 import 本文件并深合并覆盖对应对象。
 // ============================================================
 export const USER_CONFIG = {
+  // ==================== 开场魔术师模型（第3/9/15关机制关）位置与缩放 ====================
+  // 三关默认同值；只写想改的关。pos=[x,y,z]（米，Z负=玩家前方），scaleHeight=目标身高（米）。
+  OPENING_MAGICIAN: {
+    3:  { pos: [0, 5.4, -10], scaleHeight: 3.0 },   // 第3关 · 激光搭阵
+    9:  { pos: [0, 6.4, -10], scaleHeight: 4.0 },   // 第9关 · 玻璃走格子
+    15: { pos: [0, 7.4, -10], scaleHeight: 5.0 },   // 第15关 · 九宫格翻转
+    SHOW_SECONDS: 10,   // 循环播放时长（秒）
+  },
+
+  // ==================== 左手腕信息提示框（战斗信息）位置 / 旋转 / 大小 ====================
+  // 当前左手柄显示战斗信息（关卡/船血/分数 + 龙Boss血条 + 攻/射/额外射击）。
+  // 位置/旋转单位同 constants.WRIST_UI：POSITION 米(相对左手柄本地坐标 +X右/+Y上/+Z朝前)，
+  // ROTATION 度(绕本地XYZ，x负=面板下倾便于看手腕)。只调想改的键。
+  WRIST_UI: {
+    LEFT: {
+      SCALE:    1 / 3,                          // 大小：1/3 ≈ 0.167m×0.167m
+      POSITION: { x: 0.0, y: -0.025, z: 0.045 }, // 位置（米）：x=0(手腕居中) / y=-0.025(略低于手背) / z=0.045(略朝前)
+      ROTATION: { x: -45, y: 0, z: 0 },       // 旋转（度）：x=-34°(俯仰下倾) / y=0(无偏航) / z=0(无翻滚)
+      BORDER:   '#ff7a00',                      // 边框颜色（橙）
+      CANVAS:   { w: 512, h: 512 },            // 画布分辨率（像素）
+    },
+    // RIGHT 现由技能提示框(skillHint)占用、面板隐藏；参数保留以备切换/复用
+    RIGHT: {
+      SCALE:    1 / 3,
+      POSITION: { x: 0.1, y: -0.0167, z: 0.03 },
+      ROTATION: { x: -90, y: 0, z: 0 },
+      BORDER:   '#00e5ff',
+      CANVAS:   { w: 512, h: 512 },
+    },
+  },
+
+  // ==================== 技能就绪提示（右手枪中央）位置与闪烁 ====================
+  // 积分达标时红框闪 FLASH_COUNT 下后常亮；释放技能且积分再次达标再闪。仅调想改的键。
+  SKILL_HINT: {
+    SCALE: 0.4,
+    POSITION: { x: 0.119, y: -0.057, z: -0.018 },
+    ROTATION: { x: -90, y: 0, z: 0 },
+    CANVAS: { w: 512, h: 320 },
+    FLASH_COUNT: 3,
+    FLASH_ON: 0.18,
+    FLASH_OFF: 0.12,
+    FLASH_BORDER: '#ff3b30',
+    READY_BORDER: '#ffd24a',
+    COOLDOWN_BORDER: '#ff7a00',
+    COOLDOWN_BAR_COLOR: '#ff9d2e',
+    COOLDOWN_BG: 'rgba(255,255,255,0.15)',
+    INSUFFICIENT_BORDER: '#8a93a6',
+    INSUFFICIENT_TEXT: '#cfd6e4',
+    IDLE_BORDER: '#5a6b85',
+    DEBUG:           false,              // 调试模式：左手柄摇杆(前后左右)+X/Y键(上下)微调位置（调完改 false）
+    DEBUG_STEP:      0.5,               // 调试移动速度（米/秒）
+  },
+
+  // ==================== 基础怪群体语音（"冲冲冲"）触发阈值 / 停顿 ====================
+  // 场上存活基础怪数量 ≥ THRESHOLD 时播放一次，停顿 PAUSE 秒后再判断。只调想改的键。
+  BASIC_VOICE: {
+    URL:       'music/冲冲冲.wav',   // 语音文件（一次性，不循环）
+    THRESHOLD: 10,                  // 触发阈值（个）：存活基础怪 ≥ 该值才播放
+    PAUSE:     5,                   // 停顿时间（秒）：播放后等待该秒数再重新判断
+    VOLUME:    1.0,                 // 播放音量（0~1）
+  },
+
   // ==================== 传送门（小怪关前后左右各一个） ====================
   PORTAL: {
     TARGET_HEIGHT: 2.2,    // 门整体高度（米）：基准高度，独立参数（与缩放倍数解耦）
@@ -95,7 +157,7 @@ export const USER_CONFIG = {
   // 左手柄 X 键（或桌面 G 键）按一下 +ADD_SCORE 积分，用于快速测试技能。
   // 正式上线把 ENABLED 改 false 即可关闭，避免误触加分。
   TEST: {
-    ENABLED: true,          // 总开关：false 关闭测试快捷键
+    ENABLED: false,          // 总开关：false 关闭测试快捷键
     ADD_SCORE: 500,         // 每次按下赠送的积分数（受 SCORE_CAP 上限裁剪）
     VR_BUTTON_LEFT_X: true, // 左手柄 X 键(buttons[4])触发
     DESKTOP_KEY_G: true,    // 桌面 G 键触发
@@ -127,7 +189,7 @@ export const USER_CONFIG = {
     BLADE_AXIS: { x: 0, y: 1, z: 0 },       // 剑刃方向（root 本地轴）= +Y（配合 ROTATION.x:-90 → 世界 -Z 前向）
     // —— 伤害/技能 ——
     DAMAGE: 700,                              // 单次命中伤害（×player.skillDamageMul）
-    DURATION: 5,                              // 激活后伤害状态持续秒数（击发后挥剑伤害的窗口）
+    DURATION: 7,                              // 激活后伤害状态持续秒数（击发后挥剑伤害的窗口）
     HIT_INTERVAL: 0.15,                      // 同一只怪被剑刃持续扫到时，两次扣血的最小间隔(秒)；调小=连续高 DPS
     COOLDOWN: 5,                              // 激活后复用冷却秒数（HUD 显示）
     COST: 500,                                // 消耗积分
@@ -211,6 +273,21 @@ export const USER_CONFIG = {
     DELAY:   0.6,                 // Boss 开始运动(揭示)后延迟播放(秒)
   },
 
+  // ==================== 龙 Boss 减伤 & 击杀基础怪扣血（热调） ====================
+  DRAGON: {
+    DAMAGE_REDUCTION: 0.95,       // 龙身/龙爪气球减伤比例（受击只吃 5%）
+    BASIC_KILLS_PER_PERCENT: 5,   // 每消灭多少个基础怪扣 Boss 1% 总血量
+    BASIC_KILL_PERCENT: 0.01,     // 每次扣 Boss 总血量比例（1%）
+  },
+
+  // ==================== 红脸旗子「升空十倍砸落」（热调） ====================
+  FACE_BOSS: {
+    RED_FLAG_SLAM_RISE_Y: 18,      // 升空高度(m)
+    RED_FLAG_SLAM_RISE_TIME: 1.0, // 升空+放大耗时(s)
+    RED_FLAG_SLAM_SCALE: 10,      // 最终视觉放大倍数（约10倍）
+    RED_FLAG_SLAM_SPEED: 26,      // 砸向玩家速度(m/s)
+  },
+
   // ==================== 如来神掌（大招） ====================
   // 第三关可选技能；按左手柄 grip 释放。消耗 player.skillCost 积分。
   // 伤害仅「变化(grow)/运动(move)」阶段结算：掌图作横扫墙，只命中命中盒内的敌人（不再全屏秒杀）。
@@ -230,6 +307,68 @@ export const USER_CONFIG = {
     FADE_TIME: 0.3,              // 淡出消失时长（秒）
     HIT_MARGIN_XY: 1.3,          // 命中盒 XY 放大系数（1=完全贴合掌面）
     HIT_Z_BAND: 8,               // 命中盒 Z 半厚（米）：仅命中掌图当前 Z 前后 ±该值的敌人
+    // —— 程序化 SDF 金掌（VFX_MODE='shader'）—— 不满意就把 VFX_MODE 改回 'texture' 一键回退
+    VFX_MODE: 'texture', // 'texture'=优化抠图的 JPG 掌图（当前默认）；'canvas'=Canvas 矢量金掌；'shader'=SDF 金掌
+    // —— JPG 抠图优化参数（改完刷新页面即生效）——
+    EDGE_SOFTNESS: 0.02,  // 软阈值过渡宽度 0~1：越大越柔但越易误伤过曝高光，0=硬边
+    SAT_SAFE: 0.25,       // 高饱和保护：饱和度>此值强制不透明（金掌永不破洞）
+    HOLE_FILL: 0.8,       // 补洞阈值：低alpha像素邻域不透明占比≥此值则填回，0=关闭
+    HOLE_RADIUS: 4,       // 补洞邻域半径(px)：洞较大时调大
+    EDGE_FEATHER: 1.5,    // alpha 羽化半径(px)：消 JPG 分块伪影，0=关闭
+    DECONTAM: 1.0,        // 去白边强度 0~1：1=完全替换半透明白边
+    DECONTAM_RADIUS: 3,   // 去白边取色邻域半径(px)：白边宽时调大
+    SATURATION: 1.15,     // 饱和度（1=原样，>1 更金）
+    BRIGHTNESS: 1.0,      // 亮度（1=原样）
+    ANISOTROPY: 4,        // 各向异性 1~16：斜视/放大更清晰
+    UPSCALE: 1,           // 扣图前上采样倍数：2=更平滑但更慢更占显存
+    // —— Canvas 矢量金掌绘制参数（一次性生成，改完刷新页面即生效）——
+    CANVAS_W: 1024,       // 贴图宽(px)
+    CANVAS_H: 1536,       // 贴图高(px)
+    TENSION: 1.0,         // 轮廓平滑张力：0=尖角，1=平滑推荐
+    MARGIN: 0.86,         // 掌占画布比例：越小留白越多（留白须≥发光半径）
+    OFFSET_Y: 0.02,       // 整体上下偏移（画布高比例），正=上移
+    GLOW_LAYERS: 2,       // 外发光层数
+    GLOW_BLUR: 0.10,      // 外发光模糊半径（掌单位）
+    GLOW_ALPHA: 0.5,      // 外发光强度 0~1
+    GLOW_COLOR: '#ffae2b',// 外发光颜色
+    COL_MID: '#ff9d2e',   // 掌中过渡金
+    CORE_GLOW: 0.55,      // 掌心亮核强度 0~1
+    STROKE_WIDTH: 0.045,  // 轮廓描边粗细（掌单位）
+    STROKE_COLOR: '#fff3c4', // 描边颜色
+    STROKE_ALPHA: 0.95,   // 描边不透明度
+    LINES_ENABLE: true,   // 掌纹
+    LINES_COLOR: '#ffdca8',
+    LINES_WIDTH: 0.028,
+    LINES_ALPHA: 0.45,
+    SIGIL_ENABLE: true,   // 掌心法阵
+    SIGIL_X: 0.0,
+    SIGIL_Y: -0.25,
+    SIGIL_RADIUS: 0.42,
+    SIGIL_RINGS: 3,
+    SIGIL_RAYS: 12,
+    SIGIL_ROT: 0,
+    SIGIL_COLOR: '#ffe9b0',
+    SIGIL_WIDTH: 0.022,
+    SIGIL_ALPHA: 0.75,
+    SPARK_ENABLE: true,   // 能量火花
+    SPARK_COUNT: 90,
+    SPARK_RADIUS: 0.05,
+    SPARK_COLOR: '#fff6d8',
+    SPARK_ALPHA: 0.55,
+    USE_OFFSCREEN: false, // PICO 不支持 OffscreenCanvas 时设 false
+    SHAPE_SCALE: 1.15,    // 掌形放大系数（1=原始比例）
+    AA: 1.0,              // 边缘柔化倍率（越大越柔/越糊）
+    COL_DEEP: '#8a4a00',  // 掌根暗金
+    COL_BRIGHT: '#ffd76a',// 掌尖明金
+    COL_RIM: '#fff3c4',   // 边缘金光
+    RIM_WIDTH: 0.16,      // 金边厚度
+    NOISE_SIZE: 128,      // 噪声图边长(px)
+    NOISE_SCALE: 1.6,     // 噪声密度
+    NOISE_SPEED: 0.35,    // 流动速度（UV/秒）
+    NOISE_STRENGTH: 0.45, // 流动强度 0~1（0=关闭最省 GPU）
+    GLOW: 1.15,           // 整体辉光
+    CHARGE_GLOW: 0.6,     // 蓄能增亮
+    ADDITIVE: false,      // true=加法混合（发光）；false=普通混合（更实、不易被看成光柱）
   },
 
   // ==================== 渲染分辨率（WebXR 帧缓冲缩放） ====================

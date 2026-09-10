@@ -10,9 +10,12 @@ const SHOW_SECONDS = 10;      // 出现后循环播放的时长，到时自动�
 const TARGET_HEIGHT = 2.0;    // 自动缩放到约 2 米高，保证稳定可见
 
 export class OpeningModel {
-  constructor(scene, position) {
+  constructor(scene, position, opts = {}) {
     this.scene = scene;
     this.position = position.clone();
+    // —— 可调项（由 game.js 按关卡从 OPENING_MAGICIAN 配置传入）——
+    this._scaleHeight = opts.scaleHeight ?? TARGET_HEIGHT;  // 目标身高（米）：自动等比缩放 GLB 到该高度
+    this._showSeconds = opts.showSeconds ?? SHOW_SECONDS;   // 循环播放时长（秒），到期自动消失
     this.root = null;        // 加载完成后的 GLB 根节点
     this.mixer = null;       // 动画混合器（无动画则为 null）
     this._t = 0;             // 已显示时长累计（秒）
@@ -35,7 +38,7 @@ export class OpeningModel {
         this.root.updateMatrixWorld(true);
         const box = new THREE.Box3().setFromObject(this.root);
         const size = box.getSize(new THREE.Vector3());
-        if (size.y > 0) this.root.scale.setScalar(TARGET_HEIGHT / size.y);
+        if (size.y > 0) this.root.scale.setScalar(this._scaleHeight / size.y);  // 缩放到目标身高（scaleHeight）
 
         this.root.position.copy(this.position);
         this.scene.add(this.root);
@@ -58,7 +61,7 @@ export class OpeningModel {
     if (!this._ready || this._disposed) return;
     if (this.mixer) this.mixer.update(dt);
     this._t += dt;
-    if (this._t >= SHOW_SECONDS) this.dispose();
+    if (this._t >= this._showSeconds) this.dispose();  // 播放满 showSeconds 秒后自动消失
   }
 
   // 幂等释放：移出场景、停动画。root 是共享 gltf 的 clone，
