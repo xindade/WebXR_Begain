@@ -87,7 +87,10 @@ export class Game {
     this.dda = new DifficultyController(() => this._ddaMetrics());
     this.waves = new WaveManager(
       world.scene, this.balloons,
-      () => this.rig.getWorldPosition(new THREE.Vector3()),
+      // 玩家在游戏世界中的**实际位置** = 相机（头部）世界坐标的水平投影（y 归零，沿用"脚下地面位置"语义）。
+      // ⚠ 不能用 rig.getWorldPosition()：rig 只承载手柄位移，玩家「现实行走」写在相机（rig 的子节点）上，
+      //   只用 rig 位置会在真实行走时让敌人/传送门/激光仍按旧位置计算，与实际站位错位。
+      () => { const v = this.world.camera.getWorldPosition(new THREE.Vector3()); v.y = 0; return v; },
       this.dda,
       () => this._portals,
       () => this._playerDPS(),     // 新：玩家 DPS（内外圈调度基准）
@@ -220,7 +223,7 @@ export class Game {
     this._lastCell = 0; this._failing = false; this._failTimer = 0;
     this.laserMode = false;
     // 位置 / 天空恢复预览初始态（默认天空 == dusk 预设，见 world.js 构造）
-    this.rig.position.set(0, 0, 0);
+    this._resetPlayerOrigin();   // 重设映射基准（rig 归零 ⇒ XR 原点即游戏区域中心）；重生/过场不走这里
     this.world.clearSkyPanorama();
     this.world.setSkyMood('dusk');
     // HUD / 音频
@@ -262,6 +265,10 @@ export class Game {
     this._pendingOpenVoice = null;  // 开场语音（L3/6/9/15/18），null=无
     this._bossT = 0;                // Boss 升压计时（秒）
     this._bossInten = BOSS_BGM.START_INTENSITY; // Boss 升压当前值（与 audio.intensity 同步）
+    // 机制关（3/9/15 激光关）：射击固定单发 —— 复用抽卡期间同一套 forceSingleShot
+    //   （player.fire 里 n = forceSingleShot ? 1 : shotCount），避免多弹道扇形在需要精确点靶的机制关里分散火力。
+    //   出关时会被下一次 _loadLevel 重算为 false；抽卡流程自身仍会在进出抽卡时置位/复位。
+    this.player.forceSingleShot = isLaser(lv);
     if (isLaser(lv)) {
       this._pendingBgm = { kind: 'laser', variant: null, intensity: 0.2 };          // 机制关：起步 0.2
     } else if (isBoss(lv)) {
@@ -481,7 +488,37 @@ export class Game {
     this._portals = [];
   }
 
-  _playerPos() { return this.rig.getWorldPosition(this._tmp); }
+  // 玩家在游戏世界中的实际位置（水平，y=0）：相机（头部）世界坐标投影到地面。
+  // 必须含「现实行走」偏移 —— rig 只承载手柄位移，现实移动写在相机（rig 子节点）上。
+  _playerPos() {
+    this.world.camera.getWorldPosition(this._tmp);
+    this._tmp.y = 0;
+    return this._tmp;
+  }
+
+  // ===== 玩家位置策略（2026-09-10 定稿，全项目必读）=====
+  // 前提：现实游玩场地也是 4×8 m，与游戏活动区域（|x|≤MOVE.BOUND_X、|z|≤MOVE.BOUND_Z）**一一对应**，
+  //       且开局时「玩家现实站位 = 场地中心 = 游戏区域中心 = XR 原点」。
+  // 结论：rig 的水平位置就是「物理场地 ↔ 游戏区域」的映射基准 —— 玩家现实里走多少，游戏里就走多少。
+  //   · 重生（死亡重开 / 机制关重开）一律**不动 rig 的水平位置**：
+  //       玩家现实站在哪，游戏里就还在哪 —— 即「就死在原地重生」，不会被拉回中心。
+  //   · 过场（死亡 / 穿云 / 加载）期间玩家现实走动，由 XR pose 每帧自动同步（相机是 rig 的子节点），
+  //       所以重开时位置 = 玩家此刻的现实站位，也不会被硬拉回「死亡瞬间」的那个点。
+  //   · 因此**不需要越界拦阻**：物理场地本身就是 4×8，玩家走不出游戏区域。
+  //   ⚠ 反面教材：曾用「rig = 目标 − 现实偏移」把玩家游戏内位置对齐回中心。那会把物理场地与游戏
+  //     区域整体错开一个「现实偏移」的量（现实 4×8 与游戏 4×8 不再重合），正是本次要修的问题。
+  // 只复位高度：踩错掉落会把 rig.y 压到 -10（见 _updateGridPhase 失败动画），重生必须拉回 0；
+  //   玩家现实身高由 XR pose 提供，不占用 rig.y。
+  _respawnKeepPosition() {
+    this.rig.position.y = 0;
+  }
+
+  // 重设「物理场地 ↔ 游戏区域」映射基准：rig 归零 ⇒ XR 原点即游戏区域中心。
+  // 仅【回菜单】（一局结束、重设基准）时调用；重生 / 过场一律不调，否则会把玩家从原位拉走。
+  // （JOYSTICK=0 纯现实行走时 rig 水平位置恒为 0，此调用等价于只把高度拉回 0。）
+  _resetPlayerOrigin() {
+    this.rig.position.set(0, 0, 0);
+  }
 
   // 同屏 DepthSprite 压测：在玩家前方生成 N 个 basic 立绘阵列（controlled 站定）。
   // 站定后仍执行 lookAt + DepthSprite 视差同步 + 受击白闪，可被子弹击落，
@@ -780,7 +817,8 @@ export class Game {
       if (r === 'win') {
         this.audio?.stopLaserHum('level');
         this.laser.dispose(); this.laser = null;
-        if (this.grid) { this.grid.dispose(); this.grid = null; }
+        // 走到底（通关格）：玻璃板块**保留在场**，不在这里 dispose，等切换关卡时由 _loadLevel 统一清理。
+        //   原先此处直接 dispose → 玩家一走到终点就看到脚下玻璃板块当场消失。
         this.gridPhase = false;
         this._enterCard();
         return;
@@ -794,7 +832,7 @@ export class Game {
   // 激光关死亡：不触发全局 GameOver，本关从头重开、激光重新初始化
   _dieInLaserLevel() {
     this.log('失败，本关重开');
-    this.rig.position.set(0, 0, 0);
+    this._respawnKeepPosition();   // 机制关重开：保留玩家水平位置（就在失败处原地重来），只把高度拉回 0
     this.player.hp = this.player.maxHp;
     if (this.laser) this.laser.reset();
     if (this.grid) this.grid.reset();   // 玻璃网格（含破碎格）一并重建
@@ -802,7 +840,10 @@ export class Game {
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; } // 九宫格 dispose，下次 16s 由 isHoldPhase 重建为初始布局
     this.gridPhase = false;
     this.flipPhase = false; this.flipTimer = 0;
-    this._lastCell = 0;
+    // 走格子：把「上一次所在格」置为玩家此刻站着的格（而非 0）。否则玩家在错误格上原地重生时，
+    //   下一帧 idx !== _lastCell 会立刻再次判错 → 每 0.6s 无限重开（站着不动也逃不掉）。
+    //   置为当前格 = 原地站着不判，等玩家迈到别的格再判；踩错惩罚不变（仍会掉落 + 本关重开）。
+    this._lastCell = this.grid ? this.grid.cellAt(this._playerPos()) : 0;
     this._failing = false;
     this._failTimer = 0;
     this.hud.clearCountdown();
@@ -1279,17 +1320,21 @@ export class Game {
 
   _restartLevel() {
     this.log('飞船坠毁，本关重开');
+    // 死亡瞬间的攻击力（含此前所有 +50 与卡片加成）：必须在 _restoreSnapshot() 之前取，
+    // 因为恢复快照会把 atk 打回「本关开始时的值」。
+    const deathAtk = this.player.atk;
     this._restoreSnapshot();
     this.balloons.clear();
     this._basicVoiceTimer = 0; this._basicVoiceEl = null; // 重开：清零基础怪语音停顿计时
     this.shurikens.clear(); // 重开本关一并清手里剑
     this.bullets.clear();
     // 不调 _clearExplosions()：让死亡爆炸特效在 0.4s 内自然消亡
-    this.rig.position.set(0, 0, 0);
+    this._respawnKeepPosition();   // 死亡重开：保留玩家水平位置（现实站在哪，游戏里就还在哪），只把高度拉回 0
     this._loadLevel(this.levelIndex); // 会重新拍快照（恢复后的状态）
-    // 死亡重开：攻击力加成 +50（可累计叠加），立即生效并弹面前 2m 文字提示
-    this.attackBonus += 50;
-    this.player.atk = 100 + this.attackBonus;
+    // 死亡重开：攻击力 +50（以「死亡前攻击力」为基准，而不是从 100 起算），立即生效并弹面前 2m 文字提示
+    this.attackBonus += 50;                    // 累计加成仅作记录
+    this.player.atk = deathAtk + 50;
+    this.player.hp = this.player.maxHp;        // 死亡重开：飞毯血量恢复满（否则继承快照里本关开始时的非满血量）
     this._showAttackHint();
     this.hud.setScore(this.score);
     this.hud.setHp(this.player.hp, this.player.maxHp);

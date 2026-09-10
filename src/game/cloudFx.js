@@ -36,7 +36,10 @@ export class CloudFx {
     const back = fwd.clone().negate();                 // 背向 = 飘动方向(远离玩家)
     const right = new THREE.Vector3().crossVectors(fwd, _WORLD_UP).normalize();
 
-    const pp = rig.getWorldPosition(new THREE.Vector3());
+    // 玩家实际位置 = 相机（头部）世界坐标的水平投影：rig 只承载手柄位移，玩家「现实行走」写在相机
+    // （rig 的子节点）上；若用 rig 位置，真实行走时云雾会偏离玩家正前方。rig 参数保留以兼容调用签名。
+    const pp = camera.getWorldPosition(new THREE.Vector3());
+    pp.y = 0;
 
     const tex = this._makePuffTexture();
     this._puffTex = tex;

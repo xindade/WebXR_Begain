@@ -11,6 +11,9 @@ import { MOVE, SHOOT, GUN_MODES, TEST, SKILL_HINT } from '../core/constants.js';
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _q = new THREE.Quaternion();
+const _locCam = new THREE.Vector3(); // 移动边界：相机(头部)世界坐标（复用）
+const _locRig = new THREE.Vector3(); // 移动边界：rig 世界坐标（复用）
+const _locOff = new THREE.Vector3(); // 移动边界：玩家现实偏移（复用）
 const TRIGGER_THRESHOLD = 0.5;
 
 export class InputManager {
@@ -164,7 +167,18 @@ export class InputManager {
 
   // 左手摇杆读取已移除（测试确认不需要，见 2026-08-25 改动）
 
+  // 玩家「现实偏移」= 相机相对 rig 的水平位移（米）；rig 只承载手柄位移，现实行走写在相机上。
+  _realOffset(out) {
+    this.camera.getWorldPosition(_locCam);
+    this.rig.getWorldPosition(_locRig);
+    out.set(_locCam.x - _locRig.x, 0, _locCam.z - _locRig.z);
+    return out;
+  }
+
   _applyLocomotion(m, dt) {
+    // 摇杆/虚拟移动总开关（MOVE.JOYSTICK）：0 = 直接返回，摇杆与键鼠都不生效，玩家只靠现实物理行走。
+    //   注意此处连下面的区域边界约束一并跳过（两者原本同段），故禁用摇杆后没有越界拦阻。
+    if (!MOVE.JOYSTICK) return;
     if (m.x === 0 && m.z === 0) return;
     const speed = MOVE.SPEED * dt;
     if (this.world.isPresenting) {
@@ -182,8 +196,16 @@ export class InputManager {
       this.rig.position.x += wx * MOVE.SPEED * dt;
       this.rig.position.z += wz * MOVE.SPEED * dt;
     }
-    this.rig.position.x = THREE.MathUtils.clamp(this.rig.position.x, -MOVE.BOUND_X, MOVE.BOUND_X);
-    this.rig.position.z = THREE.MathUtils.clamp(this.rig.position.z, -MOVE.BOUND_Z, MOVE.BOUND_Z);
+    // 边界约束作用在「玩家世界位置」(rig + 现实偏移) 上，而不是 rig 本身：
+    //   ① 真实行走的位移写在相机（rig 子节点）上，若只 clamp rig，玩家现实走远后实际已越界却不受约束；
+    //   ② 死亡重开时 rig = -现实偏移 的对齐也会被 clamp 破坏（偏移 > BOUND 时会把 rig 截回去 → 对不齐）。
+    const off = this._realOffset(_locOff);
+    const pwx = this.rig.position.x + off.x;   // 玩家世界位置 X（pwx = rig + 现实偏移）
+    const pwz = this.rig.position.z + off.z;
+    const cx = THREE.MathUtils.clamp(pwx, -MOVE.BOUND_X, MOVE.BOUND_X);
+    const cz = THREE.MathUtils.clamp(pwz, -MOVE.BOUND_Z, MOVE.BOUND_Z);
+    this.rig.position.x += cx - pwx;   // 只把超出部分从 rig 里扣掉，现实偏移不受影响
+    this.rig.position.z += cz - pwz;
   }
 
   // 世界 -Z 朝向（相机/手柄的「指向前方」方向）。
