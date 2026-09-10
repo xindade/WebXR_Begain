@@ -67,6 +67,60 @@ export const USER_CONFIG = {
     VOLUME:    1.0,                 // 播放音量（0~1）
   },
 
+  // ==================== 第18关 魔术师Boss（三阶段召唤 / 黑白球墙） ====================
+  // 只调想改的键；改完刷新页面即生效。召唤数量调小可显著降卡顿。
+  MAGICIAN_BOSS: {
+    SPAWN_ENEMIES: true,   // 召唤总开关：false → 三阶段都不召唤（排查卡顿/伤害用）
+    HP_BASE: 20000,        // Boss 基础血量
+    HP_DPS_SEC: 30,        // 血量 = HP_BASE + 玩家DPS × 此值
+    PHASE: {
+      INTRO: 10,           // 开场动画（秒）
+      LASER: 10,           // 第一阶段·激光（秒）：召唤时间点按此时长均分
+      GLASS: 10,           // 第二阶段·玻璃墙（秒）：同上
+      NINE: 10,            // 第三阶段·黑白球墙（秒）：需 ≥ 浮动5s + 追击到位时间
+    },
+    SUMMON: {
+      FIRST_DELAY: 0.6,    // 进入阶段后首次召唤延迟（秒）
+      PER_FRAME: 3,        // 每帧最多落地几个（错峰，越大越卡）
+      // —— 出生点：按「本波剩余时间」反推距离，让怪刚好跑到 4×8 活动区域 ——
+      ARRIVE_FACTOR: 1.0,  // 1=刚好在阶段结束抵达；<1=提前抵达(出生更近)；>1=更远
+      ARRIVE_JITTER: 0.15, // 出生距离随机抖动 ±比例（错开抵达时间，避免整波同时自爆）
+      MIN_REMAIN: 0.8,     // 剩余时间下限（秒）
+      SPAWN_R_MIN: 5,      // 出生半径下限（米）
+      SPAWN_R_MAX: 32,     // 出生半径上限（米）
+      NINJA_USE_RING: true,    // 忍者直接出生在固有活动环带内（不靠近玩家），不套用抵达反推
+      // 第一阶段 · 激光：3 次，每次 25 小怪 + 5 忍者
+      LASER_TIMES: 3,
+      LASER_BASIC: 25,
+      LASER_NINJA: 5,
+      LASER_BASIC_HP: 0,       // 0=用敌种默认血量
+      LASER_BASIC_SPEED: 2.0,  // 小怪冲锋速度（米/秒）；0=用敌种默认
+      LASER_NINJA_HP: 0,
+      LASER_NINJA_SPEED: 0,    // 忍者速度（米/秒）；0=用敌种默认 1.5
+      // 第二阶段 · 玻璃墙：2 次，每次 10 骑士
+      GLASS_TIMES: 2,
+      GLASS_KNIGHT: 10,
+      GLASS_KNIGHT_TYPE: 'eliteKnight', // 'eliteKnight'=精英骑士(与盾兵同体型) / 'knight'=放大3倍骑士
+      GLASS_KNIGHT_HP: 0,
+      GLASS_KNIGHT_SPEED: 1.0, // 骑士推进速度（米/秒）；敌种默认 0.5
+    },
+    ORB_WALL: {
+      ENABLED: true,       // false → 回退到原「九宫格」机制
+      HP: 1500,            // 每球血量
+      RADIUS: 0.75,        // 球半径（米）
+      SPACING: 1.5,        // 3×3 阵列间距（米）
+      CENTER_Y: 4.5,       // 阵列中心高度（米）
+      FLOAT_TIME: 5,       // 上下浮动持续（秒）→ 之后脱离墙体追击
+      FLOAT_AMP: 0.35,     // 浮动幅度（米）
+      FLOAT_FREQ: 1.6,     // 浮动频率（Hz）
+      CHASE_SPEED: 3.0,    // 脱墙后追击速度（米/秒）
+      SELF_DAMAGE: 2,      // 进 4×8 区域自爆对玩家的伤害
+      SCORE: 0,            // 击破得分
+      WHITE_COLOR: 0xffffff,
+      BLACK_COLOR: 0x111111,
+    },
+  },
+
   // ==================== 传送门（小怪关前后左右各一个） ====================
   PORTAL: {
     TARGET_HEIGHT: 2.2,    // 门整体高度（米）：基准高度，独立参数（与缩放倍数解耦）

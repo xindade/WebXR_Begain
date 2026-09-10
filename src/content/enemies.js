@@ -70,6 +70,16 @@ export const ENEMY_TYPES = {
     tint: 0xe1b12c,
   },
   // —— 07 幽灵怪 ——
+  orb: {
+    id: 'orb', name: '黑白球',
+    hp: 1500, speed: 3.0, radius: 0.75, score: 0,
+    behavior: 'orb', selfDamage: 2,
+    // 纯色机制球（第18关Boss第三阶段「黑白球墙」用）：无 GLB 模型、不生成胶囊占位/名牌、不显示血条，
+    // 球体颜色由调用方按白/黑覆盖；血量/速度/自爆伤害也由调用方按参数写入。
+    plainColor: 0xffffff,
+    noPlaceholder: true,
+    noHealthBar: true,
+  },
   ghost: {
     id: 'ghost', name: '幽灵怪',
     hp: 800, speed: 0, radius: 0.8, score: 34,

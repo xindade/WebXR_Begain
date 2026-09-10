@@ -56,7 +56,10 @@ class Balloon {
 
     const hex = t.tint != null ? '#' + t.tint.toString(16).padStart(6, '0') : COLORS[Math.floor(Math.random() * COLORS.length)];
     const geo = new THREE.SphereGeometry(t.radius, 20, 16);
-    const mat = new THREE.MeshStandardMaterial({ map: faceTexture(hex), roughness: 0.6, metalness: 0.0 });
+    // plainColor（纯色球）：直接用颜色，不套「笑脸」贴图 —— 黑白球等机制球体用（第15关/第18关Boss）
+    const mat = t.plainColor != null
+      ? new THREE.MeshStandardMaterial({ color: t.plainColor, roughness: 0.6, metalness: 0.0 })
+      : new THREE.MeshStandardMaterial({ map: faceTexture(hex), roughness: 0.6, metalness: 0.0 });
     this.mesh = new THREE.Mesh(geo, mat);
     this.mesh.userData.balloon = this;
     this.bodyModel = null;     // GLB 模型（若有）
@@ -79,6 +82,9 @@ class Balloon {
       //     此处仅隐藏程序化球体 + 标记 _hasModel（跳过锥形头盔逻辑）。
       this._hasModel = true;
       this.mesh.material.visible = false;
+    } else if (t.noPlaceholder) {
+      // 2c) 纯色机制球（黑白球等）：只保留球体本身，不叠加胶囊占位/名牌（视觉由调用方决定）
+      this._hasModel = true; // 跳过锥形头盔显示逻辑
     } else {
       // 2) 无模型 → 程序化占位（彩色胶囊 + 眼睛），保留 _modelMats 以便受击闪烁
       this._hasModel = true; // 跳过锥形头盔显示逻辑

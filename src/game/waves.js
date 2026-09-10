@@ -91,6 +91,11 @@ export class WaveManager {
 
   startLevel(level) {
     if (this._winBanner) { this._winBanner.dispose(); this._winBanner = null; } // 切关清理上关的 VR 通关横幅
+    // 魔术师 Boss（第18关）：重开关卡时必须销毁上一个控制器。
+    //   否则旧实例的代理气球已被 game._restartLevel → balloons.clear() 移除，其 update() 里
+    //   「代理不在 balloons.list 中」会被当成「Boss 已死」→ 误触发 _win() 弹出通关横幅
+    //   （玩家死亡重开却提示通关的根因）。reset() 里也有同样的清理，但重开走的是 startLevel。
+    if (this._magicianBoss) { this._magicianBoss.dispose(); this._magicianBoss = null; }
     this.clearPending();       // 清残留光点 + _bossQueued（幂等）
     this.level = level;
     this.elapsed = 0;

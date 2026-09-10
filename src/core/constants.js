@@ -799,8 +799,8 @@ export const FACE_BOSS = {
 export const MAGICIAN_BOSS = {
   // —— 通用 ——
   MODEL: 'Model/魔术师动画版.glb',
-  HP_BASE: 30000,             // Boss 基础血量（集中可调）
-  HP_DPS_SEC: 10,             // 血量 = HP_BASE + 玩家DPS × 本值（按战力缩放，避免高 DPS 下秒杀/低 DPS 下打不动）
+  HP_BASE: 20000,             // Boss 基础血量（集中可调）
+  HP_DPS_SEC: 30,             // 血量 = HP_BASE + 玩家DPS × 本值（按战力缩放，避免高 DPS 下秒杀/低 DPS 下打不动）
   PROXY_RADIUS: 8.0,          // 命中代理碰撞半径(m)：Boss模型随 MODEL_SCALE 缩放(现5倍≈10m高，脚底在y=2、头顶≈y=12)；
                               //   半径放大到8m覆盖全身，确保各阶段(含激光/九宫格)瞄准躯干即可正常击中掉血
   SCALE: 2.0,                 // 模型基准高度（米）：先按此把 GLB 缩放到 2m，再 ×MODEL_SCALE
@@ -824,15 +824,41 @@ export const MAGICIAN_BOSS = {
     [30, 2, 0],     // 2 · 九宫格阶段：玩家右手边 30m（x=+30）
   ],
 
-  // —— 每相位精英召唤（每阶段仅 2 种精英，数量 1/2/1；分帧错峰消费，见 bossMagician._summonElites）——
-  //   每阶段总量 = 2/4/2（原 6/12/6），显著降低同帧重型 GLB 解码压力（防卡死）
-  ELITE_TYPES_LASER: ['eliteKnight', 'shield'],   // 激光阶段：骑士 + 盾兵
-  ELITE_TYPES_GLASS: ['heart', 'ghost'],          // 玻璃墙阶段：心形 + 幽灵
-  ELITE_TYPES_NINE:  ['ninja', 'octopus'],        // 九宫格阶段：忍者 + 章鱼
-  ELITE_COUNT_LASER: 1,       // 激光阶段每种精英数量
-  ELITE_COUNT_GLASS: 2,       // 玻璃墙阶段每种精英数量
-  ELITE_COUNT_NINE: 1,        // 九宫格阶段每种精英数量
-  SPAWN_ENEMIES: false,       // 是否召唤精英/九宫格基础球：false=全禁(排查卡顿/伤害用，用户实测临时关闭)；true=恢复完整召唤
+  // —— 三阶段召唤（2026-09-10 新增；由 bossMagician._summonTick 按时间点分波触发）——
+  //   第一阶段（激光）：召唤 LASER_TIMES 次，每次 LASER_BASIC 个小怪冲锋 + LASER_NINJA 个忍者
+  //   第二阶段（玻璃墙）：召唤 GLASS_TIMES 次，每次 GLASS_KNIGHT 个骑士（类型见 GLASS_KNIGHT_TYPE）
+  //   第三阶段（黑白球墙）：不在此处召唤，见下方 ORB_WALL
+  //   ★ 召唤时间点 = FIRST_DELAY + 第 n 波 × (阶段时长 / 波数)，阶段时长见 PHASE.LASER / PHASE.GLASS
+  //   ★ 出生点 = 以「场地中心(原点)」为基准：沿该怪方位角到 4×8 区域边界的距离 + 它在「本波剩余时间」内
+  //     恰好能跑完的距离 → 每波怪都刚好在阶段结束时抵达活动区域（不早不晚、不会远到看不见）。
+  //     想更近/提前抵达：把 ARRIVE_FACTOR 调小（0.6=提前跑到）；想拉开抵达先后：调大 ARRIVE_JITTER。
+  //   ★ 数量是「每次」的量；实测卡顿优先降 LASER_BASIC / GLASS_KNIGHT，或把 PER_FRAME 调小
+  SUMMON: {
+    FIRST_DELAY: 0.6,        // 进入阶段后首次召唤延迟 s（留出阶段切换的视觉缓冲）
+    PER_FRAME: 3,            // 每帧最多落地几个（错峰，防同帧 GLB 解码/立绘抓帧卡死；越大越卡）
+    ARRIVE_FACTOR: 1.0,      // 出生距离系数：1=刚好在阶段结束抵达活动区域；<1=提前抵达(出生更近)；>1=更远
+    ARRIVE_JITTER: 0.15,     // 出生距离随机抖动 ±比例：错开各怪抵达时间，避免整波同时自爆
+    MIN_REMAIN: 0.8,         // 剩余时间下限 s：防止最后一波出生点贴脸（距离≈0）
+    SPAWN_R_MIN: 5,          // 出生半径下限 m（安全钳制）
+    SPAWN_R_MAX: 32,         // 出生半径上限 m（安全钳制）
+    NINJA_USE_RING: true,    // 忍者专用：true=直接出生在忍者固有活动环带内（SHURIKEN.RANGE_MIN~MAX），
+                             //   不套用「按剩余时间反推」—— 忍者由 balloons._clampToRing 锁在环带内、本就不会靠近玩家 4×8 区域
+    // —— 第一阶段 · 激光 ——
+    LASER_TIMES: 3,          // 召唤次数
+    LASER_BASIC: 25,         // 每次小怪数量
+    LASER_NINJA: 5,          // 每次忍者数量
+    LASER_BASIC_HP: 0,       // 小怪血量覆盖（0=用敌种默认 100）
+    LASER_BASIC_SPEED: 2.0,  // 小怪冲锋速度 m/s（>0 覆盖敌种默认 0.5；0=用默认）
+    LASER_NINJA_HP: 0,       // 忍者血量覆盖（0=用敌种默认 500）
+    LASER_NINJA_SPEED: 0,    // 忍者速度覆盖 m/s（0=用敌种默认 1.5；忍者平时不靠近，一般无需改）
+    // —— 第二阶段 · 玻璃墙 ——
+    GLASS_TIMES: 2,          // 召唤次数
+    GLASS_KNIGHT: 10,        // 每次骑士数量
+    GLASS_KNIGHT_TYPE: 'eliteKnight', // 骑士敌种：'eliteKnight'=精英骑士(与盾兵同体型的纯骑士) / 'knight'=放大 3 倍的骑士Boss体型
+    GLASS_KNIGHT_HP: 0,      // 骑士血量覆盖（0=用敌种默认 500）
+    GLASS_KNIGHT_SPEED: 1.0, // 骑士推进速度 m/s（写明以便按剩余时间反推出生距离；敌种默认 0.5）
+  },
+  SPAWN_ENEMIES: true,        // 召唤总开关：false=三阶段都不召唤(排查卡顿/伤害用)；true=按下方 SUMMON 完整召唤
   HP_BAR_OFFSET_Y: 11,        // 头顶 3D 血条相对代理的抬高高度(m)：Boss 5倍≈10m高(头顶≈y=12)，置于头顶上方
 
   // —— 外圈常驻小怪：已移除（Boss 战不应出现基础怪，见 bossMagician.js 删除 _maybeMaintainMobs）——
@@ -886,6 +912,32 @@ export const MAGICIAN_BOSS = {
     EXPLODE_DAMAGE: 5,        // 残球爆炸每球伤害
     EXPLODE_SPEED: 6,         // 残球飞向玩家速度 m/s
     RADIUS: 0.75,             // 每球碰撞半径 m（与 FlipGrid 球一致）
+  },
+
+  // —— 第三阶段「黑白球墙」（2026-09-10 新增，替代原九宫格；ENABLED=false 可回退到 BossNineGrid）——
+  //   布局：WALLS 每项是「一片 3×3 球墙」的中心点（相对场地中心原点的 x/z），阵列平面自动转向原点，
+  //         所以玩家站在场地中心时正对看到整齐的两面球阵（看不到侧边薄面）。
+  //         默认第 1 片在玩家正前 12m（白球）、第 2 片在正后 12m（黑球）；想改成左右两侧互换 x/z 即可。
+  //   机制：前 FLOAT_TIME 秒球被锁在墙上做上下浮动 → 时间到后存活球脱离墙体追击玩家
+  //         → 进入 4×8 区域即自爆（伤害 SELF_DAMAGE，由 game._checkExplosions 结算）。
+  ORB_WALL: {
+    ENABLED: true,           // 第三阶段是否用黑白球墙：false → 回退到原「九宫格」BossNineGrid
+    HP: 1500,                // 每球血量
+    RADIUS: 0.75,            // 球半径 m（与第十五关 FlipGrid 球一致）
+    SPACING: 1.5,            // 3×3 阵列间距 m（球刚好相切）
+    CENTER_Y: 4.5,           // 阵列中心高度 m（3×3 共 4.5m → 覆盖 y 2.25~6.75）
+    FLOAT_TIME: 5,           // 上下浮动持续 s；到点后存活球脱离墙体开始追击
+    FLOAT_AMP: 0.35,         // 浮动幅度 m
+    FLOAT_FREQ: 1.6,         // 浮动频率 Hz
+    CHASE_SPEED: 3.0,        // 脱墙后追击速度 m/s
+    SELF_DAMAGE: 2,          // 进入 4×8 区域自爆时对玩家的伤害
+    SCORE: 0,                // 击破得分（0=不给分）
+    WHITE_COLOR: 0xffffff,   // 白球颜色
+    BLACK_COLOR: 0x111111,   // 黑球颜色
+    WALLS: [                 // 两片墙的中心点（y 统一用 CENTER_Y；x/z 相对场地中心）
+      { x: 0, z: -12 },      // 第 1 片：白球墙 · 玩家正前方 12m
+      { x: 0, z:  12 },      // 第 2 片：黑球墙 · 玩家正后方 12m
+    ],
   },
 };
 
@@ -1035,6 +1087,7 @@ const _OVERRIDES = [
   ['SKILL_HINT', SKILL_HINT, USER_CONFIG.SKILL_HINT],
   ['WRIST_UI',  WRIST_UI,  USER_CONFIG.WRIST_UI],
   ['BASIC_VOICE', BASIC_VOICE, USER_CONFIG.BASIC_VOICE],
+  ['MAGICIAN_BOSS', MAGICIAN_BOSS, USER_CONFIG.MAGICIAN_BOSS],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {
