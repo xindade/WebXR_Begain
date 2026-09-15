@@ -1038,6 +1038,31 @@ export const CLOUD = {
 };
 
 // ============================================================
+// 进入游戏前的「开场视频」过场（introVideo.js / game._startIntroVideo 引用）
+//   触发时机：玩家在头显里点「进入 VR」→ 第 1 关加载之前（仅 VR；桌面预览直接进第 1 关）。
+//   期间场景只留「飞毯 + 星空」（纯黑底）：隐藏渐变天空球并冻结天空缓动，见 world.setIntroBackdrop。
+//   视频播完（或出错/看门狗兜底）才进入第 1 关，之后照常走 CLOUD 穿云过场。
+//   参数单位见注释；改完刷新页面即生效（userConfig.INTRO_VIDEO 可热调）。
+// ============================================================
+export const INTRO_VIDEO = {
+  ENABLED:           true,                    // 总开关：false → 完全跳过开场视频，直接进第 1 关
+  SRC:               'assets/intro/intro.mp4', // 视频相对路径（跟随页面 origin；ASCII 文件名，避免中文 git 路径坑）
+  X_M:               -8,                      // 屏幕中心 X（米）：场地中心左方 8m。玩家开局面朝 -Z，其左手边即 -X
+  Z_M:               0,                       // 屏幕中心 Z（米）：与场地中心同排
+  BOTTOM_Y_M:        1.0,                     // 屏幕【底边】离地高度（米）：0=贴地，1=约膝盖以上
+  ROT_Y_DEG:         90,                      // 屏幕绕 Y 轴旋转（度）：+90 → 法线由 +Z 转向 +X，正对场地中心
+  WIDTH_M:           7.2,                     // 屏幕最大宽度（米）：按视频真实宽高比等比 contain
+  HEIGHT_M:          4.05,                    // 屏幕最大高度（米）：16:9 素材下 = 7.2 / (16/9)
+  VOLUME:            1.0,                     // 视频音量 0~1（静音重试时的 muted 状态不受此值影响）
+  STAR_OPACITY:      0.95,                    // 过场期间星空不透明度 0~1（冻结天空缓动后手动设定；黄昏默认约 0.5）
+  WATCHDOG_PAD_S:    30,                      // 看门狗余量（秒）：兜底超时 = 视频时长 + 该值，防黑屏软锁
+  FALLBACK_DURATION_S: 16.02,                 // 元数据未就绪时的假定时长（秒）：本素材 16.02s
+  // —— 切换抖动控制（视频播完那一帧不要做重活，否则视频最后几帧会顿挫）——
+  HANDOFF_DELAY_S:   0.08,                    // 播完后先让画面静止多久再加载关卡（秒）：0.08≈6帧@72Hz，静止画面的卡顿不可感知
+  DISPOSE_DELAY_S:   2.0,                     // 画面摘除后，解码器真正回收再延迟多久（秒）：藏进穿云里，避免与关卡加载挤同一帧
+};
+
+// ============================================================
 // 玩家参数覆盖（userConfig.js）—— 改动后刷新页面即生效
 // 原理：本文件是依赖图叶子模块（无 import 业务模块），此合并先于所有消费方求值。
 // 用户唯一编辑入口：src/core/userConfig.js（只写想改的键，其余保持默认）。
@@ -1095,6 +1120,7 @@ const _OVERRIDES = [
   ['WRIST_UI',  WRIST_UI,  USER_CONFIG.WRIST_UI],
   ['BASIC_VOICE', BASIC_VOICE, USER_CONFIG.BASIC_VOICE],
   ['MAGICIAN_BOSS', MAGICIAN_BOSS, USER_CONFIG.MAGICIAN_BOSS],
+  ['INTRO_VIDEO', INTRO_VIDEO, USER_CONFIG.INTRO_VIDEO],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

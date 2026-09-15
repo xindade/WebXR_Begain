@@ -6,6 +6,7 @@ import { AudioManager } from './vr/audio.js';
 import { InputManager } from './vr/input.js';
 import { WristUI } from './vr/wrist-ui.js';
 import { Game } from './game/game.js';
+import { prewarmIntroVideo } from './game/introVideo.js';
 import { LEVELS } from './content/levels.js';
 import { preloadGLB } from './game/glbCache.js';
 import { MODEL_URL as PORTAL_MODEL_URL } from './game/portal.js';
@@ -111,10 +112,14 @@ if (gunBtn) {
 const gunMode = () => (gunFull ? 'full' : 'preview');
 
 // VR 进入即开局（pendingStartIndex 决定从第几关开始，默认第 1 关）
+// pendingPlayIntro：是否播「进入游戏」开场视频 —— 只有主按钮进第 1 关时为 true；
+//   关卡直达面板为 false（直接进对应关）。最终是否播还由 game.start 里 INTRO_VIDEO.ENABLED
+//   与 world.isPresenting（必须真在 VR 会话内）共同决定。
 let pendingStartIndex = 0;
-world.xr.addEventListener('sessionstart', () => { pageLog?.resumeScroll(); if (game.state === 'menu') game.start(pendingStartIndex, gunMode()); });
-// 桌面：开始按钮（idx 0=第1关，2=第3关激光测试）
-hud.onStart((idx = 0) => game.start(idx, gunMode()));
+let pendingPlayIntro = false;
+world.xr.addEventListener('sessionstart', () => { pageLog?.resumeScroll(); if (game.state === 'menu') game.start(pendingStartIndex, gunMode(), pendingPlayIntro); });
+// 桌面：开始按钮（idx 0=第1关，2=第3关激光测试）—— 桌面预览不播开场视频
+hud.onStart((idx = 0) => game.start(idx, gunMode(), false));
 
 // ── 自定义 PICO 兼容 VR 进入按钮（参考 vr-controller-kit skill）──
 // 不使用 three 自带 VRButton：改用 requiredFeatures:['local-floor'] + 无参回退，
@@ -190,8 +195,8 @@ if (navigator.xr && navigator.xr.isSessionSupported) {
   enterVRBtn.disabled = true;
 }
 
-// 进入 VR：默认第 1 关（其余关用右侧 #level-panel 面板进入）
-enterVRBtn.onclick = () => { audio.unlock(); pendingStartIndex = 0; enterVR(); };
+// 进入 VR：默认第 1 关（其余关用右侧 #level-panel 面板进入）—— 主按钮进第 1 关要播开场视频
+enterVRBtn.onclick = () => { audio.unlock(); pendingStartIndex = 0; pendingPlayIntro = true; prewarmIntroVideo(); enterVR(); };
 
 // ── 右侧关卡快捷进入面板 ──
 // 普通关仅显示数字；特殊关（危机/激光/Boss）在数字后附加最多三个汉字标签。
@@ -205,12 +210,13 @@ function levelShortTag(lv) {
 async function startLevelAt(idx) {
   audio.unlock();
   pendingStartIndex = idx;
+  pendingPlayIntro = false;   // 关卡直达面板：不播开场视频，直接进对应关
   const mode = gunMode();
   const xrOk = (navigator.xr && navigator.xr.isSessionSupported)
     ? await navigator.xr.isSessionSupported('immersive-vr').catch(() => false)
     : false;
-  if (xrOk) enterVR();      // 头显：进 VR 后 sessionstart 触发 game.start(pendingStartIndex, mode)
-  else game.start(idx, mode);     // 桌面：直接开局预览
+  if (xrOk) enterVR();     // 头显：进 VR 后 sessionstart 触发 game.start(pendingStartIndex, mode, false)
+  else game.start(idx, mode, false);     // 桌面：直接开局预览（不播视频）
 }
 (function buildLevelPanel() {
   const panel = document.getElementById('level-panel');

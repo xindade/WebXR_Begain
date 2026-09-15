@@ -12,6 +12,7 @@ import { RightGun } from '../vr/rightGun.js';
 import { LeftSword } from '../vr/leftSword.js';
 import { DragonBoss } from './dragonLevel.js';
 import { CloudFx } from './cloudFx.js';
+import { IntroVideo } from './introVideo.js';
 import { OpeningModel } from './openingModel.js';
 import { Portal } from './portal.js';
 import { BuddhaFx } from './buddhaFx.js';
@@ -20,7 +21,7 @@ import { ENEMY_TYPES } from '../content/enemies.js';
 import { ELITE_SCHEDULE } from '../content/eliteMonsters.js';
 import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO } from '../core/constants.js';
 import { setRenderer, loadBalloonModel, preCaptureDepthSprite } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 
@@ -144,6 +145,11 @@ export class Game {
     this._camPos = new THREE.Vector3(); // 每帧刷新相机世界坐标，供 2D 立绘薄板命中(法线=朝相机)
     this.attackBonus = 0;       // 死亡重开攻击力加成（每次 +50，可累计）；归零于 start()/toMenu()
     this._attackHint = null;    // 面前 2m 文字提示精灵（攻击力 +50），2 秒后淡出
+    this._introVideo = null;    // 进入游戏前的开场视频过场实例（introVideo.js）；仅 VR 第 1 关开局时创建
+    this._introStage = false;   // 是否正处于「飞毯+星空」过场舞台（决定退出时是否还原背景）
+    this._introHandoffT = 0;    // >0 = 视频已结束、画面静止中，倒计时结束才加载关卡（见 _onIntroVideoDone）
+    this._introVideoPending = null; // 已摘除画面、等待延迟回收解码器的实例（藏进穿云里）
+    this._introPendingT = 0;
     this._basicVoiceTimer = 0;  // 基础怪语音停顿倒计时(s)：>0 时暂停判断（播放后停顿 PAUSE 秒）
     this._basicVoiceEl = null;  // 当前播放的基础怪语音元素（重播前先暂停上一个，避免叠加）
   }
@@ -161,8 +167,14 @@ export class Game {
     this.pageLog?.log(msg);
   }
 
-  start(atIndex = 0, gunMode = 'preview') {
+  // playIntro：是否播放「进入游戏」开场视频；null（默认）= 从第 1 关开局时播。
+  //   真正生效还需 INTRO_VIDEO.ENABLED 且当前处于 VR 会话内（world.isPresenting）——
+  //   three.js 在派发 sessionstart（main.js 里触发本方法）之前就已置 isPresenting=true，
+  //   所以「桌面预览」与「关卡直达面板」自然都不播视频。
+  start(atIndex = 0, gunMode = 'preview', playIntro = null) {
     this.gunMode = gunMode;
+    const withIntro = (playIntro === null) ? (atIndex === 0) : !!playIntro;
+    this._disposeIntroVideo();  // 防御：上一次过场若异常残留，先释放并还原背景
     this.player.reset(gunMode);
     this.input?.setGunMode(gunMode);
     this.player.input = this.input; // 让射速卡能触达真实节流源（input.setFireRateMul）
@@ -184,13 +196,83 @@ export class Game {
     this.attackBonus = 0;     // 新一局：攻击力加成重置，从 0 重新累计
     this._clearAttackHint();  // 清残留攻击力提示
     this.log('游戏开始');
+    if (INTRO_VIDEO.ENABLED && withIntro && this.world.isPresenting) {
+      this._startIntroVideo();      // state='intro'：先播开场视频，播完再 _loadLevel(0)
+    } else {
+      this._loadLevel(this.levelIndex);
+      this.state = 'playing';
+    }
+  }
+
+  // ====== 进入游戏前的开场视频过场（VR 内播 MP4，详见 src/game/introVideo.js）======
+  // 舞台：场景只留「飞毯 + 星空」（纯黑底，world.setIntroBackdrop(true)）；
+  // 播完 / 出错 / 看门狗兜底任一触发 → 收尾进第 1 关（随后照常走穿云过场，同时摊本关预载）。
+  _startIntroVideo() {
+    this._disposeIntroVideo();
+    this._introStage = true;
+    this._introHandoffT = 0;
+    this.world.setIntroBackdrop(true);
+    this.log('开场视频开始（舞台：飞毯 + 星空）');
+    this._introVideo = new IntroVideo(this.world.scene, {
+      log: (m) => this.log(m),
+      onDone: (reason) => this._onIntroVideoDone(reason),
+    });
+    this._introVideo.start();
+    this.state = 'intro';
+  }
+
+  // 过场期间每帧驱动（该状态不跑 _updatePlaying，故玩家不能移动/射击、不出怪）
+  _updateIntro(dt) {
+    this._introVideo?.update(dt);   // 帧驱动看门狗（时长 + INTRO_VIDEO.WATCHDOG_PAD_S）
+    // 视频已结束：画面静止 HANDOFF_DELAY_S 后再做「加载关卡」这类重活
+    if (this._introHandoffT > 0) {
+      this._introHandoffT -= dt;
+      if (this._introHandoffT <= 0) this._commitIntroToLevel();
+    }
+  }
+
+  // 视频结束（播完 / 出错 / 看门狗兜底）——**这一帧不做重活**。
+  //   用户实测：视频结束瞬间会卡顿一下。根因是「解码器回收 + 关卡加载 + 淡入材质切换」与**仍在播放的视频**
+  //   挤在同一帧 → 表现为视频最后几帧顿挫。改为：先暂停并保留最后一帧（静止画面），延迟 HANDOFF_DELAY_S
+  //   再加载关卡；解码器回收再往后推迟到穿云期间。静止画面上的长帧基本不可感知。
+  _onIntroVideoDone() {
+    this._introVideo?.holdLastFrame();
+    this._introHandoffT = INTRO_VIDEO.HANDOFF_DELAY_S;
+  }
+
+  // 交接：摘除视频画面（廉价）→ 还原背景舞台 → 加载第 1 关（重活，此时画面已静止）
+  _commitIntroToLevel() {
+    const iv = this._introVideo;
+    this._introVideo = null;
+    if (iv) {
+      iv.detach();                              // 只从场景摘除：解码器/纹理继续存活
+      this._introVideoPending = iv;             // 真正 dispose 延迟到穿云里，别和关卡加载抢同一帧
+      this._introPendingT = INTRO_VIDEO.DISPOSE_DELAY_S;
+    }
+    if (this._introStage) {
+      this._introStage = false;
+      this.world.setIntroBackdrop(false);       // 天空球必须已可见（第 1 关穿云靠 setEnvOpacity(0→1) 淡入）
+    }
     this._loadLevel(this.levelIndex);
     this.state = 'playing';
+  }
+
+  // 释放开场视频并还原背景舞台（幂等；start / toMenu / _startIntroVideo 都会调）
+  _disposeIntroVideo() {
+    if (this._introVideo) { this._introVideo.dispose(); this._introVideo = null; }
+    if (this._introVideoPending) { this._introVideoPending.dispose(); this._introVideoPending = null; }
+    this._introHandoffT = 0;
+    this._introPendingT = 0;
+    if (this._introStage) {
+      this._introStage = false;
+      this.world.setIntroBackdrop(false);   // 恢复渐变天空球 + 解冻天空缓动（星星自行缓动回黄昏亮度）
+    }
   }
 
   // 回到「未开始」状态：供 sessionend 调用，使再次进入 VR 时 sessionstart 守卫生效、从干净状态开局
   toMenu() {
     this.state = 'menu';                       // 关键：让 sessionstart 的 game.start 守卫重新生效
+    this._disposeIntroVideo();                 // 开场视频若正在播（播放中退出 VR）：释放 + 还原背景舞台
     // 释放关卡专属实例（沿用 _loadLevel 头部写法）
     if (this.laser)    { this.audio?.stopLaserHum('level'); this.laser.dispose();    this.laser = null; }
     if (this.grid)     { this.grid.dispose();     this.grid = null; }
@@ -544,6 +626,11 @@ export class Game {
     dt = Math.min(dt, 0.05);
     this._gameTime += dt;                            // 激光剑状态/每怪限频的时间基准
     this.world.update(dt);
+    // 开场视频：画面已摘除后延迟回收解码器（藏在穿云期间，避免与关卡加载挤同一帧造成卡顿）
+    if (this._introVideoPending) {
+      this._introPendingT -= dt;
+      if (this._introPendingT <= 0) { this._introVideoPending.dispose(); this._introVideoPending = null; }
+    }
     if (this.openingModel && !this._introActive) this.openingModel.update(dt); // 开场动画模型：推进动画 + 10秒计时（穿云时冻结）
     const pp = this._playerPos();                     // 取一次玩家位置，所有门共用（同步读取，无异步滞留）
     this._portals.forEach((p) => p.update(dt, pp));   // 传送门动画 + 浮动 + 摇杆偏移 + 数值标签
@@ -556,6 +643,7 @@ export class Game {
 
     if (this.state === 'playing') this._updatePlaying(dt);
     else if (this.state === 'card') this._updateCard(dt);
+    else if (this.state === 'intro') this._updateIntro(dt);
     // 通关横幅（魔术师Boss）：始终驱动，10s 后自动退出（不依赖关卡/抽卡状态）
     if (this.waves && this.waves._winBanner) this.waves._winBanner.update(dt);
   }

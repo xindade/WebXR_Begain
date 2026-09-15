@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MOVE, SKY_BRIGHTNESS, PANO_DOME_YAW, RENDER, SKY_PANO_MIPMAPS } from './constants.js';
+import { MOVE, SKY_BRIGHTNESS, PANO_DOME_YAW, RENDER, SKY_PANO_MIPMAPS, INTRO_VIDEO } from './constants.js';
 import { Carpet } from './carpet.js';
 import { EXRLoader } from '../../vendor/EXRLoader.js';
 
@@ -50,6 +50,7 @@ export class World {
     this._panoLoading = {}; // 在途加载 Promise（去重：同一 url 并发只起一次真实加载）
     this._panoActive = false;
     this._skydome = null; // 全景天空穹顶（环绕原点的大球，用真实网格采样贴图，完整保留 8K + 各向异性）
+    this._skyFrozen = false; // 开场视频过场：true 时冻结天空/星空缓动（见 setIntroBackdrop）
 
     this._buildLights();
     this._buildSky();
@@ -219,6 +220,29 @@ export class World {
     }
   }
 
+  // ====== 开场视频过场：把场景切成「只有飞毯 + 星空」的纯黑底舞台 ======
+  // on=true  : 隐藏渐变天空球（黑底来自 renderer 清屏色）→ 只剩程序化星空 + 飞毯；并**冻结**天空缓动。
+  // on=false : 恢复天空球可见并解冻（星星会自行缓动回当前 SkyMood 的目标亮度，无需手工还原）。
+  // ⚠ 不要用 setEnvOpacity 当隐藏手段：它会把 material.transparent 永久置 true，且管不到渐变天空球 this.sky。
+  // ⚠ 冻结的必要性：_updateSky 每帧把星星 opacity 缓动到当前天气目标（黄昏 ≈0.5），不冻结则星星会被拉暗。
+  setIntroBackdrop(on) {
+    this._skyFrozen = !!on;
+    if (this.sky) this.sky.visible = !on;
+    if (on) {
+      if (this._skydome) this._skydome.visible = false;   // 全景穹顶（第 1 关之前通常为 null）
+      if (this._starLayers) {
+        for (const l of this._starLayers) {
+          l.visible = true;
+          l.material.transparent = true;
+          l.material.opacity = INTRO_VIDEO.STAR_OPACITY;
+        }
+      }
+      if (this.carpet) this.carpet.setVisible(true);      // 第 9 关会隐藏飞毯，过场前确保可见
+    } else if (this._skydome) {
+      this._skydome.visible = !!this._panoActive;          // 还原：全景关才显示穹顶
+    }
+  }
+
   // ====== 穿云淡入：本关「场景物体」透明度 0→1（与云雾进度同步）======
   // 性能要点：material.transparent 的取值变化会触发 three 着色器重编译，
   // 因此「只在登记时切一次 → 每帧仅改 opacity（廉价）→ 结束时一次性恢复」，
@@ -309,6 +333,7 @@ export class World {
   }
 
   _updateSky(dt) {
+    if (this._skyFrozen) return;   // 开场视频过场：冻结天空/星空缓动（见 setIntroBackdrop）
     if (this._panoActive) return; // 全景关：跳过渐变/星空缓动
     if (!this._skyTarget) return;
     const k = Math.min(1, dt * 0.6); // 指数缓动
