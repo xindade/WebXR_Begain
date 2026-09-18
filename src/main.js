@@ -11,11 +11,14 @@ import { LEVELS } from './content/levels.js';
 import { preloadGLB } from './game/glbCache.js';
 import { MODEL_URL as PORTAL_MODEL_URL } from './game/portal.js';
 import { MODEL_URL as OPENING_MODEL_URL } from './game/openingModel.js';
+import { MirrorManager, isDesktopPage } from './core/mirror.js';
+import { MIRROR, RENDER } from './core/constants.js';
 
 window.__pageLog?.info('[main] 模块开始执行（imports 已解析）');
 
 const canvas = document.getElementById('app');
 const world = new World(canvas);
+const mirror = new MirrorManager(world.renderer, world.scene);  // VR 桌面镜像（独立弹出窗口显示头显第一人称）
 
 // 预览阶段预加载重资产（龙关动画 JSON/龙头 GLB + 传送门/激光剑 GLB + 抽卡图）。
 // 进度条走完才放行 Enter VR 按钮。天空(18 张 4K 全景)改为「进对应关时按需懒加载」，
@@ -117,7 +120,13 @@ const gunMode = () => (gunFull ? 'full' : 'preview');
 //   与 world.isPresenting（必须真在 VR 会话内）共同决定。
 let pendingStartIndex = 0;
 let pendingPlayIntro = false;
-world.xr.addEventListener('sessionstart', () => { pageLog?.resumeScroll(); if (game.state === 'menu') game.start(pendingStartIndex, gunMode(), pendingPlayIntro); });
+world.xr.addEventListener('sessionstart', () => {
+  pageLog?.resumeScroll();
+  // ⚠ 帧缓冲缩放已在 enterVR() 内「setSession 之前」设置（见 enterVR）：此处若再设置，
+  // 因 sessionstart 时 isPresenting 已为 true，three 会拒绝并报警告
+  // "Cannot change framebuffer scale while presenting"。故此处只触发开局。
+  if (game.state === 'menu') game.start(pendingStartIndex, gunMode(), pendingPlayIntro);
+});
 // 桌面：开始按钮（idx 0=第1关，2=第3关激光测试）—— 桌面预览不播开场视频
 hud.onStart((idx = 0) => game.start(idx, gunMode(), false));
 
@@ -126,6 +135,15 @@ hud.onStart((idx = 0) => game.start(idx, gunMode(), false));
 // PICO 的 Chrome/105 不支持某些特性参数时才能顺利进入。
 const enterVRBtn = document.getElementById('enter-vr-btn');
 const statusMsg = document.getElementById('status-msg');
+const mirrorBtn = document.getElementById('mirror-btn');
+if (mirrorBtn) {
+  mirrorBtn.onclick = () => {
+    if (!MIRROR.ENABLED) { showStatus('镜像功能已关闭（userConfig.MIRROR.ENABLED）'); return; }
+    if (!isDesktopPage()) { showStatus('镜像需在 PC 端运行：游戏跑在头显时无法显示副窗口'); return; }
+    const ok = mirror.open();
+    if (!ok) showStatus('镜像窗口被拦截：请允许本站点弹窗后重试');
+  };
+}
 
 function showStatus(text, isError = false) {
   if (!statusMsg) return;
@@ -143,10 +161,10 @@ async function enterVR() {
 
     let session;
     try {
-      if (navigator.xr.isSessionSupported) {
-        const ok = await navigator.xr.isSessionSupported('immersive-vr');
-        if (!ok) throw new Error('设备不支持 immersive-vr');
-      }
+      // ⚠ 关键：requestSession 必须同步在「用户手势的激活窗口」内发起，绝不能先 await 别的再调。
+      //   之前先 await isSessionSupported，导致后面的 window.open(镜像) 抢先吃掉 activation →
+      //   requestSession 报 "requires user activation" → 首次点进不去 VR。
+      //   这里直接同步 requestSession（设备支持已在页面加载时探测并据此禁用按钮），保住激活。
       session = await navigator.xr.requestSession('immersive-vr', { requiredFeatures: ['local-floor'] });
     } catch (e) {
       // PICO 兼容：带参失败则无参回退
@@ -154,6 +172,10 @@ async function enterVR() {
       session = await navigator.xr.requestSession('immersive-vr');
     }
 
+    // ⚠ 故意【不调用】renderer.xr.setFramebufferScaleFactor：保持 three 默认帧缓冲缩放 1.0。
+    //   实测教训（2026-09-18 PICO）：独立头显上把 FRAMEBUFFER_SCALE_STANDALONE 调到 0.6/0.7 →
+    //   XR 合成层(XRWebGLLayer)按缩小尺寸分配后，PICO 运行时无法正确合成 → 画面全黑（音频照常）。
+    //   只有 1.0 正常。故 VR 优化【绝对禁止】下调此值（见 constants.js RENDER 注释）。
     await world.renderer.xr.setSession(session);
     // 规避 three.js r168 在 PICO 上首帧 referenceSpace 仍为空导致
     // onAnimationFrame 调 frame.getPose(gripSpace, null) 抛非致命报错的坑：
@@ -175,6 +197,7 @@ async function enterVR() {
 // 会话结束：恢复按钮；并「暂停日志滚动」防止报错信息丢失
 world.xr.addEventListener('sessionend', () => {
   pageLog?.pauseScroll();
+  mirror.close();          // 关闭镜像窗口并停用截帧
   game.toMenu();            // B/退出 VR 后真正回到未开始状态（state='menu' 并清场，重进 VR 即从干净状态开局）
   pendingStartIndex = 0; // 复位，下次默认从第 1 关开始
   enterVRBtn.disabled = false;
@@ -196,7 +219,27 @@ if (navigator.xr && navigator.xr.isSessionSupported) {
 }
 
 // 进入 VR：默认第 1 关（其余关用右侧 #level-panel 面板进入）—— 主按钮进第 1 关要播开场视频
-enterVRBtn.onclick = () => { audio.unlock(); pendingStartIndex = 0; pendingPlayIntro = true; prewarmIntroVideo(); enterVR(); };
+// 顺序：先 enterVR()（requestSession 占用本次手势的 user activation），再 mirror.open()。
+//   · page 模式（默认）：open() 只显示页内 canvas，不调用 window.open、不抢激活 → 首次点击即可同时进 VR+出镜像，无「二次点击」问题。
+//   · popup 模式：open() 用 window.open 需激活，若被先调用的 requestSession 占用会失败并注册「下次手势重试」，点「🖥 镜像」按钮也可开。
+//   镜像只在桌面 PC（isDesktopPage）生效；独立头显无论哪种模式都不开启（避免拖垮 Adreno XR2）。
+enterVRBtn.onclick = () => { audio.unlock(); pendingStartIndex = 0; pendingPlayIntro = true; prewarmIntroVideo(); enterVR(); if (MIRROR.AUTO_OPEN && isDesktopPage()) mirror.open(); };
+
+// 预开镜像窗（仅 popup 模式需要）：在「进入 VR」之外的首次用户点击(手势)里先把镜像窗建好，
+// 这样用户点「进入VR」时该窗口已存在 → mirror.open() 只 focus、不消耗激活 → VR 与镜像同一点击都能成。
+//   page 模式不需要 window.open、不抢激活，无需预开（且预开会提前显示空白页内 canvas，故跳过）。
+//   （浏览器规定一次手势只能提供一个 activation：requestSession 与 window.open 二选一，故分两次手势完成；
+//     若用户第一下就点「进入VR」，则镜像会在你下一次点击/按键，或点「🖥 镜像」按钮时弹出。）
+if (MIRROR.AUTO_OPEN && MIRROR.MODE === 'popup') {
+  const tryPreopenMirror = (e) => {
+    if (e.target === enterVRBtn) return;                 // 进入 VR 的点击：保留激活给 requestSession
+    if (!isDesktopPage() || !MIRROR.ENABLED) return;      // 独立头显不需要镜像
+    if (mirror.win && !mirror.win.closed) { window.removeEventListener('pointerdown', tryPreopenMirror); return; }
+    mirror.open();
+    if (mirror.win && !mirror.win.closed) window.removeEventListener('pointerdown', tryPreopenMirror);
+  };
+  window.addEventListener('pointerdown', tryPreopenMirror);
+}
 
 // ── 右侧关卡快捷进入面板 ──
 // 普通关仅显示数字；特殊关（危机/激光/Boss）在数字后附加最多三个汉字标签。
@@ -217,6 +260,8 @@ async function startLevelAt(idx) {
     : false;
   if (xrOk) enterVR();     // 头显：进 VR 后 sessionstart 触发 game.start(pendingStartIndex, mode, false)
   else game.start(idx, mode, false);     // 桌面：直接开局预览（不播视频）
+  // 镜像放 requestSession 之后：先 enterVR 占住 activation；仅桌面 PC 自动开（独立头显不弹）
+  if (MIRROR.AUTO_OPEN && xrOk && isDesktopPage()) mirror.open();
 }
 (function buildLevelPanel() {
   const panel = document.getElementById('level-panel');
@@ -240,6 +285,7 @@ world.renderer.setAnimationLoop(() => {
   // 飞毯每帧更新：dt 钳制到 1/30，避免掉帧时 Verlet 积分爆炸（见飞毯文档坑#7）；运动与玩家移动无关（恒定基线 + 缓慢自震荡）
   try { world.carpet?.update(Math.min(dt, 1 / 30)); } catch (e) { console.error('[主循环] carpet.update 异常:', e); }
   try { world.render(); } catch (e) { console.error('[主循环] world.render 异常:', e); }
+  try { mirror.capture(); } catch (e) { console.error('[主循环] mirror.capture 异常:', e); }  // VR 桌面镜像：XR 渲染后截帧发到镜像窗
 });
 
 window.__game = game; // 调试用

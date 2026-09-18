@@ -196,6 +196,9 @@ export class Game {
     this.attackBonus = 0;     // 新一局：攻击力加成重置，从 0 重新累计
     this._clearAttackHint();  // 清残留攻击力提示
     this.log('游戏开始');
+    // 进入 VR 后播放开场视频：仅在 VR 会话内(isPresenting) 且本关是首关(withIntro) 时。
+    //   ⚠ 不再以「是否独立头显」排除：PICO 浏览器伪造桌面 UA，UA 判定既不可靠又会错误跳过视频；
+    //      头显上视频由 introVideo.js 的 10Hz 强制刷新兜底，实测可正常播放（含声音）。
     if (INTRO_VIDEO.ENABLED && withIntro && this.world.isPresenting) {
       this._startIntroVideo();      // state='intro'：先播开场视频，播完再 _loadLevel(0)
     } else {

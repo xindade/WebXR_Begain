@@ -30,6 +30,15 @@ export function prewarmIntroVideo() {
   v.src = INTRO_VIDEO.SRC;   // 相对路径：跟随页面 origin，避免 CORS / 混合内容
   v.load();
   _prewarmed = v;
+  // 关键：在「用户点击」手势内就起播（带声音）。独立头显进入沉浸后页面变为 hidden，
+  // 若等到 sessionstart 之后（已脱离手势）再 play()，常被自动播放策略拦截 → 静音甚至不解析帧；
+  // 这里先起播，进入 VR 时视频已在解码，纹理靠每帧 needsUpdate 强制上传（见 update）。
+  try {
+    const p = v.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => { try { v.muted = true; v.play().catch(() => {}); } catch (e) { /* 静音重试也失败：等 start() 再试 */ } });
+    }
+  } catch (e) { /* 忽略：个别内核 play() 同步抛错 */ }
   return v;
 }
 
@@ -46,6 +55,7 @@ export class IntroVideo {
     this._watchdogLimit = this._o.FALLBACK_DURATION_S + this._o.WATCHDOG_PAD_S;
     this._unmute = null;
     this._firstFrameLogged = false;
+    this._uploadAccum = 0;       // 纹理上传节流累加器(s)：沉浸态 hidden 页 rVFC 不触发，以 10Hz 低频强制 needsUpdate 保证画面刷新，又不拖垮 GPU/CPU
 
     // ---- <video>：优先接管预热元素（保证同一时刻只有一个消费者）----
     const v = _prewarmed || _makeVideoEl();
@@ -140,12 +150,30 @@ export class IntroVideo {
     }
   }
 
-  // 每帧驱动：帧计数式看门狗（比 setTimeout 更稳，且不依赖计时器在 XR 会话里被节流）
+  // 每帧驱动：① 低频(10Hz)强制上传纹理（沉浸态 hidden 页 rVFC 不触发 → 纹理不刷新 → 黑屏/卡顿，
+  //   用极低成本保活；此前 72/s、30/s 都曾因视频帧 CPU 读回过重拖垮 GPU/CPU 导致掉帧/卡死）；
+  //          ② currentTime 自然结束检测；③ 看门狗兜底。
   update(dt) {
     if (this._disposed || this._done) return;
+    const v = this._video;
+    if (v && v.readyState >= 2) {
+      // 沉浸态页面变 hidden 时，three 的 VideoTexture 仅靠 requestVideoFrameCallback 上传，
+      // 而 rVFC 在 hidden 页不触发 → 纹理不刷新。保险做法：以很低频(10Hz)强制 needsUpdate，
+      // 既保证画面持续刷新，又不至于每帧全量重传拖垮 GPU/CPU（此前 72/s、30/s 都曾导致掉帧/卡顿）。
+      this._uploadAccum += dt;
+      if (this._uploadAccum >= 0.1) {   // 10Hz：10 次/秒低分辨率无关，1080p 也仅 ~20MB/s 上传，远低于掉帧阈值
+        this._uploadAccum = 0;
+        if (this._texture) this._texture.needsUpdate = true;
+      }
+    }
+    // 自然结束：元数据已就绪(readyState≥2)且播放进度已抵终点（留 0.15s 余量防末帧抖动）。
+    //   这样即便 ended 事件不触发，游戏也会在视频真正放完时推进，避免卡在『不能射击』状态。
+    if (v && v.readyState >= 2 && isFinite(v.duration) && v.duration > 0 && v.currentTime >= v.duration - 0.15) {
+      this._finish('自然结束(currentTime)');
+      return;
+    }
     this._elapsed += dt;
     if (this._elapsed >= this._watchdogLimit) {
-      const v = this._video;
       const info = v ? `readyState=${v.readyState} size=${v.videoWidth}x${v.videoHeight}` : '无视频元素';
       this._finish(`看门狗超时 ${this._elapsed.toFixed(1)}s（${info}）`);
     }

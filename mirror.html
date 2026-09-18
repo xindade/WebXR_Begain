@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VR 镜像</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+    #c { width: 100vw; height: 100vh; display: block; background: #000; }
+    #hint {
+      position: fixed; left: 10px; top: 10px; color: #0f0; font: 12px/1.5 monospace;
+      background: rgba(0,0,0,.5); padding: 6px 10px; border-radius: 6px; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="hint">VR 镜像（头显第一人称）</div>
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    // 临时离屏画布：先 putImageData（底向上），再用 main 画布垂直翻转贴出（顶向上）
+    const tmp = document.createElement('canvas');
+    const tctx = tmp.getContext('2d', { alpha: false });
+    let last = 0;
+
+    const ch = new BroadcastChannel('webxr-mirror');
+    ch.onmessage = (e) => {
+      const m = e.data;
+      if (!m || m.type !== 'frame') return;
+      const w = m.w, h = m.h;
+      if (tmp.width !== w) tmp.width = w;
+      if (tmp.height !== h) tmp.height = h;
+      const img = new ImageData(new Uint8ClampedArray(m.data), w, h);
+      tctx.putImageData(img, 0, 0);
+      if (canvas.width !== w) canvas.width = w;
+      if (canvas.height !== h) canvas.height = h;
+      ctx.save();
+      ctx.scale(1, -1);                 // readRenderTargetPixels 是底向上 → 垂直翻转
+      ctx.drawImage(tmp, 0, -h);
+      ctx.restore();
+      last = performance.now();
+    };
+
+    setInterval(() => {
+      const hint = document.getElementById('hint');
+      const dt = performance.now() - last;
+      hint.textContent = dt > 2500
+        ? '等待头显画面…（主窗口须已进入 VR；若黑屏请确认镜像窗口未被关闭）'
+        : 'VR 镜像（头显第一人称）';
+    }, 500);
+  </script>
+</body>
+</html>

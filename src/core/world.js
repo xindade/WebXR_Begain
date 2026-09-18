@@ -356,6 +356,9 @@ export class World {
   // 场地坐标系已移除：玩家脚下由飞毯(4×8)作为地板与空间参照，不再绘制网格/坐标线/数字标注。
 
   _onResize() {
+    // VR 呈现期间 three.js 接管帧缓冲与相机阵列，禁止再调 setSize（否则抛
+    // "Can't change size while VR device is presenting" 警告），相机 aspect 也由 XR 管理，故整段跳过。
+    if (this.renderer.xr.isPresenting) return;
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);

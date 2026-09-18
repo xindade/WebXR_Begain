@@ -21,6 +21,30 @@
     }
     #enter-vr-btn:disabled { opacity: .6; cursor: default; }
 
+    /* ── VR 桌面镜像按钮（让 PC 显示器也能看到头显画面）── */
+    #mirror-btn {
+      position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
+      z-index: 20; padding: 8px 22px; font-size: 14px; font-family: sans-serif;
+      border: none; border-radius: 10px; background: #2d3436; color: #fff;
+      cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.4);
+    }
+
+    /* ── 页内镜像预览 canvas（MIRROR.MODE='page' 时显示，替代独立弹出窗口）── */
+    /* 全屏显示：inset:0 + object-fit:contain 把 16:9 画面等比铺满屏幕，不变形、不偏一角。 */
+    #mirror-canvas {
+      position: fixed; inset: 0; z-index: 50;
+      width: 100vw; height: 100vh;
+      object-fit: contain;                 /* 保持 16:9 比例，黑边留白，不拉伸 */
+      display: none;                       /* 默认隐藏，mirror.open() 时显示 */
+      background: #000;
+      pointer-events: none;                /* 不挡交互 */
+    }
+    #mirror-label {
+      position: fixed; top: 14px; right: 16px; z-index: 51;
+      display: none; font: 12px/1 sans-serif; color: #fff;
+      text-shadow: 0 1px 2px #000; pointer-events: none;
+    }
+
     /* ── 顶部枪械模式切换按钮（预览界面）── */
     #gun-mode-btn {
       position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
@@ -120,6 +144,10 @@
     <div id="loading-bar"><div id="loading-bar-fill"></div></div>
   </div>
   <button id="enter-vr-btn">🎈 进入 VR</button>
+  <button id="mirror-btn">🖥 镜像</button>
+  <!-- 页内镜像预览（MIRROR.MODE='page' 时由 mirror.js 显示；'popup' 模式不用） -->
+  <canvas id="mirror-canvas"></canvas>
+  <div id="mirror-label">PC 镜像</div>
   <!-- 特殊关居中按钮已移除；全关卡入口见右侧 #level-panel -->
   <div id="level-panel"><h4>关卡快捷</h4></div>
   <div id="hint">桌面：WASD 移动 · 鼠标看 · 左键射击 · F 放大招 · 点击画面锁定鼠标 | 头显：摇杆移动 · 扳机射击 · 握柄放大招 · A/B 退出</div>
