@@ -1,0 +1,11 @@
+{
+  "name": "webxr-balloon-license-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PCVR 首次联网激活服务：用 RSA 私钥签署离线 license",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "genkeys": "node genkeys.js"
+  }
+}

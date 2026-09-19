@@ -13,6 +13,8 @@ import { MODEL_URL as PORTAL_MODEL_URL } from './game/portal.js';
 import { MODEL_URL as OPENING_MODEL_URL } from './game/openingModel.js';
 import { MirrorManager, isDesktopPage } from './core/mirror.js';
 import { MIRROR, RENDER } from './core/constants.js';
+import { getMachineId, checkAuthorized, activate, verifyLaunchToken, getStoredLicense } from './core/license.js';
+import { loadCloudContent, isDevMode } from './core/contentLoader.js';
 
 window.__pageLog?.info('[main] 模块开始执行（imports 已解析）');
 
@@ -127,8 +129,6 @@ world.xr.addEventListener('sessionstart', () => {
   // "Cannot change framebuffer scale while presenting"。故此处只触发开局。
   if (game.state === 'menu') game.start(pendingStartIndex, gunMode(), pendingPlayIntro);
 });
-// 桌面：开始按钮（idx 0=第1关，2=第3关激光测试）—— 桌面预览不播开场视频
-hud.onStart((idx = 0) => game.start(idx, gunMode(), false));
 
 // ── 自定义 PICO 兼容 VR 进入按钮（参考 vr-controller-kit skill）──
 // 不使用 three 自带 VRButton：改用 requiredFeatures:['local-floor'] + 无参回退，
@@ -152,6 +152,95 @@ function showStatus(text, isError = false) {
   statusMsg.classList.toggle('error', isError);
 }
 
+// ── PCVR 授权门禁：首次联网激活 + 之后离线 ──
+// 游戏「进入 VR / 开始 / 关卡直达」前校验本机 license；未授权则弹激活遮罩拦截。
+// 详见 src/core/license.js（含安全边界：纯网页 machineId 为随机 UUID、公钥可 patch 等）。
+let _authorized = null;   // 缓存：true=已授权 / false=未授权 / null=预检未完成
+let _xrOk = null;        // 缓存：页面加载时探测的 immersive-vr 支持结果（true=支持）
+let _configReady = false; // 缓存：云端关卡配置是否已就绪（生产环境 false → 阻止进入）
+
+// 云端配置加载失败（且非开发态）时给出明确提示并阻止进入
+function showConfigError() {
+  _configReady = false;
+  showStatus('⚠ 关卡配置加载失败：请检查网络连接后刷新页面，或重新联网激活', true);
+  if (enterVRBtn) enterVRBtn.disabled = true;
+}
+
+// 页面加载即静默预检（不阻塞 UI），结果缓存到 _authorized / _configReady
+(async function precheckLicense() {
+  // 启动器路径：URL 带 ?token= 且验签通过 → 直接授权（不依赖浏览器 localStorage license）。
+  // 手动无 token 的 Chrome 启动会落空，走下方 localStorage 检查；两者都没有才弹激活卡片。
+  const tok = new URLSearchParams(location.search).get('token');
+  if (tok) {
+    try {
+      const r = await verifyLaunchToken(tok);
+      if (r.ok) { _authorized = true; }   // 原生层已验签，放行
+    } catch (_) { /* 验签异常则回落到 localStorage 检查 */ }
+  }
+  if (_authorized !== true) {
+    try { const r = await checkAuthorized(); _authorized = r.ok; }
+    catch (_) { _authorized = false; }
+  }
+  // 未授权：弹出激活卡片（替代被删除的「开始游戏」入口），并挡住「进入 VR」/关卡面板
+  if (_authorized !== true) { showLicenseGate(); return; }
+  // 授权成功 → 拉取云端关卡配置（生产环境无配置则游戏无法初始化）
+  const lic = getStoredLicense();
+  const ok = await loadCloudContent(lic);
+  _configReady = ok || isDevMode();   // 开发态允许本地 fallback（即使云端失败也能跑，方便调试）
+  if (!_configReady) { showConfigError(); return; }
+  buildLevelPanel();   // 配置就绪后构建关卡直达面板（此时 LEVELS 已注入云端值）
+})();
+
+function showLicenseGate(reason) {
+  const gate = document.getElementById('license-gate');
+  if (!gate) return;
+  gate.style.display = 'flex';
+  const msg = gate.querySelector('#license-msg');
+  if (msg && reason) msg.textContent = reason;
+  const mid = gate.querySelector('#license-machine');
+  if (mid) mid.textContent = getMachineId();
+}
+function hideLicenseGate() {
+  const gate = document.getElementById('license-gate');
+  if (gate) gate.style.display = 'none';
+}
+
+// 进入前调用：已授权返回 true；未授权弹遮罩并返回 false（拦截，且不消耗进入 VR 的 user activation）
+async function ensureAuthorized() {
+  if (_authorized === true) return true;
+  if (_authorized === null) {
+    const r = await checkAuthorized();
+    _authorized = r.ok;
+    if (r.ok) return true;
+    showLicenseGate(r.reason || '需要激活后才能运行');
+    return false;
+  }
+  showLicenseGate('需要激活后才能运行');
+  return false;
+}
+
+// 绑定激活遮罩里的「联网激活」按钮
+(function bindLicenseGate() {
+  const gate = document.getElementById('license-gate');
+  if (!gate) return;
+  const btn = gate.querySelector('#license-activate-btn');
+  const err = gate.querySelector('#license-error');
+  if (!btn) return;
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = '⏳ 激活中...';
+    if (err) err.textContent = '';
+    try {
+      await activate();
+      _authorized = true;
+      btn.textContent = '✅ 激活成功，请点击进入 VR';
+      setTimeout(() => { hideLicenseGate(); showStatus('激活成功，现在可以进入游戏'); }, 500);
+    } catch (e) {
+      btn.disabled = false; btn.textContent = '🔑 联网激活';
+      if (err) err.textContent = '激活失败：' + (e && e.message ? e.message : e) + '（检查激活服务器地址或网络）';
+    }
+  };
+})();
+
 async function enterVR() {
   if (enterVRBtn.disabled) return;
   enterVRBtn.disabled = true;
@@ -159,16 +248,19 @@ async function enterVR() {
   try {
     if (!navigator.xr) throw new Error('浏览器不支持 WebXR（需 https 或 localhost + 支持 WebXR 的头显浏览器）');
 
+    // 请求结构（对齐官方 immersive-vr 示例 + PICO 实战）：
+    //   · 点击路径里【不】await isSessionSupported，让 requestSession 成为第一个 await，保住 user activation；
+    //   · 先尝试带 local-floor（PICO 常 reject），失败则裸 immersive-vr 重试——
+    //   ⚠ 实测 PICO Connect：首个 requestSession 常因运行时尚未就绪而失败，紧跟的第二次裸请求才能成功；
+    //     故此「先失败一次再重试」结构是进 VR 的必要条件，不可去掉（删掉后必报 initializing the session in the runtime）。
+    // 不在点击路径里 await isSessionSupported：避免跨微任务让 PICO Connect 的瞬态 user-activation 失效
+    //   （官方 immersive-vr 示例即「点击内同步直接 requestSession」故能成功；页面加载时已把支持结果缓存到 _xrOk）。
+    if (_xrOk === false) throw new Error('设备不支持 immersive-vr（请确认 PICO Connect 已连接并在浏览器显示「已连接」）');
     let session;
     try {
-      // ⚠ 关键：requestSession 必须同步在「用户手势的激活窗口」内发起，绝不能先 await 别的再调。
-      //   之前先 await isSessionSupported，导致后面的 window.open(镜像) 抢先吃掉 activation →
-      //   requestSession 报 "requires user activation" → 首次点进不去 VR。
-      //   这里直接同步 requestSession（设备支持已在页面加载时探测并据此禁用按钮），保住激活。
       session = await navigator.xr.requestSession('immersive-vr', { requiredFeatures: ['local-floor'] });
     } catch (e) {
-      // PICO 兼容：带参失败则无参回退
-      console.log('使用 PICO 兼容模式:', e.message);
+      console.warn('PICO 兼容：带 local-floor 失败，回退裸 immersive-vr:', e.message);
       session = await navigator.xr.requestSession('immersive-vr');
     }
 
@@ -188,7 +280,11 @@ async function enterVR() {
     enterVRBtn.style.display = 'none';
     if (statusMsg) statusMsg.style.display = 'none';
   } catch (err) {
-    showStatus('❌ ' + err.message, true);
+    const isRuntime = /initializing the session in the runtime/i.test(err.message);
+    const tip = isRuntime
+      ? '❌ PICO Connect 运行时异常：请彻底退出并重启 PICO Connect + 浏览器后重试（此错误常因之前失败请求把运行时搞僵死）'
+      : '❌ ' + err.message;
+    showStatus(tip, true);
     enterVRBtn.disabled = false;
     enterVRBtn.textContent = '🎈 进入 VR';
   }
@@ -208,6 +304,7 @@ world.xr.addEventListener('sessionend', () => {
 // 探测 WebXR 支持情况，给出明确提示
 if (navigator.xr && navigator.xr.isSessionSupported) {
   navigator.xr.isSessionSupported('immersive-vr').then((ok) => {
+    _xrOk = ok;
     if (!ok) {
       enterVRBtn.textContent = '桌面模式（无 VR 设备）';
       enterVRBtn.disabled = true;
@@ -223,7 +320,17 @@ if (navigator.xr && navigator.xr.isSessionSupported) {
 //   · page 模式（默认）：open() 只显示页内 canvas，不调用 window.open、不抢激活 → 首次点击即可同时进 VR+出镜像，无「二次点击」问题。
 //   · popup 模式：open() 用 window.open 需激活，若被先调用的 requestSession 占用会失败并注册「下次手势重试」，点「🖥 镜像」按钮也可开。
 //   镜像只在桌面 PC（isDesktopPage）生效；独立头显无论哪种模式都不开启（避免拖垮 Adreno XR2）。
-enterVRBtn.onclick = () => { audio.unlock(); pendingStartIndex = 0; pendingPlayIntro = true; prewarmIntroVideo(); enterVR(); if (MIRROR.AUTO_OPEN && isDesktopPage()) mirror.open(); };
+enterVRBtn.onclick = () => {
+  audio.unlock();
+  // 同步校验授权：绝不 await，保住 user activation（官方 immersive-vr 示例即同步 requestSession）
+  if (_authorized !== true) {
+    showLicenseGate(_authorized === null ? '正在检查授权…' : '需要激活后才能运行');
+    return;
+  }
+  if (!_configReady) { showStatus('关卡配置未就绪，请刷新页面后重试', true); return; }
+  pendingStartIndex = 0; pendingPlayIntro = true; prewarmIntroVideo(); enterVR();
+  if (MIRROR.AUTO_OPEN && isDesktopPage()) mirror.open();
+};
 
 // 预开镜像窗（仅 popup 模式需要）：在「进入 VR」之外的首次用户点击(手势)里先把镜像窗建好，
 // 这样用户点「进入VR」时该窗口已存在 → mirror.open() 只 focus、不消耗激活 → VR 与镜像同一点击都能成。
@@ -255,15 +362,17 @@ async function startLevelAt(idx) {
   pendingStartIndex = idx;
   pendingPlayIntro = false;   // 关卡直达面板：不播开场视频，直接进对应关
   const mode = gunMode();
-  const xrOk = (navigator.xr && navigator.xr.isSessionSupported)
-    ? await navigator.xr.isSessionSupported('immersive-vr').catch(() => false)
-    : false;
-  if (xrOk) enterVR();     // 头显：进 VR 后 sessionstart 触发 game.start(pendingStartIndex, mode, false)
-  else game.start(idx, mode, false);     // 桌面：直接开局预览（不播视频）
+  const xrOk = _xrOk === true;   // 页面加载时已探测并缓存，避免此处 await 吃掉 user activation（与 enterVR 同步 requestSession 保持一致）
+  if (xrOk) {
+    enterVR();     // 头显/PCVR：进 VR 后 sessionstart 触发 game.start(pendingStartIndex, mode, false)
+  } else {
+    // 桌面无 VR 设备：不再提供「测试模式」入口，仅提示需连接头显
+    showStatus('请在支持 WebXR 的头显（或已连接 VR 设备的 PC）上运行', true);
+  }
   // 镜像放 requestSession 之后：先 enterVR 占住 activation；仅桌面 PC 自动开（独立头显不弹）
   if (MIRROR.AUTO_OPEN && xrOk && isDesktopPage()) mirror.open();
 }
-(function buildLevelPanel() {
+function buildLevelPanel() {
   const panel = document.getElementById('level-panel');
   if (!panel) return;
   LEVELS.forEach((lv, i) => {
@@ -275,7 +384,7 @@ async function startLevelAt(idx) {
     btn.onclick = () => { startLevelAt(i); };
     panel.appendChild(btn);
   });
-})();
+}
 
 const clock = new THREE.Clock();
 world.renderer.setAnimationLoop(() => {

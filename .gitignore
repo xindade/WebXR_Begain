@@ -6,3 +6,9 @@
 Thumbs.db
 node_modules/
 npm-debug.log*
+
+# 激活服务器私钥（切勿提交；换密钥见 tools/license-server/genkeys.js）
+tools/license-server/keys/
+
+# 由 gen-content.mjs 生成的加密内容源（从 src/content 提取，非源码）
+tools/license-server/game-content.json

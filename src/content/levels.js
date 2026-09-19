@@ -2,7 +2,7 @@
 // kind: normal(黄昏) / crisis(黑夜) / bonus(白天奖励) / boss(白天Boss)
 // mood: dusk / night / day —— 控制天空与出怪
 
-export const LEVELS = [
+export let LEVELS = (typeof __PROD__ !== 'undefined' && __PROD__) ? [] : [
   { n: 1,  kind: 'normal', mood: 'dusk' },
   { n: 2,  kind: 'crisis', mood: 'night' },
   { n: 3,  kind: 'laser',  mood: 'day' },
@@ -22,6 +22,9 @@ export const LEVELS = [
   { n: 17, kind: 'crisis', mood: 'night' },
   { n: 18, kind: 'boss',   mood: 'day', boss: 'magician' },
 ];
+
+// 云端配置注入：main.js 授权成功后由 contentLoader 调用，覆盖 LEVELS（生产构建 fallback 折叠为空数组）。
+export function installCloudLevels(arr) { LEVELS = arr; }
 
 // 是否危机关：精英比例提升、四周奖励气球
 export function isCrisis(lv) { return lv.kind === 'crisis'; }

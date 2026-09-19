@@ -1,0 +1,21 @@
+# systemd 常驻单元：PCVR 授权 + 内容下发服务
+# 安装：deploy 脚本会自动拷到 /etc/systemd/system/ 并 enable。
+[Unit]
+Description=PCVR License & Content Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/license-server
+# ⚠ LICENSE_PRODUCT 必须与客户端 src/core/license.js 的 PRODUCT 完全一致，否则验签对不上
+Environment=LICENSE_PORT=8787
+Environment=LICENSE_PRODUCT=webxr-balloon-pcvr
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=2
+# 不把私钥/内容泄露到日志
+ProtectSystem=strict
+ReadWritePaths=/opt/license-server
+
+[Install]
+WantedBy=multi-user.target

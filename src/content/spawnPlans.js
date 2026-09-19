@@ -3,7 +3,7 @@
 // Boss 关(6/12/18) 与激光关(3/9/15) 不在此表，由各自系统处理。
 // 10 种小怪各占一关；16/17 复用章鱼/龙头，覆盖更均衡。
 // count：本关该敌人连续出场总数（场上始终只留 1 个，死亡后补下一个）。
-export const LEVEL_ENEMY = {
+export let LEVEL_ENEMY = (typeof __PROD__ !== 'undefined' && __PROD__) ? {} : {
   1:  { type: 'basic',      count: 8 },
   2:  { type: 'shield',     count: 6 },
   4:  { type: 'summoner',   count: 5 },
@@ -17,6 +17,9 @@ export const LEVEL_ENEMY = {
   16: { type: 'octopus',    count: 6 },  // 复用：章鱼
   17: { type: 'dragonhead', count: 5 },  // 复用：龙头
 };
+
+// 云端配置注入：main.js 授权成功后由 contentLoader 调用，覆盖 LEVEL_ENEMY。
+export function installCloudLevelEnemy(obj) { LEVEL_ENEMY = obj; }
 
 // 选项卡品质覆盖（供 cardDraft / game.js 读取；与出怪逻辑无关）。
 // 仅 01/02 关有自定义品质；其余关用全局默认 RARITY。

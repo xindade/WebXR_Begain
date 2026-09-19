@@ -10,7 +10,7 @@
 //   0     = 原地（心型 / 幽灵 / 龙头 / 聚宝盆，无持续移动）
 //   如需还原设计者原始数值，改下方 speed 字段即可。
 
-export const ENEMY_TYPES = {
+export let ENEMY_TYPES = (typeof __PROD__ !== 'undefined' && __PROD__) ? {} : {
   // —— 01 基础怪 ——
   basic: {
     id: 'basic', name: '基础怪',
@@ -188,3 +188,6 @@ export const CRISIS_POOL = ['basic', 'summoner', 'shield', 'ninja', 'heart', 'ch
 
 // 10 个小怪 id 列表（供 UI/调试遍历）
 export const SMALL_MONSTER_IDS = ['basic', 'summoner', 'shield', 'heart', 'ninja', 'chest', 'ghost', 'dragonhead', 'treasure', 'octopus'];
+
+// 云端配置注入：main.js 授权成功后由 contentLoader 调用，覆盖 ENEMY_TYPES（生产构建 fallback 折叠为空对象）。
+export function installCloudEnemyTypes(obj) { ENEMY_TYPES = obj; }
