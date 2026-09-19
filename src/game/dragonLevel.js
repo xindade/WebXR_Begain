@@ -1,0 +1,793 @@
+import * as THREE from 'three';
+import { GLTFLoader } from '../../vendor/GLTFLoader.js';
+import { DRACOLoader } from '../../vendor/DRACOLoader.js';
+import { DRAGON, DRAGON_SUMMON, DRAGON_VOICE, EXPLOSION } from '../core/constants.js';
+import { attachDragonSegment, loadBalloonModel } from './balloonModels.js';
+
+// 第十二关「龙 Boss」
+//   龙头 = Model/龙头.glb（沿 headPath 跟随移动，自动按包围盒缩放贴合龙身）
+//   龙身/龙爪 = 由敌人气球组成（默认 basic，受 DragonBoss 逐帧接管位置 → controlled）
+//   运动数据 = DRAGON.ANIM_URL 指向的 JSON（schemaVersion 2）
+//     重建配方（见 JSON 内 reconstruction）：
+//       1) 弧长 s 由 speed 推进，loop 模式对总弧长取模循环；跨过 pauses 的 s 时冻结 duration 秒并轻微晃动
+//       2) 龙头位置：在 headPath 按累计弧长 s 线性插值
+//       3) 身体第 i 节：按弧长 (s − i*bodySpacing) 取点 → 形成龙身/龙尾
+//       4) 龙爪：在「第 CLAW_NODE 节」处取切向 T、法线 N = T × 上方向；左右爪 = 节点 ± N*clawSpread
+//   坐标贴合：原始数据为「世界中心」右手系米制（范围 ±180m），经 SCALE 缩放 + HOME 平移到玩家前方战场。
+//   换同格式动画 = 改 DRAGON.ANIM_URL 一行（一键套用）。
+
+const D2R = THREE.MathUtils.degToRad;
+const UP = new THREE.Vector3(0, 1, 0);
+
+// 模块级临时量：消除 update 热循环里每帧 new Vector3 的 GC 压力（龙身/龙爪每帧多次采样）
+const _wob = new THREE.Vector3();   // _toWorld 的悬停位移（每帧赋值）
+const _lat = new THREE.Vector3();   // _undulate 的侧向向量（调用即消费，安全复用）
+// 圆柱节点朝向：复用临时量，避免每帧 new
+const _tanA = new THREE.Vector3();
+const _tanB = new THREE.Vector3();
+const _tanDir = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+const FORWARD_Z = new THREE.Vector3(0, 0, 1); // 圆柱本地 +Z（旋转后对齐脊柱切向）
+// 热路径 _toWorld / _tangent / 龙爪法线 复用量
+const _offTmp = new THREE.Vector3();  // body 循环 base / head 循环 headPos & ahead（均调用即消费）
+const _offA   = new THREE.Vector3();  // _worldOffsetDir 内部 base
+const _offB   = new THREE.Vector3();  // _worldOffsetDir 内部 tip（返回值）
+const _tanTmp = new THREE.Vector3();  // _tangent 返回值（调用方立即消费方向分量）
+const _nRaw   = new THREE.Vector3();  // 龙爪法线 T×up（raw 空间）
+
+// 在 [1..n] 里均匀选 k 个整数下标（用于龙身「模型节点」均匀散落）
+function pickEvenly(n, k) {
+  const res = [];
+  for (let j = 0; j < k; j++) res.push(Math.round(1 + (n - 1) * j / Math.max(1, k - 1)));
+  return res;
+}
+
+// ── 预览阶段预加载缓存（避免进第 12 关时黑屏/空等）──
+let _animData = null;    // 龙动画 JSON（已解析）
+let _headGltf = null;    // 龙头 GLB（已加载，跨关共享复用，dispose 时只摘除不释放）
+let _preloadPromise = null;
+
+// 预览阶段调用：加载龙关专属资产（动画 JSON + 龙头 GLB）。进第 12 关时直接命中缓存。
+// onProgress(loaded, total) 报告 GLB 下载进度（JSON 体积小忽略不计）。
+export function preloadDragonAssets(onProgress) {
+  if (_preloadPromise) return _preloadPromise;
+  _preloadPromise = (async () => {
+    if (!_animData) {
+      try {
+        const res = await fetch(DRAGON.ANIM_URL);
+        if (res.ok) _animData = await res.json();
+      } catch (e) { console.warn('[DragonBoss] 预加载动画 JSON 失败:', e); }
+    }
+    if (!_headGltf) {
+      const draco = new DRACOLoader();
+      draco.setDecoderPath('vendor/draco/');
+      const loader = new GLTFLoader();
+      loader.setDRACOLoader(draco);
+      _headGltf = await new Promise((resolve, reject) => {
+        loader.load(
+          DRAGON.HEAD_MODEL,
+          (g) => resolve(g),
+          (e) => onProgress && onProgress(e.loaded || 0, e.total || 1),
+          (err) => reject(err)
+        );
+      });
+    }
+
+    // 预加载龙身/龙爪固定模型（BODY_MODEL / CLAW_MODEL）+ 兜底 NODE_MODEL：进龙关时直接命中缓存，避免开打后才异步加载出现短暂空缺
+    const modelsToPreload = new Set([DRAGON.NODE_MODEL]);
+    if (DRAGON.BODY_MODEL) modelsToPreload.add(DRAGON.BODY_MODEL);
+    if (DRAGON.CLAW_MODEL) modelsToPreload.add(DRAGON.CLAW_MODEL);
+    for (const m of modelsToPreload) {
+      try { await loadBalloonModel(m); } catch (e) { console.warn('[DragonBoss] 预加载龙身模型失败:', m, e); }
+    }
+  })();
+  return _preloadPromise;
+}
+
+// 归一化（手写，避免 new THREE.Vector3 的额外开销）
+function _norm(v) {
+  const l = Math.hypot(v.x, v.y, v.z) || 1;
+  return { x: v.x / l, y: v.y / l, z: v.z / l };
+}
+
+export class DragonBoss {
+  constructor(scene, balloons) {
+    this.scene = scene;
+    this.balloons = balloons;          // BalloonManager（气球自动纳入碰撞/计分，每帧位置由本类接管）
+    this.dead = false;
+    this.cleared = false;
+    this.aliveCount = 0;
+
+    this.headGroup = new THREE.Group(); // 龙头挂载层（位置/朝向由本类逐帧设）
+    this.scene.add(this.headGroup);
+    this.headModel = null;
+    this.headFitScale = 1;
+
+    // 数据（_buildFromData 填充）
+    this.config = null;
+    this.path = [];                     // [{s,x,y,z}]
+    this.total = 0;                     // 主路径总弧长
+    this.center = new THREE.Vector3();  // headPath 包围盒中心（用于居中到 HOME）
+    this.pauses = [];
+    this.dScale = DRAGON.SCALE;
+
+    // 全局刚体变换（绕 HOME 旋转整个龙：头+身+爪）
+    this._rigQuat = new THREE.Quaternion();
+    this._rigPos = new THREE.Vector3();
+    this.loopTotal = 0;                 // 含闭合回程段的总弧长
+    this.closingLen = 0;                // 首尾回程段长度
+
+    // 运行状态
+    this.s = 0;                         // 当前龙头弧长
+    this.pauseTimer = 0;
+    this.pauseWobble = 0;
+    this.pauseElapsed = 0;
+    this._wobbleY = 0;
+
+    // 血量池（固定总血，只降不升：打爆即复活但「不回血」）
+    this.maxHpPool = 0;
+    this._basicKillCount = 0;                 // 基础怪击杀计数（每 BASIC_KILLS_PER_PERCENT 个扣 Boss 1% 血）
+    this.hpPool = 0;
+    this._respawns = [];                // 复活队列：{b, t}（t=剩余延迟秒）
+    this.dying = false;                 // 死亡连爆阶段（冻结运动）
+    this._finale = null;                // 死亡连爆状态机
+    this._deathFx = [];                 // 连爆爆炸特效列表
+    this._summonFx = [];                 // 召唤光点列表（龙身 → 落点，落点才生成小兵）
+    this.audio = null;                  // 由 game 注入（播放爆炸音效）
+    this._t = 0;                        // 全局时间累加（波动/动画用）
+    this._revealed = false;             // 是否已揭示：龙身/龙头在「首次 update 摆到脊柱上」前保持隐形，避免开场瞬间龙头停在原点(玩家脚下)被直接看到
+    this._voicePlayed = false;          // 龙 Boss 登场语音是否已播放（仅播一次）
+    this._voiceTimer = 0;               // Boss 开始运动(揭示)后计时(s)，到 DELAY 才播语音
+
+    // 龙 Boss 召唤（每 INTERVAL 秒召唤基础怪 + 忍者；见 _summonMinions）
+    this._summonTimer = 0;                              // 召唤冷却累加(s)
+    this._summonIndex = 0;                             // 已召唤次数（首召=基准 25，之后才走加压规则）
+    this._lastSummonCount = DRAGON_SUMMON.BASE_COUNT;  // 上次实际召唤的基础怪数（加压基数）
+
+    // 龙身/龙爪外观固定（BODY_MODEL=骑士 / CLAW_MODEL=忍者），无轮换状态
+
+    // 蛇形波动参数（来自 DRAGON，带默认）
+    this._idleAmp = DRAGON.IDLE_AMP ?? 0.45;
+    this._moveAmp = DRAGON.MOVE_AMP ?? 0.18;
+    this._idleFreq = DRAGON.IDLE_FREQ ?? 2.2;
+    this._phaseStep = DRAGON.PHASE_STEP ?? 0.55;
+
+    // 部件（气球引用）
+    this.bodyParts = [];                // [{balloon, i}]  i=1..bodyCount
+    this.clawParts = [];                // [{balloon, side}] side=-1/+1
+    this.allParts = [];                 // 全部龙气球（用于 alive 统计）
+  }
+
+  // 异步加载：解析 JSON → 生成气球 → 加载龙头模型（JSON/GLB 命中预览预加载缓存）
+  async start() {
+    try {
+      await preloadDragonAssets();
+      const data = _animData;
+      if (data) this._buildFromData(data);
+      this._spawnBalloons();
+      this._loadHead();
+    } catch (err) {
+      console.error('[DragonBoss] 加载动画数据失败:', err);
+      window.__pageLog?.error('[DragonBoss] 龙动画加载失败：' + (err?.message || err));
+    }
+  }
+
+  _buildFromData(data) {
+    this.config = data.config || {};
+    this.pauses = Array.isArray(data.pauses) ? data.pauses : [];
+    this.dScale = DRAGON.SCALE;
+    const raw = data.headPath || [];
+    this.path = raw.map((k) => ({ s: k.s, x: k.p[0], y: k.p[1], z: k.p[2] }));
+    this.path.sort((a, b) => a.s - b.s);
+    this.total = this.path.length ? this.path[this.path.length - 1].s : 0;
+    // 包围盒中心 → 居中到 HOME
+    const box = new THREE.Box3();
+    const v = new THREE.Vector3();
+    for (const k of this.path) box.expandByPoint(v.set(k.x, k.y, k.z));
+    box.getCenter(this.center);
+
+    // 全局刚体旋转（YAW/PITCH/ROLL，顺序 Y→X→Z），头/身/爪一起绕 HOME 转
+    const e = new THREE.Euler(D2R(DRAGON.PITCH), D2R(DRAGON.YAW), D2R(DRAGON.ROLL), 'YXZ');
+    this._rigQuat.setFromEuler(e);
+    this._rigPos.set(DRAGON.HOME.x, DRAGON.HOME.y, DRAGON.HOME.z);
+
+    // 循环闭合：在末点(A)→首点(B)补一段「平滑回程」，让 loop 首尾完全连贯
+    //   —— 回程用三次贝塞尔（控制臂沿 A、B 两端切向），保证 A、B 处切向连续，消除急转
+    //   —— 龙身/龙爪按弧长取点时对 loopTotal 取模环绕，循环时不会在 B 点塌成一个点
+    if (this.path.length >= 2) {
+      const A = this.path[this.path.length - 1];
+      const B = this.path[0];
+      const prev = this.path[this.path.length - 2];
+      const nxt = this.path[1];
+      this.closingLen = Math.hypot(A.x - B.x, A.y - B.y, A.z - B.z);
+      this.loopTotal = this.total + this.closingLen;
+      const Tend = _norm({ x: A.x - prev.x, y: A.y - prev.y, z: A.z - prev.z });   // A 处出射切向（最后一段方向）
+      const Tstart = _norm({ x: nxt.x - B.x, y: nxt.y - B.y, z: nxt.z - B.z });   // B 处入射切向（第一段方向）
+      const k = 1 / 3;
+      this._close = {
+        A: { x: A.x, y: A.y, z: A.z },
+        P1: { x: A.x + Tend.x * this.closingLen * k, y: A.y + Tend.y * this.closingLen * k, z: A.z + Tend.z * this.closingLen * k },
+        P2: { x: B.x - Tstart.x * this.closingLen * k, y: B.y - Tstart.y * this.closingLen * k, z: B.z - Tstart.z * this.closingLen * k },
+        B: { x: B.x, y: B.y, z: B.z },
+      };
+    } else {
+      this.closingLen = 0;
+      this.loopTotal = this.total;
+      this._close = null;
+    }
+
+    // 初始：龙头从「路径起点稍前方」开始，龙身沿路径向后铺满 → 龙一开始就摆好形状（不再从一点冒出）
+    // ① 龙身总段数 / 段间距：优先用 constants.js 的 DRAGON.BODY_COUNT / BODY_SPACING（集中调参），否则回退 JSON
+    this.bodyCount = DRAGON.BODY_COUNT || this.config.bodyCount || 10;
+    this.bodySpacing = DRAGON.BODY_SPACING || this.config.bodySpacing || 10;
+    this.s = Math.min(this.total, this.bodyCount * this.bodySpacing);
+  }
+
+  // 原始坐标(raw) → 世界坐标：以包围盒中心为锚，缩放 → 全局刚体旋转 → 平移到 HOME（+ 暂停晃动）
+  // 可选 out 参数：传入则写入 out（避免热循环 new Vector3），省略则 new（向后兼容）
+  _toWorld(raw, out) {
+    if (!out) out = new THREE.Vector3();
+    out.set(
+      raw.x - this.center.x,
+      raw.y - this.center.y,
+      raw.z - this.center.z
+    ).multiplyScalar(this.dScale);
+    out.applyQuaternion(this._rigQuat); // 全局刚体旋转（YAW/PITCH/ROLL）
+    _wob.set(0, this._wobbleY, 0);
+    out.add(this._rigPos).add(_wob);
+    return out;
+  }
+
+  // 取 raw 空间某「单位方向」经全局刚体变换后的世界单位方向（用于龙爪法线方向）
+  _worldOffsetDir(baseRaw, unitRaw) {
+    this._toWorld(baseRaw, _offA);
+    this._toWorld({ x: baseRaw.x + unitRaw.x, y: baseRaw.y + unitRaw.y, z: baseRaw.z + unitRaw.z }, _offB);
+    return _offB.sub(_offA).normalize();
+  }
+
+  // 按累计弧长取点：对 loopTotal 取模环绕（龙身/龙爪在循环首尾也连续），含闭合回程段
+  _sample(arc) {
+    const L = this.loopTotal || this.total;
+    // 环绕到 [0, L) —— 负弧长接到回程段末尾，超长环绕回开头，循环时龙不会塌成一点
+    let a = arc;
+    if (a < 0) a = ((a % L) + L) % L;
+    else if (a >= L) a = a % L;
+    const path = this.path;
+    if (path.length === 0) return { x: 0, y: 0, z: 0 };
+    if (a <= this.total) {
+      // —— 主路径线性插值 ——
+      let i = 0;
+      while (i < path.length - 1 && path[i + 1].s < a) i++;
+      const A = path[i];
+      const B = path[Math.min(i + 1, path.length - 1)];
+      const span = (B.s - A.s) || 1;
+      const t = Math.max(0, Math.min(1, (a - A.s) / span));
+      return {
+        x: A.x + (B.x - A.x) * t,
+        y: A.y + (B.y - A.y) * t,
+        z: A.z + (B.z - A.z) * t,
+      };
+    }
+    // —— 闭合回程段：三次贝塞尔(A→B)，在 A、B 处切向与主路径连续（无急转）——
+    if (this._close) {
+      const u = this.closingLen > 0 ? (a - this.total) / this.closingLen : 0;
+      const mu = 1 - u;
+      const w0 = mu * mu * mu, w1 = 3 * mu * mu * u, w2 = 3 * mu * u * u, w3 = u * u * u;
+      const c = this._close;
+      return {
+        x: w0 * c.A.x + w1 * c.P1.x + w2 * c.P2.x + w3 * c.B.x,
+        y: w0 * c.A.y + w1 * c.P1.y + w2 * c.P2.y + w3 * c.B.y,
+        z: w0 * c.A.z + w1 * c.P1.z + w2 * c.P2.z + w3 * c.B.z,
+      };
+    }
+    // 退化兜底：A→B 直线
+    const last = path[path.length - 1];
+    const first = path[0];
+    const u = this.closingLen > 0 ? (a - this.total) / this.closingLen : 0;
+    return {
+      x: last.x + (first.x - last.x) * u,
+      y: last.y + (first.y - last.y) * u,
+      z: last.z + (first.z - last.z) * u,
+    };
+  }
+
+  // 弧长处的单位切向（返回模块级 _tanTmp，调用方立即消费方向分量）
+  _tangent(arc) {
+    const d = Math.max(1, this.total * 0.002);
+    const a = this._sample(arc - d);
+    const b = this._sample(arc + d);
+    _tanTmp.set(b.x - a.x, b.y - a.y, b.z - a.z);
+    if (_tanTmp.lengthSq() < 1e-9) _tanTmp.set(0, 0, 1);
+    return _tanTmp.normalize();
+  }
+
+  // 圆柱沿脊柱躺平：让 mesh 本地 +Z 对齐该处「世界切向」（圆柱几何已预旋转轴到 Z）。
+  // 用世界坐标采样点求切向（而非 _tangent 的 raw 坐标），保证方向与可见龙身一致。
+  _orientAlongSpine(mesh, arc) {
+    const d = Math.max(1, this.total * 0.002);
+    this._toWorld(this._sample(arc - d), _tanA);
+    this._toWorld(this._sample(arc + d), _tanB);
+    _tanDir.subVectors(_tanB, _tanA);
+    if (_tanDir.lengthSq() < 1e-9) return; // 退化保底：保持上一帧朝向
+    _tanDir.normalize();
+    _q.setFromUnitVectors(FORWARD_Z, _tanDir);
+    mesh.quaternion.copy(_q);
+  }
+
+  _spawnBalloons() {
+    const bodyCount = this.bodyCount;       // ① 来自 constants DRAGON.BODY_COUNT（_buildFromData 已赋值）
+    const hpMult = DRAGON.HP_MULT;
+
+    // 龙身：固定「骑士」模型（DRAGON.BODY_MODEL），每节血量 = 骑士默认血量(DRAGON.BODY_HP=500)
+    for (let i = 1; i <= bodyCount; i++) {
+      const b = this.balloons.spawn(DRAGON.BODY_TYPE, new THREE.Vector3(0, -999, 0));
+      b.controlled = true; // 跳过自动朝玩家移动 + 分离力
+      b.isDragonPart = true; // 标记为龙部件：击破后由本类管理「1秒复活」而非永久移除
+      b.damageReduction = DRAGON.DAMAGE_REDUCTION; // 龙身气球减伤95%：受击只吃5%（含激光剑穿透，takeDamage 强制减伤）
+      b.mesh.visible = false; // 开场隐形：待首次 update 摆到脊柱后再揭示（见 update 末尾 _revealed）
+      b.maxHp = DRAGON.BODY_HP; b.hp = DRAGON.BODY_HP; // 龙身血量固定为骑士血量（覆盖 dragonBody 默认 100）
+      if (hpMult !== 1) { b.maxHp = Math.round(b.maxHp * hpMult); b.hp = b.maxHp; }
+      // 龙身由头(i=1)到尾(i=bodyCount)渐细：仅改外观，不影响碰撞半径
+      const taper = 1.4 - 0.9 * ((i - 1) / Math.max(1, bodyCount - 1));
+      // 统一 scale:1.0（抵消各模型 MODEL_TUNING 默认比例，保证骑士贴合身体半径），taper 逐段渐细
+      attachDragonSegment(b, b.radius, 'model', taper, DRAGON.BODY_MODEL, { scale: 1.0 });
+      this.bodyParts.push({ balloon: b, i, kind: 'model', taper });
+      this.maxHpPool += b.maxHp;
+      this.allParts.push(b);
+    }
+
+    // 龙爪：固定「忍者」模型（DRAGON.CLAW_MODEL），每个挂点 CLAW_NODES 左右各1爪 → 共4爪
+    const clawNodes = Array.isArray(DRAGON.CLAW_NODES) ? DRAGON.CLAW_NODES : [DRAGON.CLAW_NODE];
+    for (const node of clawNodes) {
+      for (const side of [-1, 1]) {
+        const b = this.balloons.spawn(DRAGON.CLAW_TYPE, new THREE.Vector3(0, -999, 0));
+        b.controlled = true;
+        b.isDragonPart = true;
+        b.damageReduction = DRAGON.DAMAGE_REDUCTION; // 龙爪气球同样减伤95%（龙身/龙爪统一减伤）
+        b.mesh.visible = false; // 开场隐形：待首次 update 摆到脊柱后再揭示
+        if (hpMult !== 1) { b.maxHp = Math.round(b.maxHp * hpMult); b.hp = b.maxHp; }
+        // 龙爪 taper 取所在节点位置（中等粗细）
+        const taper = 1.4 - 0.9 * ((node - 1) / Math.max(1, bodyCount - 1));
+        attachDragonSegment(b, b.radius, 'model', taper, DRAGON.CLAW_MODEL, { scale: 1.0 });
+        this.maxHpPool += b.maxHp;
+        this.clawParts.push({ balloon: b, side, node, kind: 'model' });
+        this.allParts.push(b);
+      }
+    }
+
+    this.hpPool = this.maxHpPool; // 固定总血量池（只降不升）
+    this.aliveCount = this.allParts.length;
+  }
+
+  _loadHead() {
+    this.headGroup.visible = false; // 开场隐形：待首次 update 摆到脊柱后再揭示（见 update 末尾 _revealed）
+    // 命中预览预加载缓存：直接复用已加载的 GLB（不重复下载/解码）
+    if (_headGltf) {
+      this.headModel = _headGltf.scene;
+      this._fitHead();
+      this.headGroup.add(this.headModel);
+      return;
+    }
+    // 兜底：未预加载时异步加载（含红色线框占位，便于上机确认路径正确）
+    const draco = new DRACOLoader();
+    draco.setDecoderPath('vendor/draco/');
+    const loader = new GLTFLoader();
+    loader.setDRACOLoader(draco);
+    loader.load(
+      DRAGON.HEAD_MODEL,
+      (gltf) => {
+        this.headModel = gltf.scene;
+        this._fitHead();
+        this.headGroup.add(this.headModel);
+      },
+      undefined,
+      (err) => {
+        console.error('[DragonBoss] 龙头模型加载失败:', err);
+        window.__pageLog?.error('[DragonBoss] 龙头加载失败：' + (err?.message || err));
+        // 红色线框占位，便于上机确认路径正确
+        const m = new THREE.Mesh(
+          new THREE.SphereGeometry(0.6, 12, 10),
+          new THREE.MeshBasicMaterial({ color: 0xe63946, wireframe: true })
+        );
+        this.headGroup.add(m);
+      }
+    );
+  }
+
+  // 自动按包围盒缩放：使龙头直径 ≈ 2 * headRadius * SCALE（与龙身尺寸一致）
+  _fitHead() {
+    const box = new THREE.Box3().setFromObject(this.headModel);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const desiredDiameter = 2 * (this.config.headRadius || 10) * this.dScale;
+    this.headFitScale = desiredDiameter / maxDim;
+    this.headModel.scale.setScalar(this.headFitScale * DRAGON.HEAD_SCALE);
+  }
+
+  update(dt, playerPos) {
+    if (this.dead || !this.config) return;
+    this._t += dt;
+
+    // —— 死亡连爆阶段：冻结运动，只跑连爆动画 ——
+    if (this.dying) {
+      this._updateFinale(dt);
+      this._updateDeathFx(dt);
+      return;
+    }
+
+    // —— 龙 Boss 召唤：每 INTERVAL 秒召唤基础怪 + 忍者（见 _summonMinions）——
+    this._summonTimer += dt;
+    if (this._summonTimer >= DRAGON_SUMMON.INTERVAL) {
+      this._summonTimer -= DRAGON_SUMMON.INTERVAL;
+      this._summonMinions();
+    }
+
+    // —— 推进弧长（含 pause 冻结）——
+    if (this.pauseTimer > 0) {
+      this.pauseTimer -= dt;
+      this.pauseElapsed += dt;
+    } else {
+      this.pauseElapsed = 0;
+      const next = this.s + (this.config.speed || 180) * dt;
+      let crossed = false;
+      for (const p of this.pauses) {
+        if (this.s < p.s && next >= p.s) {
+          this.s = p.s;
+          this.pauseTimer = p.duration || 0;
+          this.pauseWobble = p.wobble || 0;
+          crossed = true;
+          break;
+        }
+      }
+      if (!crossed) this.s = next % this.loopTotal;
+    }
+
+    // 暂停/待机时波动幅度更大（呼吸感），移动时保留细微流动
+    const amp = this.pauseTimer > 0 ? this._idleAmp : this._moveAmp;
+
+    // —— 复活计时（外形复活，不回血）——
+    // 必须放在「位置更新循环」之前：刚复活的龙气球在本帧就会被下方 body/claw 循环
+    // 摆到当前龙身正确位置，否则会先以「死亡原地」闪现一帧 → 玩家看到原地残影。
+    for (let k = this._respawns.length - 1; k >= 0; k--) {
+      const r = this._respawns[k];
+      r.t -= dt;
+      if (r.t <= 0) {
+        r.b.alive = true;
+        r.b.hp = r.b.maxHp;
+        r.b.mesh.visible = true;
+        r.b._flash = 0;
+        this._respawns.splice(k, 1);
+      }
+    }
+
+    // —— 龙头（极轻微 idle 浮沉，不放大波动，避免龙头「飘」）——
+    const headRaw = this._sample(this.s);
+    if (this.headModel) {
+      const headBob = 0.06 * Math.sin(this._t * 1.5);
+      const headPos = this._toWorld(headRaw, _offTmp);
+      headPos.y += headBob;
+      this.headGroup.position.copy(headPos);
+      const t = this._tangent(this.s);
+      const ahead = this._toWorld({ x: headRaw.x + t.x, y: headRaw.y + t.y, z: headRaw.z + t.z }, _offTmp);
+      ahead.y += headBob;
+      this.headGroup.lookAt(ahead);
+      this.headGroup.rotateY(D2R(DRAGON.HEAD_YAW)); // 若龙头朝向与前进方向相反，把 HEAD_YAW 改成 180
+    }
+
+    // —— 龙身（蛇形波动，替换原整体上下平移）——
+    const bodySpacing = this.bodySpacing;   // ① 来自 constants DRAGON.BODY_SPACING（_buildFromData 已赋值）
+    for (const part of this.bodyParts) {
+      if (!part.balloon.alive) continue;
+      const arc = this.s - part.i * bodySpacing;   // 负弧长由 _sample 取模环绕 → 循环时龙身连续
+      const base = this._toWorld(this._sample(arc), _offTmp);
+      const tan = this._tangent(arc);
+      base.add(this._undulate(part.i, tan, amp));
+      part.balloon.mesh.position.copy(base);
+      // 圆柱节点沿脊柱躺平（模型节点保持直立，不在此处理）
+      if (part.kind === 'cylinder') this._orientAlongSpine(part.balloon.mesh, arc);
+    }
+
+    // —— 龙爪：每个挂点(node)处，沿世界法线左右偏移 + 同样蛇形波动 ——
+    const clawSpread = this.config.clawSpread || 6;
+    for (const part of this.clawParts) {
+      if (!part.balloon.alive) continue;
+      const nodeArc = this.s - part.node * bodySpacing;   // 取模环绕，与龙身一致
+      const nodeRaw = this._sample(nodeArc);
+      const t = this._tangent(nodeArc);
+      _nRaw.set(-t.z, 0, t.x); // T × up（raw 空间单位法线）
+      if (_nRaw.lengthSq() < 1e-9) _nRaw.set(1, 0, 0);
+      _nRaw.normalize();
+      const Nworld = this._worldOffsetDir(nodeRaw, _nRaw); // 经全局刚体旋转后的世界法线
+      const nodeWorld = this._toWorld(nodeRaw, _offTmp);
+      nodeWorld.addScaledVector(Nworld, part.side * clawSpread * this.dScale);
+      nodeWorld.add(this._undulate(part.node, t, amp));
+      part.balloon.mesh.position.copy(nodeWorld);
+      // 龙爪统一黑红圆柱，沿脊柱躺平
+      this._orientAlongSpine(part.balloon.mesh, nodeArc);
+
+    // —— 召唤光点推进（龙身 → 落点，到达才生成小兵）——
+    this._updateSummonFx(dt);
+    }
+
+    // —— 首次 update：龙身/龙头已摆到脊柱正确位置，此时才揭示（开场隐形，避免龙头停原点被看到）——
+    if (!this._revealed) {
+      this._revealed = true;
+      this.headGroup.visible = true;
+      for (const p of this.bodyParts) if (p.balloon.mesh) p.balloon.mesh.visible = true;
+      for (const p of this.clawParts) if (p.balloon.mesh) p.balloon.mesh.visible = true;
+    }
+
+    // —— 龙 Boss 登场语音：Boss 揭示(开始运动)后延迟 DELAY 秒启动（LOOP=true 则循环，直到死亡/切关停止）——
+    if (DRAGON_VOICE.ENABLED && !this._voicePlayed && this._revealed) {
+      this._voiceTimer += dt;
+      if (this._voiceTimer >= DRAGON_VOICE.DELAY) {
+        if (DRAGON_VOICE.LOOP) this.audio?.playLoopVoice(DRAGON_VOICE.URL, DRAGON_VOICE.VOLUME);
+        else this.audio?.playVoice(DRAGON_VOICE.URL, DRAGON_VOICE.VOLUME);
+        this._voicePlayed = true;
+      }
+    }
+
+    // —— 通关判定：仅死亡连爆结束后由 _updateFinale 置 cleared（打爆即复活，故不以全灭判定）——
+    let alive = 0;
+    for (const b of this.allParts) if (b.alive) alive++;
+    this.aliveCount = alive;
+  }
+
+  // ── 龙 Boss 召唤：每 INTERVAL 秒召唤基础怪 + 忍者 ──
+  _summonMinions() {
+    const S = DRAGON_SUMMON;
+    // 统计场上基础怪数量（排除龙身/龙爪部件：部件 behavior 也是 'basic' 但 isDragonPart=true）
+    let field = 0;
+    const list = this.balloons.list;
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      if (b.alive && !b.isDragonPart && b.behavior === 'basic') field++;
+    }
+    // 召唤数量：首召=基准；之后若场上 < LOW_THRESHOLD（玩家清得快）则在上次数量 +RAMP_ADD 加压，否则回基准
+    let n;
+    if (this._summonIndex === 0) n = S.BASE_COUNT;
+    else if (field < S.LOW_THRESHOLD) n = this._lastSummonCount + S.RAMP_ADD;
+    else n = S.BASE_COUNT;
+    n = Math.min(n, S.MAX_BASIC);            // 保护 PICO：硬上限截断（设更大/Infinity 解除）
+    this._lastSummonCount = n;
+    this._summonIndex++;
+
+    // 基础怪 ×n（出生在 10~15m 随机方向环带）
+    let _idx = 0;
+    const emit = (type) => {
+      const ang = Math.random() * Math.PI * 2;
+      const r = S.RING_MIN + Math.random() * (S.RING_MAX - S.RING_MIN);
+      const to = new THREE.Vector3(Math.cos(ang) * r, S.SPAWN_Y, Math.sin(ang) * r);
+      this._emitSummonFx(type, to, _idx++);
+    };
+    for (let i = 0; i < n; i++) emit('basic');
+    // 每次召唤必带忍者（出生在环带内；之后由 balloons._clampToRing 维持 ≥RING_MIN，遵守不靠近 10m 内）
+    for (let i = 0; i < S.NINJA_PER_SUMMON; i++) emit('ninja');
+  }
+
+  // —— 召唤光点：从最近龙身部件飞出光点到落点，到达才生成小兵 ——
+  // 视觉意图：小兵不是从环带凭空冒出，而是龙 Boss"扔下"的——光点从龙身射向落点，落地化形为怪。
+  _emitSummonFx(type, to, idx) {
+    if (!DRAGON_SUMMON.BEAM.ENABLED) { this.balloons.spawn(type, to.clone()); return; } // 开关关 → 直接生成
+    const B = DRAGON_SUMMON.BEAM;
+    const from = this._pickBodySource(to);   // 最近的存活龙身部件世界坐标
+    from.y += B.Y_OFFSET;                    // 从龙身"上方/口部"飞出更明显
+    const dur = THREE.MathUtils.clamp(from.distanceTo(to) / B.SPEED, 0.25, 1.2);
+    const mesh = this._makeSummonBeam();
+    mesh.position.copy(from);
+    this.scene.add(mesh);
+    this._summonFx.push({ type, to: to.clone(), from, mesh, dur, t: dur, delay: idx * B.STAGGER });
+  }
+
+  // 选最近的存活龙身部件（无则龙头，再无则落点兜底），作为光点出发点
+  _pickBodySource(to) {
+    let best = null, bestD = Infinity;
+    const v = new THREE.Vector3();
+    for (const p of this.bodyParts) {
+      if (!p.balloon.alive || !p.balloon.mesh) continue;
+      p.balloon.mesh.getWorldPosition(v);
+      const d = v.distanceToSquared(to);
+      if (d < bestD) { bestD = d; best = v.clone(); }
+    }
+    if (!best && this.headGroup) { this.headGroup.getWorldPosition(v); best = v.clone(); }
+    return best || to.clone();
+  }
+
+  // 光点 mesh：小球 + AdditiveBlending 发光（与传送门出怪光点同款风格）
+  _makeSummonBeam() {
+    const B = DRAGON_SUMMON.BEAM;
+    return new THREE.Mesh(
+      new THREE.SphereGeometry(B.SIZE, 10, 8),
+      new THREE.MeshBasicMaterial({ color: B.COLOR, transparent: true, opacity: B.OPACITY, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+  }
+
+  // 每帧推进召唤光点（非死亡阶段跑；光点落地才生成小兵）
+  _updateSummonFx(dt) {
+    for (let i = this._summonFx.length - 1; i >= 0; i--) {
+      const it = this._summonFx[i];
+      if (it.delay > 0) { it.delay -= dt; continue; }   // 还没出发：停在龙身（脉动由下方 scale 处理）
+      it.t -= dt;
+      if (it.t <= 0) {                                   // 到达落点：化形为小兵
+        it.mesh.position.copy(it.to);
+        this.balloons.spawn(it.type, it.to.clone());
+        this._removeBeam(it.mesh);
+        this._summonFx.splice(i, 1);
+      } else {                                           // 飞行中：smoothstep 插值 + 轻微脉动
+        const k = 1 - it.t / it.dur;
+        const e = k * k * (3 - 2 * k);
+        it.mesh.position.set(
+          it.from.x + (it.to.x - it.from.x) * e,
+          it.from.y + (it.to.y - it.from.y) * e,
+          it.from.z + (it.to.z - it.from.z) * e
+        );
+        it.mesh.scale.setScalar(1 + 0.3 * Math.sin(k * Math.PI * 4));
+      }
+    }
+  }
+
+  _removeBeam(mesh) {
+    this.scene.remove(mesh);
+    mesh.geometry.dispose();
+    mesh.material.dispose();
+  }
+
+  // 蛇形波动偏移：沿龙身流动的侧向摆动 + 轻微起伏（世界空间）
+  //   phaseIdx = 节号（i / node），tangentWorld = 该处单位切向，amp = 当前幅度
+  _undulate(phaseIdx, tangentWorld, amp) {
+    _lat.crossVectors(tangentWorld, UP);
+    if (_lat.lengthSq() < 1e-6) _lat.set(1, 0, 0); else _lat.normalize(); // 切向近竖直时兜底
+    const phase = phaseIdx * this._phaseStep;
+    const a = Math.sin(this._t * this._idleFreq + phase) * amp;          // 侧向摆动
+    const b = Math.sin(this._t * this._idleFreq * 0.8 + phase) * amp * 0.4; // 轻微起伏
+    const off = _lat.multiplyScalar(a);
+    off.addScaledVector(UP, b);
+    return off; // 注：返回 _lat 本身，调用方(base.add)立即消费，无跨调用别名风险
+  }
+
+  // 龙气球被击破：扣固定血量池（只降不升），排入 1 秒复活队列；血量清零则触发死亡连爆
+  notifyKilled(balloon) {
+    if (this.dying) return;
+    this.hpPool -= balloon.maxHp;
+    this._respawns.push({ b: balloon, t: DRAGON.RESPAWN_DELAY ?? 1.0 });
+    if (this.hpPool <= 0) this._startDeath();
+  }
+
+  // 玩家每消灭 BASIC_KILLS_PER_PERCENT 个「基础怪(basic, 非龙部件)」→ 扣 Boss 1% 总血量（需求：每5个基础怪扣Boss 1%血）
+  //   由 game.js _onKilled 在击杀基础怪时调用；dying 阶段不计数（避免死亡连爆期间误扣）
+  notifyBasicKilled() {
+    if (this.dying) return;
+    this._basicKillCount++;
+    if (this._basicKillCount >= DRAGON.BASIC_KILLS_PER_PERCENT) {
+      this._basicKillCount -= DRAGON.BASIC_KILLS_PER_PERCENT;
+      const cut = this.maxHpPool * DRAGON.BASIC_KILL_PERCENT; // 1% 总血量
+      this.hpPool = Math.max(0, this.hpPool - cut);
+      if (this.hpPool <= 0) this._startDeath();
+    }
+  }
+
+  // 血量清零 → 进入死亡连爆阶段（冻结运动）
+  _startDeath() {
+    this.audio?.stopBGM(); // 龙 Boss 死亡即停背景音乐（龙Boss.wav），转场/选项卡不再续播
+    this.audio?.stopLoopVoice(); // 龙 Boss 死亡即停登场循环语音（氛围音不续播）
+    this.dying = true;
+    // 清场：中止进行中的召唤光点（其落点生成的小兵不再出现），避免死亡后还冒出新兵
+    for (const it of this._summonFx) if (it.mesh) this._removeBeam(it.mesh);
+    this._summonFx = [];
+    // 清场：龙 Boss 死亡即清除全部被召唤小怪（基础怪/忍者），仅保留龙身/龙爪部件留待连爆演出
+    for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+      const b = this.balloons.list[i];
+      if (!b.isDragonPart) this.balloons.remove(b); // 非龙部件的小怪直接移除（含 dispose 光球/立绘/DepthSprite）
+    }
+    // 顺序：龙尾(i 大) → 龙头(i 小)，最后龙爪
+    const order = [...this.bodyParts]
+      .sort((a, b) => b.i - a.i)
+      .map((p) => p.balloon)
+      .concat(this.clawParts.map((p) => p.balloon));
+    this._finale = {
+      queue: order,
+      idx: 0,
+      timer: 0,
+      interval: DRAGON.FINALE_INTERVAL ?? 0.07,
+      done: 0,
+    };
+  }
+
+  // 死亡连爆：从尾到头逐个爆炸；全部炸完后等最后一发特效播完，再置 cleared（选项卡随后才弹）
+  _updateFinale(dt) {
+    const f = this._finale;
+    if (!f) return;
+    f.timer -= dt;
+    while (f.idx < f.queue.length && f.timer <= 0) {
+      const b = f.queue[f.idx];
+      if (b && b.mesh.visible) {
+        this._spawnDeathFx(b.mesh.position.clone(), b.radius);
+        b.alive = false;
+        b.mesh.visible = false;
+        this.audio?.playPop();
+      }
+      f.idx++;
+      f.timer += f.interval;
+    }
+    if (f.idx >= f.queue.length) {
+      f.done += dt;
+      if (f.done >= EXPLOSION.DURATION) {
+        this.headGroup.visible = false; // 龙头也炸完 → 消失
+        this.cleared = true;            // 触发 game._enterCard（选项卡）
+        // 清理残留特效，避免进入选项卡后还残留冻结的爆炸球
+        // 清理召唤光点（若有残留）
+    for (const it of this._summonFx) if (it.mesh) this._removeBeam(it.mesh);
+    this._summonFx = [];
+    for (const fx of this._deathFx) {
+          this.scene.remove(fx.mesh);
+          fx.mesh.geometry.dispose();
+          fx.mesh.material.dispose();
+        }
+        this._deathFx = [];
+      }
+    }
+  }
+
+  // 连爆专用爆炸特效（与 game._spawnExplosionFx 同款，避免反向依赖 game）
+  _spawnDeathFx(position, radius) {
+    const geo = new THREE.SphereGeometry(radius, 16, 12);
+    const mat = new THREE.MeshBasicMaterial({
+      color: EXPLOSION.COLOR,
+      transparent: true,
+      opacity: EXPLOSION.START_OPACITY,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(position);
+    this.scene.add(mesh);
+    this._deathFx.push({ mesh, t: 0 });
+  }
+
+  _updateDeathFx(dt) {
+    for (let i = this._deathFx.length - 1; i >= 0; i--) {
+      const fx = this._deathFx[i];
+      fx.t += dt;
+      const k = Math.min(1, fx.t / EXPLOSION.DURATION);
+      fx.mesh.scale.setScalar(1 + k * EXPLOSION.MAX_SCALE);
+      fx.mesh.material.opacity = EXPLOSION.START_OPACITY * (1 - k);
+      if (k >= 1) {
+        this.scene.remove(fx.mesh);
+        fx.mesh.geometry.dispose();
+        fx.mesh.material.dispose();
+        this._deathFx.splice(i, 1);
+      }
+    }
+  }
+
+  dispose() {
+    this.dead = true;
+    // 移除全部龙气球（避免残留隐藏气球进入下一关的 waves）
+    for (const b of this.allParts) {
+      if (b.isDragonPart) this.balloons.remove(b);
+    }
+    // 清理连爆特效
+    for (const fx of this._deathFx) {
+      this.scene.remove(fx.mesh);
+      fx.mesh.geometry.dispose();
+      fx.mesh.material.dispose();
+    }
+    this._deathFx = [];
+    this._respawns = [];
+    this._finale = null;
+    this.dying = false;
+    this.audio?.stopLoopVoice(); // 切关/退出：停止仍在播的龙 Boss 循环语音
+    this.cleared = false;
+
+    // 移除龙头：龙头模型是预览预加载的共享缓存（_headGltf），只从 headGroup 摘下，
+    // 不 dispose 其几何/材质（否则重玩第 12 关时缓存已失效），由缓存自行跨关复用。
+    this.scene.remove(this.headGroup);
+    if (this.headModel) this.headGroup.remove(this.headModel);
+    this.headModel = null;
+    this.headGroup.visible = true;
+    this.bodyParts = [];
+    this.clawParts = [];
+    this.allParts = [];
+  }
+}

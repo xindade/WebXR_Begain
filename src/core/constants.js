@@ -1,0 +1,1165 @@
+// 核心常量速查表 —— 数据来自 ima 知识库「WebXR 肉鸽打气球」
+// 所有可调参数集中在此，方便平衡性调整。
+
+// 全景天空：按关卡号 lv.n 映射本地 360° 全景图（equirectangular，2:1，4096x2048 JPG）。
+// 全部 18 关均用对应编号全景图作天空盒（替代原渐变天空），进关即懒加载（world.setSkyPanorama）。
+// 图片均由原始 8K PNG 离线压缩为 4K JPG（Sky/sky-01.jpg ~ sky-18.jpg），单张 0.5~1.5MB，远省带宽/显存。
+// 朝向偏航由 PANO_DOME_YAW 统一控制（默认 π/2：把 360 照片正前(图中心 u=0.5)对齐玩家初始朝向 -Z）。
+export const SKY_PANORAMA = {
+  1:  'Sky/sky-01.jpg',  // 第1关（清晨小怪）
+  2:  'Sky/sky-02.jpg',  // 第2关（微光夜晚·危机）
+  3:  'Sky/sky-03.jpg',  // 第3关（机制·激光）
+  4:  'Sky/sky-04.jpg',  // 第4关（双马白天）
+  5:  'Sky/sky-05.jpg',  // 第5关（极光夜晚·危机）
+  6:  'Sky/sky-06.jpg',  // 第6关（水墨·脸谱Boss）
+  7:  'Sky/sky-07.jpg',  // 第7关（巨鲲白天）
+  8:  'Sky/sky-08.jpg',  // 第8关（巨型月夜晚·危机）
+  9:  'Sky/sky-09.jpg',  // 第9关（机制·激光）
+  10: 'Sky/sky-10.jpg',  // 第10关（彩虹白天）
+  11: 'Sky/sky-11.jpg',  // 第11关（雷云闪电·危机）
+  12: 'Sky/sky-12.jpg',  // 第12关（晴空环形云·龙Boss）
+  13: 'Sky/sky-13.jpg',  // 第13关（棉花糖）
+  14: 'Sky/sky-14.jpg',  // 第14关（台风黑夜·危机）
+  15: 'Sky/sky-15.jpg',  // 第15关（机制·激光九宫格）
+  16: 'Sky/sky-16.jpg',  // 第16关（天梯白天）
+  17: 'Sky/sky-17.jpg',  // 第17关（天梯夜晚·危机）
+  18: 'Sky/sky-18.jpg',  // 第18关（空中堡垒·脸谱Boss）
+};
+
+// 全景穹顶球绕 Y 的偏航（弧度）：让 360 照片的"正前(图中心 u=0.5)"对齐玩家初始朝向(-Z)。
+// 原理：three.js SphereGeometry 默认 UV 下，贴图中心列(u=0.5)落在世界 +X（玩家右侧），
+// 右 1/4(u=0.75) 落在 -Z（正前）。旋转 +π/2 把图中心转到正前。
+// 若头显里城堡不在正前方：左右偏差约 ±π/2、背后则 ±π，调此值刷新即生效（同时影响 3/12/15 关天空，但皆为对称天空无影响）。
+export const PANO_DOME_YAW = Math.PI / 2;
+
+// ⚠⚠⚠ 渲染分辨率系数（WebXR 帧缓冲缩放）——【VR 优化绝对禁止下调 FRAMEBUFFER_SCALE_STANDALONE】⚠⚠⚠
+//   · 当前代码不会再按 STANDALONE 调用 setFramebufferScaleFactor：main.js 已去除独立头显分支；
+//     world.js 构造期仅按桌面值 FRAMEBUFFER_SCALE(=1.0) 设置，STANDALONE 完全不被应用（即 inert）。
+//   · 教训（2026-09-18 PICO 实测）：一旦代码把 STANDALONE 调到 0.6/0.7 并应用到 XR 合成层(XRWebGLLayer)，
+//     PICO 运行时无法正确合成缩小后的层 → 画面全黑（但音频照常播放）。只有 1.0 正常。
+//   · 独立头显帧率瓶颈是「几何(顶点数)」不是「填充率」，降分辨率既救不了帧率又致黑屏，双输。
+//   · 两值仅作「禁用标记」保持 1.0；请勿在代码中新增「按 STANDALONE 调用缩放」的逻辑，也勿误改。
+export const RENDER = { FRAMEBUFFER_SCALE: 1.0, FRAMEBUFFER_SCALE_STANDALONE: 1.0 };
+
+// 全景天空亮度倍率（天地朝向已确认正确，只调亮度用）。
+// 1.0 = 原样；<1 = 变暗；>1 = 变亮。改完刷新页面即生效。
+export const SKY_BRIGHTNESS = 1.0; // 全景天空亮度倍率（JPG 等距柱状全景）。1.0=原样；<1 变暗；>1 变亮。刷新即生效。
+
+// 全景天空 mipmap 开关（用于一键回退）：
+// false = 关闭 mipmap（省约一半显存带宽 + 去掉切换关时的 mip 生成单帧尖峰卡顿，推荐）；
+// true  = 回退到原行为（生成 mipmap，远景更平滑但带宽/卡顿更重）。改完刷新页面即生效。
+export const SKY_PANO_MIPMAPS = false;
+
+export const MOVE = {
+  // 摇杆/虚拟移动总开关：1 = 启用（默认，摇杆与键鼠都能移动）；0 = 禁用。
+  //   ⚠ 置 0 后玩家只能靠「现实物理行走」移动（XR 追踪），推摇杆无效。
+  //   · 区域边界约束（BOUND_X / BOUND_Z）写在 input.js 摇杆移动同一段里，置 0 后不再执行；
+  //     但现实场地本身就是 4×8、与游戏活动区域一一对应，玩家走不出游戏区域，无需该约束。
+  //   · 位置语义：玩家游戏内位置 = 现实里相对场地中心的位移（详见 game.js「玩家位置策略」注释）。
+  //   · 若换了更大的现实场地、或 XR 原点不在场地中心，才需要重新考虑边界与对齐。
+  JOYSTICK: 1,
+  SPEED: 3.5,        // 摇杆/键鼠 移动速度 m/s
+  DEADZONE: 0.2,    // 摇杆死区
+  BOUND_X: 2,       // X 轴移动边界 (米)：玩家「世界位置」的 X 允许范围 ±该值（4m 宽）
+  BOUND_Z: 4,       // Z 轴移动边界 (米)：玩家「世界位置」的 Z 允许范围 ±该值（8m 深）
+};
+
+export const SHOOT = {
+  COOLDOWN: 60,     // 射击冷却 ms（60 ≈ 16 发/秒，原 150）
+  BULLET_SPEED: 15, // 子弹速度 m/s（子弹飞行速度）
+  BULLET_LIFE: 2,   // 子弹存活时间 s
+  BULLET_POOL_SIZE: 500, // 同时存在的子弹上限（InstancedMesh 单 Draw Call 承载）
+
+  // ===== 子弹外观与出膛（随时可调，改完刷新页面即生效）=====
+  BULLET_RADIUS: 0.02,   // 子弹球体半径 m（越大越粗）
+  BULLET_COLOR: 0xffe066, // 子弹颜色（MeshBasicMaterial，发光黄，不吃光照）
+
+  // ===== 多重射击 / 霰弹（player.fire 扇形散射）=====
+  SPREAD_COUNT: 3,    // multiShot 触发时额外发射的扇形子弹数
+  SPREAD_ANGLE: 0.18, // 扇形半角（弧度，约 10°），横向铺开割草
+
+  // ===== 右手柄射线 / 子弹方向俯角（VR 手持 AK 枪用）=====
+  // 手柄默认瞄准方向是本地 -Z（正前方）。绕 X 轴旋转此角度调整俯仰：
+  //   负值 = 枪口向下压（射线向下倾斜），正值 = 向上抬。默认 -27°。
+  // 射线与子弹方向共用同一俯角，保证「所见即所打」。
+  RIGHT_PITCH_DEG: -27,
+
+  // 子弹出生点：从手柄原点沿「已俯仰后的瞄准方向」前移的距离 m（模拟枪口位置）。
+  // 0 = 从手柄中心射出；调大 = 出生点更靠前（贴近枪口）。
+  SPAWN_OFFSET: 0.5,
+
+  // ===== 右手柄射线视觉 =====
+  RAY_COLOR: 0xff2222,   // 右手射线颜色（红）
+  RAY_LENGTH: 5,         // 射线可见长度 m
+  RAY_COLOR_LEFT: 0x66ccff, // 左手射线颜色（青，保持原样）
+
+  // —— 命中判定几何（仅 DepthSprite 2D立绘怪生效；3D模型怪走真实包围球，不受这两项影响）——
+  // 立绘怪是永远朝相机的扁平卡片，命中体积是一个「竖薄板盒子」：
+  //   范围大小(左右=上下半径) = effectiveRadius × tune.scale × extraScale × DEPTH_SPRITE_HIT_MUL + HIT_PAD
+  //   前后(朝相机方向)         = HIT_SLAB_DEPTH（卡片正前+正后各这么多米的容差）
+  //   整体命中盒 = 宽=2×范围半径，高=2×范围半径，厚=2×HIT_SLAB_DEPTH
+  HIT_PAD: 0.05,       // 【上下/左右】命中半径额外填充（米）：叠加在「范围半径」之外的容差；调小→更贴合，0=完全贴合
+  HIT_SLAB_DEPTH: 0.4, // 【前后】2D立绘命中板厚（米）：卡片朝相机方向正前+正后各容差；调小→收紧前后误判
+};
+
+// 枪械模式（预览界面按钮切换）：preview=初始态，full=满状态（点击按钮进入游戏）
+// shotCount = 每发子弹的弹道数（player.fire 确定性扇形），cooldown = 射击冷却 ms（input.js 节流）
+export const GUN_MODES = {
+  preview: { shotCount: 1, cooldown: 500 },  // 1 弹道 / 2 发每秒
+  full:    { shotCount: 5, cooldown: 100 },  // 5 弹道 / 10 发每秒
+};
+
+// 积分散射技能（前期默认技能）：消耗积分，从枪口喷出 COUNT 弹头，轴向 DIST 米处铺成半径 RADIUS 圆盘
+export const SCATTER = {
+  COST: 500,          // 释放消耗积分（积分 <COST 时不释放、不进冷却）
+  COUNT: 50,          // 弹头数量
+  DIST: 9,            // 轴向距离（米）：弹头圆盘中心在枪口前方此距离处
+  RADIUS: 3,          // 圆盘半径（米）：9 米轴向处铺成此半径圆盘
+  COOLDOWN: 0.5,      // 释放后冷却（秒）
+  DAMAGE: 0,          // 每发伤害（0=复用 player.atk）
+  SPREAD_DISC: true,  // true=实心圆盘(面积均匀)；false=仅圆周
+};
+
+// 散射强化（第3关技能卡 scatterburst）：一次性喷出 COUNT 发、每发 DAMAGE 伤害，消耗走 player.skillCost
+export const SCATTER_BURST = {
+  COUNT: 100,         // 一次性弹头数量
+  DAMAGE: 100,        // 每发伤害（×player.skillDamageMul 倍率）
+  COOLDOWN: 1.0,      // 释放后冷却（秒，仅作 HUD 显示；用后回落到默认积分散射）
+  DIST: 9,            // 轴向距离（米）：弹头圆盘中心在枪口前方此距离处
+  RADIUS: 3,          // 圆盘半径（米）
+  SPREAD_DISC: true,  // 实心圆盘
+};
+
+export const BALLOON = {
+  HP: 100,
+  SPEED: 0.5,       // 普通气球移动速度 m/s
+  RADIUS: 0.5,
+  SCORE: 10,
+  DAMAGE: 5,        // 撞船伤害
+};
+
+export const SHIP = {
+  MAX_HP: 100,
+  POS: [0, 1.4, 0],     // 玩家视点高度（站在飞船篮子里）
+  COLLISION_RADIUS: 2.5,
+};
+
+export const BUDDHA = {            // 如来神掌（大招）
+  COOLDOWN: 8,                     // 释放冷却 s
+  HIT_MARGIN_XY: 1.3,             // 命中盒 XY 放大系数：以掌图平面半宽/半高为基准再乘该系数（1=完全贴合掌面）
+  HIT_Z_BAND: 8,                  // 命中盒 Z 半厚（米）：掌图作「横扫墙」，仅命中其当前 Z 前后 ±HIT_Z_BAND 内的敌人（沿 +Z 扫过逐步清场）
+  DAMAGE: 700,                     // 命中盒内单体基础伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
+  // —— 视觉参数（基于透明 PNG 贴图） ——
+  TEXTURE_URL: 'assets/buddha-palm.jpg', // 贴图路径（相对 index.html）；若原图为 PNG 可换 .png
+  COLOR_KEY_THRESHOLD: 0.92,       // 白底剔除阈值：R/G/B 均大于 0.92×255 的像素变透明（0~1，越低越激进）
+  PLANE_WIDTH: 4.0,                // 平面宽度（米），贴图原始宽高比 2:3 左右
+  PLANE_HEIGHT: 6.0,               // 平面高度（米）
+  START_POS: { x: 0, y: 0, z: -30 }, // 出现位置（世界坐标）
+  END_POS:   { x: 0, y: 0, z:  30 }, // 移动终点（世界坐标）
+  START_SCALE: 1.0,                // 初始缩放倍数
+  END_SCALE: 10.0,                 // 最终缩放倍数（10 倍）
+  GROW_TIME: 1.0,                  // 原地放大总时长 s（1 秒内分两段变化：1→中间→10）
+  MOVE_TIME: 1.0,                  // 沿 +Z 移动时长 s
+  PAUSE_TIME: 1.0,                 // 到达终点后停顿 s
+  FADE_TIME: 0.3,                  // 淡出消失时长 s
+  // —— 程序化 SDF 金掌（VFX_MODE='shader'，推荐）——
+  // 回退：把 VFX_MODE 改成 'texture' 即恢复原 JPG 白底抠图方案（两方案共用同一平面/缩放/命中逻辑）。
+  VFX_MODE: 'texture',             // 视觉方案：'texture'=优化抠图的 JPG 掌图（当前默认）；'canvas'=程序化 Canvas 矢量金掌；'shader'=SDF 金掌
+  // —— JPG 抠图优化参数（VFX_MODE='texture'）—— 一次性处理，不影响每帧渲染成本
+  EDGE_SOFTNESS: 0.02,             // 软阈值过渡宽度（0~1）：越大边缘越柔（消锯齿）但越易误伤过曝高光；0=硬边（原方案表现）
+  SAT_SAFE: 0.25,                  // 高饱和保护阈值 0~1：饱和度高于此值的像素强制不透明（金色掌体永不被抠成洞）
+  HOLE_FILL: 0.8,                  // 补洞阈值 0~1：低 alpha 像素若邻域不透明占比≥此值则填回（修掌内过曝白点）；0=关闭
+  HOLE_RADIUS: 4,                  // 补洞邻域半径(px)：洞较大时调大
+  EDGE_FEATHER: 1.5,               // alpha 羽化半径(px)：消 JPG 8×8 分块压缩伪影；0=关闭
+  DECONTAM: 1.0,                   // 去白边强度 0~1：1=半透明边缘完全用邻近金色替换；0=关闭（保留原白边）
+  DECONTAM_RADIUS: 3,              // 去白边取色邻域半径(px)：白边较宽时调大（最大 6 左右）
+  SATURATION: 1.15,                // 饱和度增强（1=原样，>1 更金）
+  BRIGHTNESS: 1.0,                 // 亮度增强（1=原样）
+  ANISOTROPY: 4,                   // 各向异性过滤 1~16：斜视/放大更清晰（越高越费带宽，PICO 建议 4）
+  UPSCALE: 1,                      // 扣图前上采样倍数：2=先放大再抠图，边缘更平滑（更慢、更占显存）
+  // —— 程序化 Canvas 金掌（VFX_MODE='canvas'）—— 全部一次性生成，不影响每帧渲染成本
+  CANVAS_W: 1024,                  // 程序化贴图宽(px)：越大越清晰、一次性生成越慢
+  CANVAS_H: 1536,                  // 程序化贴图高(px)：与平面 4:6 同比例，避免拉伸变形
+  TENSION: 1.0,                    // 轮廓曲线张力：0=折线尖角；1=标准平滑（推荐）；>1 更圆润可能过冲
+  MARGIN: 0.86,                    // 掌在画布内的占比 0~1：越小留白越多（留白须 ≥ GLOW_BLUR 换算的 px，否则外发光被裁出硬边）
+  OFFSET_Y: 0.02,                  // 整体上下偏移（画布高度比例）：正=上移（抵消拇指下伸导致的视觉偏低）
+  GLOW_LAYERS: 2,                  // 外发光叠加层数：越多光晕越厚（仅增加一次性生成耗时）
+  GLOW_BLUR: 0.10,                 // 外发光模糊半径（掌单位比例）：越大光晕越散（留意别超过画布留白，否则发光被裁出硬边）
+  GLOW_ALPHA: 0.5,                 // 外发光强度 0~1
+  GLOW_COLOR: '#ffae2b',           // 外发光颜色
+  COL_MID: '#ff9d2e',              // 掌中过渡金（介于 COL_DEEP 暗金与 COL_BRIGHT 明金之间）
+  CORE_GLOW: 0.55,                 // 掌心亮核强度 0~1：营造"内蓄能量"的体积感
+  STROKE_WIDTH: 0.045,             // 轮廓描边粗细（掌单位比例）
+  STROKE_COLOR: '#fff3c4',         // 轮廓描边颜色（近白金）
+  STROKE_ALPHA: 0.95,              // 描边不透明度 0~1
+  LINES_ENABLE: true,              // 掌纹开关（生命线/智慧线/感情线）
+  LINES_COLOR: '#ffdca8',          // 掌纹颜色
+  LINES_WIDTH: 0.028,              // 掌纹线宽（掌单位比例）
+  LINES_ALPHA: 0.45,               // 掌纹不透明度 0~1
+  SIGIL_ENABLE: true,              // 掌心法阵开关
+  SIGIL_X: 0.0,                    // 法阵中心 X（归一化掌坐标，原点=掌心）
+  SIGIL_Y: -0.25,                  // 法阵中心 Y（归一化掌坐标，+y 朝指尖）
+  SIGIL_RADIUS: 0.42,              // 法阵半径（掌单位比例）
+  SIGIL_RINGS: 3,                  // 法阵同心环数量
+  SIGIL_RAYS: 12,                  // 法阵放射光线数量
+  SIGIL_ROT: 0,                    // 法阵整体旋转（度）
+  SIGIL_COLOR: '#ffe9b0',          // 法阵颜色
+  SIGIL_WIDTH: 0.022,              // 法阵线宽（掌单位比例）
+  SIGIL_ALPHA: 0.75,               // 法阵不透明度 0~1
+  SPARK_ENABLE: true,              // 能量火花开关（掌心随机光点）
+  SPARK_COUNT: 90,                 // 火花数量（一次性散点，纯装饰）
+  SPARK_RADIUS: 0.05,              // 火花半径（掌单位比例）
+  SPARK_COLOR: '#fff6d8',          // 火花颜色
+  SPARK_ALPHA: 0.55,               // 火花不透明度 0~1
+  USE_OFFSCREEN: false,            // 是否用 OffscreenCanvas 生成（PICO 浏览器不支持时请设 false）
+  SHAPE_SCALE: 1.15,               // 掌形整体放大系数（相对平面）：1=原始比例，调大掌更大更满
+  AA: 1.0,                         // 边缘抗锯齿倍率（fwidth 系数）：1=标准柔边，调大更柔/更糊
+  COL_DEEP: '#8a4a00',             // 掌根深色（琥珀暗金）
+  COL_BRIGHT: '#ffd76a',           // 掌尖亮色（明金）
+  COL_RIM: '#fff3c4',              // 边缘金光颜色（近白金）
+  RIM_WIDTH: 0.16,                 // 边缘金光厚度（SDF 内部距离）：越大金边越厚
+  NOISE_SIZE: 128,                 // 能量噪声贴图边长(px)：一次性生成；越大越细腻、生成越慢
+  NOISE_SCALE: 1.6,                // 噪声 UV 缩放：越大纹理越密
+  NOISE_SPEED: 0.35,               // 能量流动速度（UV/秒）：正值向上流动
+  NOISE_STRENGTH: 0.45,            // 能量流动强度 0~1：0=关闭（最省 GPU）
+  GLOW: 1.15,                      // 整体辉光倍率（发光亮度）
+  CHARGE_GLOW: 0.6,                // 蓄能增亮幅度：grow 阶段由暗到亮（0=不增亮）
+  ADDITIVE: false,                 // 混合模式：true=加法混合（发光更炫，掌半透）；false=普通混合（掌更实、更不易被看成光柱）
+};
+
+// 激光剑（左手柄近战武器，程序化 shader 光剑，替代旧 Model/激光剑.glb 模型版）
+// 选卡装备后常驻左手柄（迷你态≈15cm 巴掌大小短剑）；按左手柄 grip 激活「5 秒伤害状态」，
+// 期间左手自由挥动，剑刃线段扫过怪物即扣血，每只怪 1 秒内只受一次。
+// 位置/旋转/缩放/伤害/剑刃尺寸均可热调（见 userConfig.js 同名块，生效值以 userConfig 为准）。
+export const LASER_SWORD = {
+  POSITION:   { x: 0.0, y: 0.0, z: 0.0 },  // 相对左手柄(grip)本地坐标（米）
+  ROTATION:   { x: -90, y: 0, z: 0 },      // 旋转(度)：本地+Y剑刃经 -π/2 绕X → 世界 -Z（手柄前方）
+  SCALE:      1.0,                          // 整体缩放（恒等；剑尺寸由子网格 scale 决定，单位米）
+  BLADE_AXIS: { x: 0, y: 1, z: 0 },        // 剑刃方向（root 本地轴）= +Y（配合 ROTATION.x:-90 → 世界 -Z 前向）
+  // —— 伤害/技能 ——
+  DAMAGE:     700,        // 单次命中伤害（×player.skillDamageMul）
+  DURATION:   5,          // 激活后伤害状态持续秒数（击发后挥剑伤害的窗口）
+  HIT_INTERVAL: 0.15,    // 同一只怪被剑刃持续扫到时，两次扣血的最小间隔(秒)；调小=连续高 DPS(更接近真近战)，调大=更接近单次重击
+  COOLDOWN:   5,          // 复用冷却秒数（HUD 显示）
+  COST:       500,        // 消耗积分
+  // —— 程序化剑刃参数（文档《激光剑方案-接入文档》）——
+  BLADE_LEN_MIN:  0.05,   // 迷你态剑刃长度/米（巴掌大小短剑）
+  BLADE_LEN_MAX:  20.0,   // 剑刃展开长度/米（文档默认；伤害范围=此值）
+  BLADE_R_MIN:    0.009,  // 迷你态剑刃半径/米
+  BLADE_R_MAX:    0.07,   // 展开态剑刃半径/米
+  HILT_LEN:       0.10,   // 剑柄基础长度/米
+  HILT_SCALE_EXT: 3.0,    // 展开时剑柄放大倍数（10cm→30cm）
+  GLOW_SCALE:     1.8,    // 辉光层半径 / 核心半径
+  HALO_SCALE:     3.0,    // 外晕层半径 / 核心半径
+  GLOW_POWER:     2.2,    // 辉光衰减指数（越大越集中核心）
+  HALO_POWER:     1.4,    // 外晕衰减指数（越小越扩散）
+  GLOW_INTENSITY: 0.55,   // 辉光强度
+  HALO_INTENSITY: 0.22,   // 外晕强度
+  BLADE_COLOR:    0x66ccff, // 剑刃颜色（青蓝）
+  CORE_COLOR:     0xf2ffff, // 核心白热色（略偏青的白）
+  EXTEND_TIME:    0.45,   // 展开/收回动画时长/秒
+  BLADE_LIGHT_MAX: 45.0,  // 展开态剑刃点光强度(candela)
+  BLADE_LIGHT_DIST: 30.0, // 剑刃点光影响半径/米
+};
+
+// ==================== 各关卡 BGM 音量（程序化三套曲目共用总线 bgmBus 的目标增益倍率） ====================
+// 生效值 = 总线基准增益(0.18) × 该倍率；改此值即整体调响/调轻，无需动音频合成代码。
+// 普通关/危机关(normal)、机制关(激光 3/9/15, laser)、Boss 关(6/12/18, boss) 各一档。
+// 默认 laser 偏高(1.4)：机制关 BGM 在 PICO 小喇叭上偏轻，已据此调高；嫌响/嫌轻改这里即可（userConfig 同名块可热调）。
+export const BGM_VOLUME = {
+  normal: 1.0,  // 普通关/危机关 BGM 音量倍率
+  laser:  1.4,  // 机制关(激光 3/9/15) BGM 音量倍率（默认偏高，PICO 小喇叭偏轻）
+  boss:   1.0,  // Boss 关(6/12/18) BGM 音量倍率
+};
+
+// ==================== 手里剑（忍者气球投掷物） ====================
+// 忍者气球在头顶生成低多边形手里剑射向玩家；全游戏全局冷却 INTERVAL，到点只让最靠近玩家的一个忍者投掷。
+// 命中玩家扣 player.hp（飞毯无独立血量，伤害走飞船血量 takeDamage）。
+// 忍者移动被约束在距中心点(世界原点) RANGE_MIN~RANGE_MAX 的环带内（龙形 Boss 的组成忍者除外）。
+// 单位：SPEED=米/秒, DAMAGE=点, HIT_RADIUS=命中判定半径(米), MAX_LIFE=超时回收秒, SPIN=自旋角速度(度/秒), SIZE=手里剑外接半径(米)。
+export const SHURIKEN = {
+  INTERVAL:   3.0,   // 全局投掷冷却（秒）：到点才允许再投一次
+  SPEED:      14.0,  // 飞行速度（米/秒）
+  DAMAGE:     3.0,   // 命中玩家扣的血量（走 player.takeDamage，即飞船血量）
+  HIT_RADIUS: 0.6,   // 命中判定半径（米）：玩家控制器位置距手里剑 < 此值即判定命中
+  MAX_LIFE:   4.0,   // 最长存活时间（秒）：超时未命中自动回收
+  SPIN:       18.0,  // 自旋角速度（度/秒）
+  SIZE:       0.18,  // 手里剑外接半径（米）：视觉尺寸
+  RANGE_MIN:  10.0,  // 忍者可活动环带内界（米）：距中心点 ≥ 此值
+  RANGE_MAX:  15.0,  // 忍者可活动环带外界（米）：距中心点 ≤ 此值
+  APPEAR:      3.0,  // 忍者出现后静止时长（秒）：此期间不蓄力/不投掷/不闪现
+  CHARGE:      2.0,  // 手里剑蓄力时长（秒）：蓄力时头顶显示蓄力光球，结束即投掷
+  BLINK_DELAY: 1.0,  // 投掷后到开始闪现的间隔（秒）：即「扔出去 1 秒后再开始闪现」
+};
+
+// Boss 关程序化 BGM 升压参数（见 src/vr/audio.js _stepBoss + game.js _updateBossIntensity）
+export const BOSS_BGM = {
+  START_INTENSITY: 0.45,  // 进关起步强度（一进场就有 ostinato + 心跳）
+  MAX_INTENSITY:   1.0,   // 上限
+  TIME_TO_MAX:     75,    // 拿不到血量时，多久(秒)线性升满
+  RISE_RANGE:      0.55,  // 上升幅度：START + prog × RISE_RANGE
+};
+
+// 积分上限：玩家持有积分不超过此值（≈一次技能释放机会，因技能消耗 player.skillCost=500）。改此值即调上限。
+export const SCORE_CAP = 500;
+
+// 输入/控制器：设备相关校准（不同头显手柄 handedness 上报可能相反）
+export const INPUT = {
+  // 枪/剑绑定手交换开关。默认 false=不交换（枪挂右手柄、剑挂左手柄，子弹始终从右手发射）。
+  // 若某台设备出现「枪在左手、剑在右手」，改为 true 交换枪/剑绑定手。
+  SWAP_HANDS: false,
+};
+
+// 测试工具（仅开发/调试用，正式上线把 ENABLED 改 false 即可整体关掉）
+export const TEST = {
+  ENABLED: true,          // 总开关：false 关闭所有测试快捷键（左手 X / 桌面 G）
+  ADD_SCORE: 500,         // 按一次测试积分键赠送的积分数（走 _addScore，受 SCORE_CAP 上限裁剪→恰好满一格技能）
+  VR_BUTTON_LEFT_X: true, // 说明用：左手柄 X 键(buttons[4])触发积分
+  DESKTOP_KEY_G: true,    // 说明用：桌面 G 键触发积分
+};
+
+export const FREEZE = {           // 定身咒（暂停所有敌人行动，Boss 减半）
+  DURATION: 5,                    // 小怪定身总时长 s
+  BOSS_FACTOR: 0.5,               // Boss 定身时长系数：0.5 → Boss 只定身 DURATION*0.5 秒
+  COOLDOWN: 8,                    // 释放冷却 s（与 BUDDHA 对齐）
+};
+
+export const WAVE = {
+  BASE_SPAWN_COUNT: 30,
+  BATCH_INTERVAL: 1.0,
+  BATCH_SIZE: 3,
+  MAX_ACTIVE: 10,
+  SPAWN_DISTANCE: 15,
+  SPAWN_SPREAD: 8,
+  // 分阶段：0s 仅前方；20s 前方+左右；40s 全方向（配合60s关卡时长，各占1/3）
+  PHASE2_AT: 20,
+  PHASE3_AT: 40,
+};
+
+export const EXPLOSION = {        // 气球进入4×8区域自爆特效
+  DURATION: 0.4,       // 爆炸动画时长 s
+  MAX_SCALE: 2.5,      // 最大缩放倍数（相对气球半径）
+  START_OPACITY: 0.7,  // 起始不透明度
+  COLOR: 0xff6b3d,     // 爆炸颜色（橙红）
+};
+
+export const CARD = {
+  COUNT: 3,                 // 每次抽卡展示数量
+  REFRESH_BASE_COST: 20,    // 刷新基础积分，逐次翻倍
+  DURATION: 15,             // 选项卡存在秒数（超时自动随机选）
+  // 卡面竖版（PNG 长边 1024，宽 578，aspect ≈ 0.564）
+  WIDTH: 0.4,
+  HEIGHT: 0.71,
+  SPACING: 0.75,            // 卡片沿 X 轴均匀间距 m（卡窄了，略紧）
+  // —— 固定世界坐标摆放（射击选卡版）——
+  ROW_Z: -4,                // 卡片固定世界 Z（场地底边）
+  ROW_Y: 2,                 // 卡片固定世界 Y（比原方案提高 1m）
+  // 气球相对卡牌平面抬多高、细绳自身多长：二者独立可调（线长应略小于高度，使线底端落在卡面；若相等则线正好接卡牌中心）
+  BALLOON_HEIGHT: 0.7,     // 气球（气球组）相对卡牌平面的竖直高度(m)：越大气球离卡牌越远
+  BALLOON_STRING_LEN: 0.35, // 细绳自身长度(m)：从气球中心向下连到卡牌的线长（与气球高度独立，单独调线长短/松紧）
+  BALLOON_R: 0.18,          // 气球可被击中半径 m
+  BALLOON_BOB: 0.16,        // 气球上下浮动幅度 m（上下晃多高）
+  BALLOON_BOB_FREQ: 1.5,    // 气球上下浮动频率(Hz)：每秒摆动次数，越大晃得越快
+  RESOLVE_DUR: 2,           // 其余卡/气球向上飞走耗时 s
+  FLY_TOP_Y: 10,            // 其余卡/气球飞到该高度后消失
+  LIGHT_DUR: 1.0,           // 选中卡化为光点飞向玩家耗时 s
+  LIGHT_SIZE: 0.02,         // 光点粒子尺寸（小粒子）(m)
+  STREAM_SPREAD: 0.6,       // 50 粒错峰出发的总铺开时长(s)，形成数据流而非齐射
+};
+
+// 第三关「激光气球」参数（供 laser.js 引用，便于平衡）
+export const LASER = {
+  SPAWN_DELAY: 10,   // 生成期总时长(s)：气球前7s一对对出现 + 激光后3s一对对淡入（NPC交待窗口）
+  BALLOON_SPAWN: 7,  // 生成期内：气球逐对出现时长(s)，4对均分
+  LASER_SPAWN: 3,    // 生成期内：激光束逐对淡入时长(s)，4对均分
+  LAUNCH_DUR: 6,     // 驱赶动画时长(s)：气球从起始端移到另一端（原2s，降到1/3速度）
+  ROW1_DELAY: 1,     // 发射到位后多久第一排动画 (s)
+  ROW2_DELAY: 3,     // 第一排后多久第二排 (s)
+  ROW3_DELAY: 3,     // 第二排后多久第三排 (s)
+  GOAL_Z: -3.5,      // 玩家 z 到达此值即过关（底边）
+  BEAM_LETHAL_R: 0.15, // 激光光束致命半径（含辉光余量）(m)
+  PLAYER_R: 0.4,     // 玩家在激光关的碰撞半径 (m)
+  BALLOON_R: 0.4,    // 激光气球实体致命半径 (m)
+  HOLD_DUR: 10,      // drive 模式：驱赶到位后保持原地（仍致命）的秒数
+};
+
+// 第九关「玻璃走格子」参数（供 glassGrid.js 引用，便于平衡）
+export const GRID = {
+  COLS: 4, ROWS: 8,        // 4×8 = 32 格
+  CELL: 1,                 // 每格 1m
+  Y: 0.11,                 // 玻璃格顶面高度（略高于边界盒 0.10，避免 z-fighting）
+  NUM_Y_OFFSET: 0.06,      // 编号平面高出玻璃顶面的距离，防 z-fighting
+  NUM_SIZE: 0.5,           // 编号平面边长 = 1m 格子的 1/2 边长 → 占 1/4 面积（"占据1/4大小"按面积解；可调）
+  GLASS_COLOR: 0x9fe8ff,   // 淡青光玻璃
+  GLASS_GLOW: 0x33ff99,    // 正确格发光色（淡绿，保持原地期脉冲）
+  CORRECT: [3,7,9,10,11,12,13,17,18,22,23,27,29,30,31,32], // 用户指定正确格（安全格）
+  WIN_CELL: 3,             // 走到此格通关
+};
+
+// 第十五关「九宫格翻转射击」参数（供 flipGrid.js / laser.js / game.js 引用）
+export const FLIP = {
+  HOLD_DUR: 2,              // flip 模式：驱赶到位后保持原地(仍致命)秒数；第九关 drive 为 10
+  COUNTDOWN: 180,           // 安全解谜期总时长(秒)：解出→抽卡，归零→直接下一关(不抽卡)
+  COLS: 3, ROWS: 3,        // 3×3 = 9 格
+  CELL: 1,                 // 每格 1.0m
+  BASE: { x: 0, y: 2.25, z: -3 },  // 九宫格底边中心（世界坐标；group.position.z=-3）
+  BALLOON_R: 0.75,         // 气球视觉半径 m（×1.5 放大）
+  BALLOON_OFFSET_Z: 0.525, // 气球相对格中心沿 +z 凸向玩家的偏移（白=前/黑=后同此值，×1.5）
+  WALL_WIDTH: 4.5,         // 整墙 4.5m 宽（×1.5）
+  WALL_HEIGHT: 4.5,        // 整墙 4.5m 高（y≈2.25~6.75，×1.5+下移1米）
+  FLIP_DUR: 0.5,           // 单格翻转动画时长 s
+  VICTORY_DUR: 1.0,        // 胜利闪烁后消失时长 s
+  HIT_R: 0.75,              // 子弹命中判定半径（≈气球半径，×1.5 同步放大）
+  RESET_X: 3.5,             // 重置气球 X 坐标（九宫格右侧，留0.5m间隙）
+  // 初始布局：0=白(前显白),1=黑(前显黑)，行从上到下(row0 顶 ~ row2 底)
+  //   右下角(行2,列2)显白，其余 8 格显黑（参考文档"方案一"4 步可解）
+  INITIAL: [
+    [1, 1, 1],
+    [1, 1, 1],
+    [1, 1, 0],
+  ],
+};
+
+// ===== 开场魔术师模型（第3/9/15关机制关）位置与缩放 =====
+// 进关时在世界固定点循环播放「魔术师动画版」GLB，10秒后自动消失（见 openingModel.js）。
+// 3/9/15 三关默认同值，可分别微调；改完刷新页面即生效（userConfig.OPENING_MAGICIAN 可覆盖）。
+export const OPENING_MAGICIAN = {
+  // pos：模型根节点世界坐标（米，X右 / Y上 / Z前为负=玩家前方）；scaleHeight：目标身高（米，自动等比缩放 GLB 到该高度）
+  3:  { pos: [0, 1.4, -5], scaleHeight: 2.0 },   // 第3关 · 激光搭阵：玩家正前5米、离地1.4、约2米高
+  9:  { pos: [0, 1.4, -5], scaleHeight: 2.0 },   // 第9关 · 玻璃走格子：同上
+  15: { pos: [0, 1.4, -5], scaleHeight: 2.0 },   // 第15关 · 九宫格翻转：同上
+  SHOW_SECONDS: 10,   // 出现后循环播放时长（秒），到时自动消失
+};
+
+// ===== 基础怪群体语音（"冲冲冲"）=====
+// 场上存活基础怪数量 ≥ THRESHOLD 时播放一次语音，随后停顿 PAUSE 秒再重新判断；达标再次播放。
+// 改完刷新页面即生效（userConfig.BASIC_VOICE 可覆盖）。
+export const BASIC_VOICE = {
+  URL:       'music/冲冲冲.wav',   // 语音音频文件（一次性播放，不循环），放 music/ 目录
+  THRESHOLD: 10,                  // 触发阈值（个）：场上存活「基础怪」数量 ≥ 该值才播放
+  PAUSE:     5,                   // 停顿时间（秒）：播放一次后等待该秒数，再重新判断数量
+  VOLUME:    0.6,                 // 播放音量（0~1）
+};
+
+// 稀有度配置：权重、颜色、倍率
+export const RARITY = {
+  white:  { name: '普通', weight: 60, color: '#dfe6e9', mult: 1 },
+  blue:   { name: '稀有', weight: 25, color: '#4dabf7', mult: 1 },
+  purple: { name: '史诗', weight: 10, color: '#b197fc', mult: 1 },
+  gold:   { name: '传说', weight: 5,  color: '#ffd43b', mult: 1 },
+};
+
+// ============================================================
+// 右手柄 AK 枪模型挂载参数（随时可调，改完刷新页面即生效）
+// 坐标系：相对右手柄(grip)本地坐标；右手柄默认朝 -Z 为「前方」
+//   X = 右(玩家视角) / Y = 上 / Z = 前(负值更靠前)
+// 上机后在 PICO 里看效果微调：枪口朝上就绕 X 转 -90°，偏左偏右调 Y，前后调 Z
+// ============================================================
+export const GUN = {
+  MODEL_URL: 'Model/Ak枪.glb',                 // 模型路径（相对 index.html，项目根 Model 目录）
+  POSITION: { x: 0.0, y: -0.25, z: 0.0 },       // 位置偏移（米）：x=右, y=上, z=前(负为更靠前)
+  ROTATION: { x: -60,   y: 90,   z: 0   },       // 旋转（度，绕 XYZ）：模型默认朝向未知，上机后调
+  SCALE:    0.5,                              // 整体缩放（模型过大/过小，先 1.0 看效果再调）
+
+  // ===== 后坐力（仅作用于右手柄枪模型，不影响射击/碰撞/血量）=====
+  // 设计目标：射速越快 → 后坐力「高频次」(每次开火都踢一下) 但「单发幅度变小」，
+  // 使得整体抖动幅度反而更小（快射时是细密小抖，慢射时是大而稀的顿挫）。
+  // 幅度由当前射击冷却(input._gunCooldown) 归一化映射：preview(500ms)=最慢→最大，full(100ms)=最快→最小。
+  RECOIL: {
+    ENABLED: true,
+    MAX_BACK:   0.045,   // 最慢射速时单发「沿本地 +Z 后退」位移上限（米），约一手枪后坐
+    MIN_BACK:   0.011,   // 最快射速时单发后退位移下限（细密小抖）
+    MAX_PITCH:  0.16,    // 最慢射速时单发「绕本地 X 上抬(枪口跳)」角上限（弧度，≈9°）
+    MIN_PITCH:  0.04,    // 最快射速时单发上抬角下限（≈2.3°）
+    DECAY:      0.80,    // 每帧(60fps基准)回正系数，越小回正越快、抖得越短促
+    CURVE:      1.5,     // 射速→幅度映射曲率(>1 让快射时幅度掉得更陡，强化「整体变小」)
+  },
+};
+
+// ============================================================
+// 手柄手腕 UI 面板放置参数（随时可调，改完刷新页面即生效）
+//   - LEFT ：左手柄战斗信息面板（橙色边框）—— 原右手信息框内容（关卡/剩余/船血/分数 + 龙Boss血条 + 攻/射/额外射击）
+//   - RIGHT：右手柄面板已隐藏；其手腕位置现由「技能提示框」(skillHint.js) 占用，故 RIGHT 配置仅供技能框参考/占位
+// 坐标系：相对手柄(grip)本地坐标；右手柄默认朝 -Z 为「前方」
+//   X = 右(玩家视角) / Y = 上 / Z = 前(正值更靠前)
+//   SCALE 越大面板越大（物理尺寸 = Canvas 像素 / 1024 × SCALE，1px≈1mm）
+//   ROTATION 为角度(度)，绕 XYZ；x 向下倾斜方便低头看手腕
+// ============================================================
+export const WRIST_UI = {
+  RIGHT: {
+    SCALE:    1 / 3,                          // 大小：物理尺寸缩放（1/3 ≈ 0.17m×0.17m）
+    POSITION: { x: 0.1, y: -0.0167, z: 0.03 }, // 位置（米）：略低于手背、前移一点
+    ROTATION: { x: -90, y: 0, z: 0 },       // 旋转（度）：向下倾斜约 34° 方便看
+    BORDER:   '#00e5ff',                      // 边框颜色（青）
+    CANVAS:   { w: 512, h: 512 },            // 画布分辨率（像素）：只影响清晰度，不影响物理大小
+  },
+  LEFT: {
+    SCALE:    1 / 3,                          // 大小：与右手原信息框一致（约 0.167m×0.167m）
+    // —— 位置（米，相对【左手柄 grip】本地坐标；本地 +X=右、+Y=上、+Z=朝手指前方）——
+    POSITION: { x: 0.0, y: -0.025, z: 0.045 },  // 当前：x=0(居中手腕内侧) / y=-0.025(略低于手背) / z=0.045(略朝前)；左手柄调位改这三个值即可
+    // —— 旋转（度，绕本地 XYZ 欧拉角；x 为负=面板向前下倾，便于低头看手腕）——
+    ROTATION: { x: -34, y: 0, z: 0 },       // 当前：x=-34°(俯仰下倾) / y=0(无偏航) / z=0(无翻滚)；调 x 改俯仰、y 改左右偏航、z 改翻滚
+    BORDER:   '#ff7a00',                      // 边框颜色（橙）
+    CANVAS:   { w: 512, h: 512 },            // 画布分辨率（像素）：放大到 512×512 容纳战斗信息（龙Boss血条 + 攻/射/额外射击）
+  },
+};
+
+// ============================================================
+// 技能提示面板（右手腕，占用原右手信息框位置）参数——改完刷新页面即生效
+// 始终浮现（进关即显示，不隐藏），三态：① 冷却中(显示剩余秒+进度条) ② 积分不足 ③ 就绪(红框闪 FLASH_COUNT 下→金框常亮)。
+// 仅当"释放技能后再次达标(score≥skillCost 且 skillCooldown=0)"才重新闪烁 FLASH_COUNT 下。
+// 坐标系：相对右手柄(grip)本地坐标，视觉落在右手腕处（与右手枪同源，故随右手移动）。
+// ============================================================
+export const SKILL_HINT = {
+  SCALE:    0.4,                          // 物理尺寸缩放（基于下方 CANVAS；1px≈1mm → 512px×0.4≈0.2m 宽）
+  POSITION: { x: 0.1, y: -0.0167, z: 0.03 }, // 位置（米）：右手柄本地坐标，落在右手腕处（原右手信息框位置，z+更靠前）
+  ROTATION: { x: -90, y: 0, z: 0 },       // 旋转（度）：向下倾斜便于直视（同右手腕面板风格）
+  CANVAS:   { w: 512, h: 320 },           // 画布分辨率（像素）：加高到 320 容纳冷却进度条 + 积分数
+  FLASH_COUNT:   3,                       // 达标时红框闪烁次数（下）：默认 3 下
+  FLASH_ON:     0.18,                     // 单次闪烁"红"持续时长（秒）
+  FLASH_OFF:    0.12,                     // 单次闪烁"灭"间隔（秒）；一明一灭 = FLASH_ON+FLASH_OFF
+  FLASH_BORDER: '#ff3b30',               // 闪烁时的红框/红字色
+  READY_BORDER: '#ffd24a',               // 就绪常亮边框色（金）
+  COOLDOWN_BORDER:    '#ff7a00',         // 冷却中边框色（橙）
+  COOLDOWN_BAR_COLOR: '#ff9d2e',         // 冷却恢复进度条填充色（橙亮）
+  COOLDOWN_BG:        'rgba(255,255,255,0.15)', // 冷却进度条底色
+  INSUFFICIENT_BORDER: '#8a93a6',        // 积分不足边框色（灰）
+  INSUFFICIENT_TEXT:   '#cfd6e4',        // 积分不足文字色（浅灰）
+  IDLE_BORDER:        '#5a6b85',         // 兜底默认边框色（一般不被用到，三态都会覆盖）
+  DEBUG:              true,              // 调试模式：开启后可用左手柄摇杆(前后左右)+X/Y键(上下)实时微调提示框位置（调参用，调完改 false）
+  DEBUG_STEP:         0.5,               // 调试移动速度（米/秒）：摇杆/XY键每秒推动的位移量（越小越精细）
+};
+
+// ============================================================
+// 第十二关「龙 Boss」参数（dragonLevel.js 引用）
+//   龙头 = Model/龙头.glb（沿路径跟随移动）；龙身/龙爪 = 由敌人气球组成（默认 basic）
+//   运动数据来自 ANIM_URL 的 JSON（schemaVersion 2，字段见 dragon-anim.json）
+//   —— 换同格式文件 = 改 ANIM_URL 一行即可「一键套用」（如 dragon-anim-v2.json）
+//   坐标系：数据为「世界中心」右手系、Y 向上、单位米；通过 SCALE 缩放 + HOME 平移贴合战场
+// ============================================================
+export const DRAGON = {
+  ANIM_URL:   'Model/dragon-anim.json',   // 运动数据 JSON（相对 index.html；换文件只改这里）
+  HEAD_MODEL: 'Model/龙头.glb',           // 龙头 GLB 模型（本地 Model/ 下已有；若之后换灭世龙头需先把文件放入 Model/ 并改此处）
+
+  SCALE: 0.08,                            // 数据坐标 → 世界坐标缩放（越大龙越大；0.08≈体长27m、绕玩家盘旋）
+  HOME:  { x: 0, y: 0, z: 0 },           // 龙「包围盒中心」落在：玩家正前方 9m、上方 4m 处（前方为 -Z）。即整条龙的整体位置
+  YAW:   90,                               // 整体绕Y旋转(度)：修正龙的「水平朝向」偏差（数据系与游戏系转角差）
+  PITCH: 0,                               // 整体绕X旋转(度)：修正龙的「俯仰」偏差
+  ROLL:  0,                               // 整体绕Z旋转(度)：修正龙的「翻滚」偏差
+  // ↑ 三轴组成全局刚体旋转，头/身/爪一起绕 HOME 转动；线下手动调这三个值对齐数据系与游戏系
+
+  BODY_TYPE: 'dragonBody',               // 龙身气球类型：dragonSegment=true → 走 attachDragonSegment 挂 BODY_MODEL(骑士)；noHealthBar（龙用全局血量池，逐节血条多余）
+  CLAW_TYPE: 'dragonBody',               // 龙爪气球类型：同上，attachDragonSegment 挂 CLAW_MODEL(忍者)
+  BODY_COUNT: 24,          // ① 龙身总段数（= 圆柱段 + 模型节点 总数；覆盖 JSON 里的 config.bodyCount）
+  BODY_SPACING: 15,        // ① 相邻两段之间的「弧长间距」（越大龙身越长；覆盖 JSON 里的 config.bodySpacing）
+
+  NODE_MODEL: 'Model/基础怪.glb',        // 龙身/龙爪挂模型时的兜底默认模型（attachDragonSegment 的 model 参数缺省时回退；仍被 balloonModels.attachBalloonModel 引用，保留）
+  CLAW_NODES: [7, 14],                     // 龙爪生成点（身体节号数组）：每个挂点左右各1爪 → 共4爪；增删挂点只改此数组
+
+  // —— 龙身/龙爪外观（固定，不再轮换）——
+  //   需求：龙身固定为「骑士」模型、龙爪固定为「忍者」模型。
+  //   取舍：此前「龙身轮换忍者」因 24 段全忍者≈24×21.8万≈520万三角面 → PICO4(Adreno XR2) 掉帧；
+  //        现龙身统一骑士(≈4.9万面)、忍者仅 4 爪，合计≈24×4.9万+4×21.8万≈2M 三角面，落在舒适区。
+  //   模型均按身体半径 fitToRadius 归一化（scale 仅抵消 MODEL_TUNING 默认比例），故整条龙尺寸与旧圆柱版一致。
+  BODY_MODEL: 'Model/骑士.glb',   // 龙身统一外观模型（第12关 Boss）
+  CLAW_MODEL: 'Model/忍者.glb',  // 龙爪统一外观模型（第12关 Boss）
+  BODY_HP:    500,               // 龙身每节血量 = 骑士默认血量(500)；24 节合计≈12000 全局血量池（respawns 不回血，打爆即扣固定值）
+
+  HEAD_SCALE: 1.0,                        // 龙头模型额外缩放倍率（模型已按包围盒自动贴合身体尺寸，此项做微调）
+  HEAD_YAW:   0,                          // 龙头模型自身前向轴修正(度)：在全局旋转之后，lookAt 路径切线时额外绕 Y 旋转
+  HP_MULT:    1.0,                         // 龙气球血量倍率（>1 更肉，如 2.0 = 每节 200 血）
+
+  // —— 龙身减伤 & 击杀基础怪扣血（需求：龙身气球减伤95% / 每5个基础怪扣Boss 1%血）——
+  DAMAGE_REDUCTION: 0.95,          // 龙身/龙爪气球减伤比例（受击只吃 5%；含激光剑穿透，takeDamage 强制减伤）
+  BASIC_KILLS_PER_PERCENT: 5,      // 每消灭多少个「基础怪(basic)」扣 Boss 1% 总血量
+  BASIC_KILL_PERCENT: 0.01,        // 每次扣除 Boss 总血量的比例（1%）
+
+  // ===== 龙 Boss 行为可调参数 =====
+  RESPAWN_DELAY: 1.0,                     // 龙身/龙爪被打破后「外形复活」延迟(s)：1秒后回到龙形，但不回血
+  FINALE_INTERVAL: 0.07,                  // 死亡连爆：相邻气球爆炸间隔(s)（从尾到头逐个炸）
+  IDLE_AMP: 0.45,                         // 暂停/待机时蛇形波动幅度(m)：幅度大，像盘旋呼吸
+  MOVE_AMP: 0.18,                         // 移动时蛇形波动幅度(m)：更细微的流动感
+  IDLE_FREQ: 2.2,                         // 蛇形波动频率
+  PHASE_STEP: 0.55,                       // 每节相位差(弧度)：使波形沿龙身从头流到尾
+};
+
+// ============================================================
+// 龙 Boss 召唤（dragonLevel.js → DragonBoss._summonMinions 引用）
+//   每 INTERVAL 秒召唤 BASE_COUNT 个基础怪 + NINJA_PER_SUMMON 个忍者；
+//   若场上基础怪 < LOW_THRESHOLD（玩家清得快）→ 在上次召唤数 + RAMP_ADD 加压；
+//   出生点：以世界原点(飞毯)为中心、半径 RING_MIN~RING_MAX 随机方向；忍者由 balloons._clampToRing 维持 ≥RING_MIN。
+// ============================================================
+export const DRAGON_SUMMON = {
+  INTERVAL: 10,             // 召唤周期(s)：每 10 秒一次
+  BASE_COUNT: 12,           // 基准基础怪数量（场上 ≥ LOW_THRESHOLD 时）
+  RAMP_ADD: 5,             // 场上 < LOW_THRESHOLD 时，在上次召唤数上 +10（加压）
+  LOW_THRESHOLD: 5,         // 场上基础怪低于此值 → 触发加压
+  MAX_BASIC: 50,           // 单次召唤基础怪硬上限(保护 PICO)：设更大或 Infinity 解除
+  NINJA_PER_SUMMON: 1,      // 每次召唤必带忍者数（遵守不靠近 10m 内）
+  RING_MIN: 10,             // 出生环带内半径(m)：距中心 ≥10 才出现
+  RING_MAX: 15,             // 出生环带外半径(m)
+  SPAWN_Y: 1.5,
+  // 召唤光点：被召唤小兵不从环带凭空出现，而是从最近龙身部件飞出光点、落点才生成（"龙 Boss 扔下小兵"观感）
+  BEAM: {
+    ENABLED: true,    // 总开关：false → 直接生成（无光点）
+    SPEED:   22,      // 光点飞行速度(m/s)：源在龙身、目标 10~15m 外 → 时长 ~0.5~0.7s
+    SIZE:    0.16,    // 光点球体半径(m)
+    COLOR:   0xffd24a,// 光点颜色（金黄，呼应龙 Boss 主题）
+    OPACITY: 0.95,    // 不透明度（AdditiveBlending 叠加发光）
+    STAGGER: 0.04,    // 每只光点出发间隔(s)：形成从龙身连续抛出的流
+    Y_OFFSET: 1.2,    // 光点起点相对龙身位置上抬(m)：从龙身"上方/口部"飞出更明显
+  },             // 出生高度(m)：与常规气球(1~3.5)一致
+};
+
+// ============================================================
+// 龙 Boss 登场语音（dragonLevel.js → DragonBoss.update 在 Boss 开始运动(揭示)后延迟播放一次）
+// ============================================================
+export const DRAGON_VOICE = {
+  ENABLED: true,                  // 是否播放龙 Boss 登场语音（关 → 不播）
+  LOOP:    true,                  // 是否循环播放：true=作为 Boss 战氛围音持续循环，直到死亡/切关停止；false=只播一次
+  URL:     'music/龙Boss.wav',    // 语音文件（相对 index.html；放在 music/ 下）
+  VOLUME:  1.0,                   // 音量(0~1)：默认满音量，觉得吵可调小
+  DELAY:   0.6,                   // Boss 开始运动(揭示)后延迟播放(秒)：出场→吼叫的先后感
+};
+
+// ============================================================
+// DepthSprite 开关：用「运行时从 GLB 捕获的 2D 立绘 + 深度图」替 3D GLB 气球
+//   DEPTH_SPRITE_MODE  : 总开关
+//   DEPTH_SPRITE_TYPES : 白名单（先只基础怪）；扩到全类型即 ['basic','ninja','ghost','octopus','shield']
+//   DEPTH_SPRITE_SCALE : 视差强度（沙盒校准值）
+// ============================================================
+export const DEPTH_SPRITE_MODE = true;
+// 白名单：已扩到全部普通小怪（ghost 的隐身已让立绘跟随主体 visible，见 balloons.js）。
+// 想单独压测某类型，把数组缩到该 id 即可。
+export const DEPTH_SPRITE_TYPES = ['basic', 'ninja', 'shield', 'octopus', 'ghost', 'summoner', 'heart', 'chest', 'blackMaskClone', 'eliteKnight'];
+// 同屏压测：>0 时关卡启动后额外生成 N 个 basic 立绘同屏阵列（controlled 站定，仍可受击/视差）。
+// 设 150 即「同屏 150 个 DepthSprite」压测；设 0 关闭。
+export const DEPTH_SPRITE_STRESS = 150;
+// 序列帧 idle：GLB 捕获时绕 Y 摆动取 frames 帧拼成 sheet；手绘 sheet 改映射里的 frameCount。
+// 改 12 让「基础怪动画版」的骨骼动画采样更顺（动画版走 AnimationMixer 采样，非摆动）。
+export const DEPTH_SPRITE_FRAMES = 12;
+export const DEPTH_SPRITE_SWING = 0.18; // idle 摆动幅度(弧度)，绕 Y 小幅晃
+// 正式手绘/离线素材映射：填了即走 loadDepthSpriteSheet 替运行时捕获。例：
+// 'Model/基础怪.glb': { albedo:'assets/basic_albedo.png', depth:'assets/basic_depth.png', frameCount:8, cols:8, rows:1 }
+export const DEPTH_SPRITE_HANDPAINTED = {}; // 清空即退回运行时 GLB 多帧捕获（basic 恢复 idle 摆动）
+export const DEPTH_SPRITE_SCALE = 0.08;
+// 立绘命中倍率（手感微调）：命中半径 = 立绘里「可见角色」的半高 × 本倍率。
+//   1.0 = 完全贴合可见角色（默认，各怪按自己的 radius 自动折算取景留边，见 glbCapture.captureFrameFit）；
+//   <1 = 收紧，>1 = 放宽。注意：取景留边已按 radius 自动折算，这里不再需要「一刀切」的小系数。
+// 用 let 以便 userConfig.DEPTH_SPRITE.HIT_MUL 单独覆盖（见文件末尾）。
+export let DEPTH_SPRITE_HIT_MUL = 1.0;
+
+// ============================================================
+// 正常测试模式（NORMAL_TEST）：覆盖普通关出怪曲线
+//   enabled = true 时，普通关走 _updateNormalTest()（升级式同屏出怪）
+//   enabled = false 时，普通关走原 _updateLevel() 滴流出怪
+//   DDA.enabled = true 时，在 normalTest 模式下由 DifficultyController 接管出怪
+// ============================================================
+export const NORMAL_TEST = {
+  enabled: true,          // 开关：true 时普通关走压测出怪曲线
+  startCount: 5,          // 初始同屏怪数
+  rampInterval: 10,       // 每 N 秒加怪（DDA 关闭时的时间曲线）
+  step: 2,                // 每次加多少
+  peak: 40,               // 上限（DDA 关闭时）
+  stopAt: 60,             // N 秒后停止补怪（每关限时1分钟）
+  spawnCooldown: 1.2,     // 出怪间隔 s（DDA 关闭时）
+  distance: 12,            // 出怪距离 m
+  spread: 8,               // 出怪散布 m
+  // 测试期间仅出基础怪；恢复全量改回 ['basic', 'ninja', 'octopus', 'shield', 'ghost', 'heart']
+  pool: ['basic'],
+};
+
+// ============================================================
+// DDA（Dynamic Difficulty Adjustment）动态难度
+//   enabled = true 时，DifficultyController 根据玩家表现实时调整出怪
+//   上限 70 同屏（PICO 4 / Adreno XR2 舒适区）
+// ============================================================
+export const DDA = {
+  enabled: true,          // 开关：true 时由 DifficultyController 接管出怪
+  maxConcurrency: 50,     // 同屏上限（测试期间降到50，仅基础怪）
+  minConcurrency: 15,     // 同屏下限（提高初始出怪量，避免开局稀疏）
+  difficultyStart: 0.5,   // 初始难度标量 (0..1)（提高开局出怪密度）
+  killWindow: 10,          // 击杀率滑窗秒数
+  smoothRate: 0.5,         // 难度平滑速率（越大越快跟随目标）
+};
+
+// ============================================================
+// SPAWN_RING —— 玩家 DPS 基准 + 内外圈出怪调度（替换 DDA 击杀率滑窗）
+//   基础出怪量 baseSpawn = clamp(DPS / DPS_DIVISOR × levelScale/LEVEL_BASE, MIN_BASE, MAX_BASE)
+//   每 CHECK_INTERVAL 秒检查内圈存活数 → 查 RING_TABLE 得内圈系数 → 调整外圈配额
+//   语义：内圈怪越少（玩家清得快）→ 系数越大 → 外圈出更多怪补足压力；放技能时系数=1
+//   内圈 = 距场地中心(世界原点) 9m 圆（紧张区，离玩家近）；外圈 = 15m 圆（轻松区）
+//   关卡常数 levelScale = LEVEL_BASE + (n-1)×LEVEL_INC（随关卡推进，玩家杀怪变快→增怪量）
+//   （精英怪=5×普通：本版本暂不做，仅预留此注释；日后加 ENEMY_TYPES 精英变体即可）
+// ============================================================
+export const SPAWN_RING = {
+  enabled: true,           // 总开关：true → 普通关走新调度；false → 回退现有 DDA/时间曲线
+  INNER_RADIUS: 9,         // 内圈半径 m（紧张区）
+  OUTER_RADIUS: 15,        // 外圈半径 m（轻松区）
+  INNER_SPREAD: 3,         // 内圈出生散布 m（收窄，防怪横跨头顶）
+  OUTER_SPREAD: 8,         // 外圈出生散布 m
+  DPS_DIVISOR: 100,        // baseSpawn = DPS / 此值（调大 → 出怪更少）
+  MIN_BASE: 4,             // baseSpawn 下限
+  MAX_BASE: 40,            // baseSpawn 上限（对齐旧 DDA 同屏舒适区）
+  INNER_RATIO: 0.5,        // 内圈初始配额占比（innerQuota = baseSpawn × 此值）
+  INNER_CAP: 5,            // 内圈配额硬上限（对齐 RING_TABLE 索引 0..5）
+  RING_TABLE: [2, 1.8, 1.6, 1.4, 1.2, 1], // 内圈存活 0..5 → 外圈系数（关卡常数=5 基准）
+  CHECK_INTERVAL: 5,       // 每 N 秒检查一次内圈数量
+  SKILL_CD_THRESHOLD: 3,   // 技能冷却 > 此值 → 判定「最近 5 秒释放过技能」（8-5=3）→ 系数=1
+  REFILL_COOLDOWN: 0.3,    // 补怪滴流间隔 s（避免一次性涌出大量怪/光点）
+  stopAt: 60,              // 停止补怪时间窗 s（对齐 NORMAL_TEST.stopAt；场上清空即通关）
+  LEVEL_BASE: 5,           // 关卡常数基准（RING_TABLE 按此基准给出）
+  LEVEL_INC: 0.5,          // 关卡常数随关卡推进增量：levelScale = LEVEL_BASE + (n-1)×LEVEL_INC
+  pool: ['basic'],         // 出怪类型池（测试期仅基础怪；恢复全量改回 NORMAL_TEST.pool 列表）
+};
+
+// ============================================================
+// 脸谱 Boss（第6/18关）— 单 Boss 多阶段循环
+//   单 Boss 3000 HP + 95% 减伤，3 阶段循环（蓝→红→黑→蓝...）直到 HP 归零
+//   每阶段 10s，变脸时换位置（前→左→右→前...）+ 清除子实体
+//   击杀子实体扣 Boss 血量百分比（绕过减伤）
+// ============================================================
+export const FACE_BOSS = {
+  // —— 通用 ——
+  HP: 3000,
+  DAMAGE_REDUCTION: 0.95,   // 直接射击减伤 95%（实际受击 = 伤害 × 5%）
+  PHASE_DURATION: 15,       // 每阶段时长 s（前/中子阶段不变，多余时间给尾段动作）
+  SCALE: 1.5,               // 主 Boss 体型（缩小一半，原 3；碰撞 effective=1.5*1.5=2.25m）
+  RADIUS: 1.5,
+  POSITIONS: [              // facePhase%3：0=蓝·前, 1=红·左, 2=黑·右
+    [0, 2, -12],
+    [-10, 2, 0],
+    [10, 2, 0],
+  ],
+  MODELS: ['Model/蓝面脸谱.glb', 'Model/红面脸谱.glb', 'Model/黑面脸谱.glb'],
+  FAN_MODEL: 'Model/京剧扇子.glb',
+
+  // —— 子实体击杀 → Boss 扣血（× HP，绕过减伤）——
+  KILL_FLAG_HP_PCT:   0.02,  // 旗子 
+  KILL_CLONE_HP_PCT:  0.01,  // 分身 1% = 30HP
+  KILL_MINION_HP_PCT: 0.01,  // 小怪 
+
+  // —— 蓝色阶段：左右两侧各一个 3×3 召唤阵（中心格=骑士，其余=basic；阵型排在 Boss 前方朝玩家）——
+  BLUE_FORMATION_ROWS: 3,       // 每侧阵型的行数（沿 Z 纵深，朝玩家递进）
+  BLUE_FORMATION_COLS: 3,       // 每侧阵型的列数（沿 X 横向）；中心格(第2行第2列) = 骑士怪
+  BLUE_FORMATION_COL_GAP: 2.5,  // 每侧阵型内：列间距(X) m
+  BLUE_FORMATION_ROW_GAP: 2.5,  // 每侧阵型内：行间距(Z) m（朝玩家递进）
+  BLUE_SIDE_OFFSET: 5,          // 左右两个侧阵中心，相对 Boss 的 X 距离 m（左 -X / 右 +X）
+  BLUE_MINION_SPAWN_START: 2,   // 开始召唤 s（前段留空）
+  BLUE_MINION_ACTIVE_START: 4,  // 小怪冲锋 + Boss 摆动 s（中段不变，尾段延至阶段末）
+  BLUE_MINION_Y: [1, 2.5],      // 高度范围
+  BLUE_SWAY_AMP: 1.5,           // Boss 摆动幅度 m
+  BLUE_SWING_FREQ: 0.8,         // 摆动频率 Hz
+  BLUE_MINION_BOB_AMP: 0.2,     // 子实体上下摆动幅度 m（与气球一致的悬浮感）
+  BLUE_MINION_BOB_FREQ: 1.0,    // 子实体上下摆动频率 Hz
+
+  // —— 红色阶段：旗子（变大3倍 + 公转半径5m）——
+  RED_FLAG_COUNT: 5,
+  RED_FLAG_SPAWN_START: 2,      // 旗子出现 s（前段留空）
+  RED_FLAG_ORBIT_END: 6,        // 公转结束 s → 移到 Boss 上方、沿前后(Z)排列 + 自身绕 Z 轴逆时针转 90°
+  RED_FLAG_LAUNCH_START: 8,     // 定位后开始飞向玩家 s（停在两侧展示 2s）
+  RED_FLAG_LAUNCH_INTERVAL: 0.5,// 每批释放间隔 s
+  RED_FLAG_LAUNCH_BATCH: 1,     // 每次释放的旗子数（两个一起冲）
+  RED_FLAG_ORBIT_RADIUS: 5,    // 公转半径 m（大于 Boss 有效半径，不被遮挡）
+  RED_FLAG_ORBIT_SPEED: 2,    // 公转角速度 rad/s
+  RED_FLAG_FB_GAP: 3.0,         // 【转圈后·悬浮位置】前后(Z)排列间隔 m：相邻旗子沿 Z 的间距。偶索引→前(+Z)、奇索引→后(-Z)
+  RED_FLAG_ABOVE_Y: 3.0,        // 【转圈后·悬浮位置】悬浮高度 m：旗子位于 Boss 中心上方多少（Y 偏移）
+  RED_FLAG_PLACED_ROT_Z: Math.PI / 4, // 【转圈后·旋转角度】定位后旗子绕 Z 轴旋转弧度(π/2=逆时针90°)；改此即改旗子朝向，无需动代码
+  RED_FLAG_Y: 2,
+  RED_FLAG_HP: 2000,
+  RED_FLAG_SELF_DAMAGE: 5,
+  RED_FLAG_SPEED: 8,          // 释放后冲向玩家速度
+  RED_FLAG_RADIUS: 1.5,        // 碰撞半径（视觉3倍后同步，原0.5）
+  RED_FLAG_SCALE: 3,          // 旗子视觉缩放（变大3倍，原1）
+  // —— 红脸旗子「升空变大十倍砸向玩家」（转圈结束后触发）——
+  RED_FLAG_SLAM_RISE_Y: 8,         // 升空高度(m)：从已放置高度再抬升
+  RED_FLAG_SLAM_RISE_TIME: 1.0,   // 升空+放大耗时(s)
+  RED_FLAG_SLAM_SCALE: 10,        // 最终视觉放大倍数（约10倍，覆盖原3倍）
+  RED_FLAG_SLAM_SPEED: 26,        // 砸向玩家速度(m/s)：高速俯冲
+  // —— 红阶段演出（2026-09-10）——
+  RED_FLAG_SLAM_LOCK_ROT: true,   // 【砸落】下砸期间冻结旗子朝向：修"飞临玩家正上方时 lookAt 方向退化 → 朝向每帧乱跳"的抖动；false=恢复原样
+  RED_FLAG_DIVE_SPEED: 20,        // 【砸落】旗子升空后俯冲的下降速度(m/s)：越大砸得越快
+  RED_FLAG_HIT_Y: 2.0,            // 【砸落】命中高度(m)：旗子高于此高度不结算命中(避免 23m 高空就爆)，降到该高度以下才炸到玩家
+  RED_BOSS_SPIN_SPEED: 2.0,       // 【Boss 动作】公转期间 Boss 原地自转角速度(rad/s)：0=不转。仅作"期望速度"，实际按整圈折算（见下）
+  RED_BOSS_SPIN_TURNS: 0,         // 【Boss 动作】自转圈数：0=自动(取最接近 RED_BOSS_SPIN_SPEED 的整数圈) / >0=固定圈数(如 2)。整数圈保证停下时刚好回到正面
+  RED_END_ON_LAND: true,          // 【节奏】Boss 落地瞬间即切换到下一阶段（false=按 PHASE_DURATION 15s 走完红阶段）
+  RED_BOSS_RISE_WITH_FLAG: true,  // 【Boss 动作】Boss 是否随大旗一起"原地升空/落地"：true=同步升降 / false=Boss 不动
+  RED_FLAG_MERGE: true,           // 【融合】转圈结束升空时多面旗融合成一面大旗（其余旗子飞向保留那面并消失）
+  RED_FLAG_MERGE_TIME: 0.35,      // 【融合】其余旗子飞向大旗的融合时长(s)：0=瞬间消失
+
+  // —— 黑色阶段：分身（体型缩小一半，原 scale 2→1）——
+  BLACK_CLONE_MODEL: 'Model/黑面脸谱.glb',
+  BLACK_CLONE_COUNT: 26,
+  BLACK_CLONE_SPAWN_START: 2,
+  BLACK_CLONE_SPAWN_END: 4,
+  BLACK_CLONE_RING_RADIUS: 8, // 圆心(0,0,0) 半径 m
+  BLACK_CLONE_Y: 1.5,
+  BLACK_CLONE_HP: 120,
+  BLACK_CLONE_SELF_DAMAGE: 2,
+  BLACK_CLONE_CHARGE_START: 13,  // 冲锋 s（阶段末前 2 秒：13→15s 统一撞向玩家）
+  BLACK_CLONE_CHARGE_SPEED: 6,   // 冲锋速度 m/s（分身原 speed=0，冲锋时必须给定）
+  BLACK_CLONE_RADIUS: 1.0,
+  BLACK_CLONE_SCALE: 1,          // 缩小一半（原2）
+};
+
+// ============================================================
+// 第18关 · 魔术师 Boss（循环多阶段）
+//   阶段：开场(0-10s, 正前30m播动画) → 激光(11-20s, 正前30m) → 玻璃墙(21-30s, 闪现左边30m) → 九宫格(31-40s, 闪现右边30m) → 循环 A→B→C
+//   血量 = HP_BASE + 玩家DPS × HP_DPS_SEC（动态）；Boss 死亡即通关「恭喜通关」
+//   模型：Model/魔术师动画版.glb（复用开场动画 GLB；Boss 常驻播放内嵌动画，不自动消失）
+// ============================================================
+export const MAGICIAN_BOSS = {
+  // —— 通用 ——
+  MODEL: 'Model/魔术师动画版.glb',
+  HP_BASE: 20000,             // Boss 基础血量（集中可调）
+  HP_DPS_SEC: 30,             // 血量 = HP_BASE + 玩家DPS × 本值（按战力缩放，避免高 DPS 下秒杀/低 DPS 下打不动）
+  PROXY_RADIUS: 8.0,          // 命中代理碰撞半径(m)：Boss模型随 MODEL_SCALE 缩放(现5倍≈10m高，脚底在y=2、头顶≈y=12)；
+                              //   半径放大到8m覆盖全身，确保各阶段(含激光/九宫格)瞄准躯干即可正常击中掉血
+  SCALE: 2.0,                 // 模型基准高度（米）：先按此把 GLB 缩放到 2m，再 ×MODEL_SCALE
+  MODEL_SCALE: 5,             // 整体再放大倍数（用户要求缩小一半 → 5 倍 → 最终约 10m 高）
+  MODEL_ROTATION: { x: 0, y: 0, z: 0 }, // 模型三轴旋转（度）：x=俯仰 y=偏航 z=翻滚
+  MODEL_POSITION: { x: 0, y: 0, z: 0 }, // 视觉模型相对「命中代理」的偏移(米)：x=右 y=上 z=前(朝玩家为 -Z)；默认 0=完全贴合代理中心（改此可让模型浮在代理上方/侧方）
+  PHASE: {
+    INTRO: 10,                // 开场动画时长 s（0-10s）
+    LASER: 10,                // 激光阶段 s（第 11-20s）
+    GLASS: 10,                // 玻璃墙阶段 s（第 21-30s）
+    NINE: 10,                 // 九宫格阶段 s（第 31-40s）
+  },
+  // —— 生成 / 闪现位置（Boss 命中代理 与 视觉模型都落在此；单位米，坐标相对「玩家出生原点」）——
+  //   坐标约定：[x, y, z]  —— y=离地高度(m)；z 负=玩家正前方(玩家朝 -Z 看向 Boss)、z 正=身后；
+  //                          x 负=玩家左手边(-X)、x 正=右手边(+X)。
+  //   三槽位对应阶段闪现：0=开场·正前(-Z)  1=玻璃墙阶段·闪现左边(-X)  2=九宫格阶段·闪现右边(+X)。
+  //   调「距玩家距离」统一改三个数组的 x/z 绝对值(现 30m)；调「高度」改中间的 y(现 2m)。
+  POSITIONS: [
+    [0, 2, -30],    // 0 · 开场位：玩家正前方 30m（z=-30 朝 Boss）
+    [-30, 2, 0],    // 1 · 玻璃墙阶段：玩家左手边 30m（x=-30）
+    [30, 2, 0],     // 2 · 九宫格阶段：玩家右手边 30m（x=+30）
+  ],
+
+  // —— 三阶段召唤（2026-09-10 新增；由 bossMagician._summonTick 按时间点分波触发）——
+  //   第一阶段（激光）：召唤 LASER_TIMES 次，每次 LASER_BASIC 个小怪冲锋 + LASER_NINJA 个忍者
+  //   第二阶段（玻璃墙）：召唤 GLASS_TIMES 次，每次 GLASS_KNIGHT 个骑士（类型见 GLASS_KNIGHT_TYPE）
+  //   第三阶段（黑白球墙）：不在此处召唤，见下方 ORB_WALL
+  //   ★ 召唤时间点 = FIRST_DELAY + 第 n 波 × (阶段时长 / 波数)，阶段时长见 PHASE.LASER / PHASE.GLASS
+  //   ★ 出生点 = 以「场地中心(原点)」为基准：沿该怪方位角到 4×8 区域边界的距离 + 它在「本波剩余时间」内
+  //     恰好能跑完的距离 → 每波怪都刚好在阶段结束时抵达活动区域（不早不晚、不会远到看不见）。
+  //     想更近/提前抵达：把 ARRIVE_FACTOR 调小（0.6=提前跑到）；想拉开抵达先后：调大 ARRIVE_JITTER。
+  //   ★ 数量是「每次」的量；实测卡顿优先降 LASER_BASIC / GLASS_KNIGHT，或把 PER_FRAME 调小
+  SUMMON: {
+    FIRST_DELAY: 0.6,        // 进入阶段后首次召唤延迟 s（留出阶段切换的视觉缓冲）
+    PER_FRAME: 3,            // 每帧最多落地几个（错峰，防同帧 GLB 解码/立绘抓帧卡死；越大越卡）
+    ARRIVE_FACTOR: 1.0,      // 出生距离系数：1=刚好在阶段结束抵达活动区域；<1=提前抵达(出生更近)；>1=更远
+    ARRIVE_JITTER: 0.15,     // 出生距离随机抖动 ±比例：错开各怪抵达时间，避免整波同时自爆
+    MIN_REMAIN: 0.8,         // 剩余时间下限 s：防止最后一波出生点贴脸（距离≈0）
+    SPAWN_R_MIN: 5,          // 出生半径下限 m（安全钳制）
+    SPAWN_R_MAX: 32,         // 出生半径上限 m（安全钳制）
+    NINJA_USE_RING: true,    // 忍者专用：true=直接出生在忍者固有活动环带内（SHURIKEN.RANGE_MIN~MAX），
+                             //   不套用「按剩余时间反推」—— 忍者由 balloons._clampToRing 锁在环带内、本就不会靠近玩家 4×8 区域
+    // —— 第一阶段 · 激光 ——
+    LASER_TIMES: 3,          // 召唤次数
+    LASER_BASIC: 25,         // 每次小怪数量
+    LASER_NINJA: 5,          // 每次忍者数量
+    LASER_BASIC_HP: 0,       // 小怪血量覆盖（0=用敌种默认 100）
+    LASER_BASIC_SPEED: 2.0,  // 小怪冲锋速度 m/s（>0 覆盖敌种默认 0.5；0=用默认）
+    LASER_NINJA_HP: 0,       // 忍者血量覆盖（0=用敌种默认 500）
+    LASER_NINJA_SPEED: 0,    // 忍者速度覆盖 m/s（0=用敌种默认 1.5；忍者平时不靠近，一般无需改）
+    // —— 第二阶段 · 玻璃墙 ——
+    GLASS_TIMES: 2,          // 召唤次数
+    GLASS_KNIGHT: 10,        // 每次骑士数量
+    GLASS_KNIGHT_TYPE: 'eliteKnight', // 骑士敌种：'eliteKnight'=精英骑士(与盾兵同体型的纯骑士) / 'knight'=放大 3 倍的骑士Boss体型
+    GLASS_KNIGHT_HP: 0,      // 骑士血量覆盖（0=用敌种默认 500）
+    GLASS_KNIGHT_SPEED: 1.0, // 骑士推进速度 m/s（写明以便按剩余时间反推出生距离；敌种默认 0.5）
+  },
+  SPAWN_ENEMIES: true,        // 召唤总开关：false=三阶段都不召唤(排查卡顿/伤害用)；true=按下方 SUMMON 完整召唤
+  HP_BAR_OFFSET_Y: 11,        // 头顶 3D 血条相对代理的抬高高度(m)：Boss 5倍≈10m高(头顶≈y=12)，置于头顶上方
+
+  // —— 外圈常驻小怪：已移除（Boss 战不应出现基础怪，见 bossMagician.js 删除 _maybeMaintainMobs）——
+
+  // —— 激光组（第18关魔术师Boss·激光阶段，按实测调整重写）——
+  // 流程：① 1s 内垂直上升 4m；② 接着 1s 下端向下延伸 4m 激光；
+  //       ③ 两气球带激光从各自起点向 X=0 运动，间距 < CLOSE_DIST 时反向外扩，
+  //          到外边界 OSC_OUTER 回中心，一来一回持续往复直到阶段结束 dispose（已去掉时间封顶）。
+  //   玩家处于竖直光束内(x 半宽 + y∈[球底-激光长, 球底]) 受 DAMAGE*dt 伤害。
+  //   坐标说明：原文 A/B 均写 x=-4（疑似笔误）；按运动逻辑两侧对称取
+  //   A=(-4,0,0)、B=(+4,0,0)，如需改单侧只调下面 B.x 一处即可。
+  LASER_GROUP: {
+    COUNT: 2,                 // 激光气球数（A + B）
+    RISE_TIME: 1,             // ① 垂直上升耗时 s
+    RISE_HEIGHT: 4,           // ① 上升高度 m（y: 0 → 4）
+    EXTEND_TIME: 1,           // ② 激光向下延伸耗时 s
+    BEAM_LENGTH: 4,           // ② 激光长度 m（从气球下端向下）
+    OSC_TIME: 4,              // ③ 往复参数（保留：原往复时长参考；现往复已改为全程持续，无封顶）
+    OSC_SPEED: 3,             // ③ 往复速度 m/s
+    OSC_OUTER: 4,             // ③ 外边界 |x|（到此反向回中心，形成一来一回）
+    CLOSE_DIST: 0.5,          // ③ 两气球间距 < 此值 → 反向外扩
+    HIT_HALF_WIDTH: 0.6,      // 命中玩家所需 x 半宽 m
+    DAMAGE: 12,               // 玩家处于光束内每秒伤害
+    A: { x: -4, y: 0, z: 0 }, // A 起始位置
+    B: { x:  4, y: 0, z: 0 }, // B 起始位置（对称 +4）
+  },
+
+  // —— 玻璃墙（4×8，立 Boss 与玩家之间；有效格闪烁+命中扣Boss血，无效格挡子弹）——
+  GLASS_WALL: {
+    COLS: 8,                  // 列（沿水平 right 轴）
+    ROWS: 4,                  // 行（沿竖直 up 轴，自下而上）
+    CELL_W: 2.2,              // 单格宽 m
+    CELL_H: 2.2,              // 单格高 m
+    GAP: 0.15,                // 格间距 m
+    Y_BASE: 1.0,              // 最底行中心高度 m
+    DIST: 10,                 // 墙距 Boss 的水平距离 m（朝玩家方向）
+    VALID_CELLS: [[0,0],[0,3],[3,0],[3,7],[1,4],[2,3]], // 有效格 (row,col) 列表：闪烁、命中扣Boss血
+    FLASH_SPEED: 4,           // 有效格闪烁频率 Hz
+    BLOCK_ALL: true,          // true=整面墙拦截子弹（仅有效格额外扣Boss血）；false=仅无效格拦截
+  },
+
+  // —— 九宫格（Boss 头顶 3×3 共 9 球，各 BALL_HP 血，TIMER 秒倒计时，残球飞炸）——
+  NINE_GRID: {
+    COLS: 3, ROWS: 3,
+    BALL_HP: 1000,            // 每球血量
+    SPACING: 1.5,             // 球间距 m（与第十五关九宫格一致）
+    CENTER_Y: 6,              // 九宫格墙面中心高度 m（Boss 头顶附近）
+    FRONT_DIST: 8,            // 墙面距 Boss 朝玩家方向的前移距离 m
+    TIMER: 5,                 // 倒计时光破时间 s
+    RESIDUAL_GROUP: 3,        // 超时残球每 N 个一组飞向玩家
+    EXPLODE_DAMAGE: 5,        // 残球爆炸每球伤害
+    EXPLODE_SPEED: 6,         // 残球飞向玩家速度 m/s
+    RADIUS: 0.75,             // 每球碰撞半径 m（与 FlipGrid 球一致）
+  },
+
+  // —— 第三阶段「黑白球墙」（2026-09-10 新增，替代原九宫格；ENABLED=false 可回退到 BossNineGrid）——
+  //   布局：WALLS 每项是「一片 3×3 球墙」的中心点（相对场地中心原点的 x/z），阵列平面自动转向原点，
+  //         所以玩家站在场地中心时正对看到整齐的两面球阵（看不到侧边薄面）。
+  //         默认第 1 片在玩家正前 12m（白球）、第 2 片在正后 12m（黑球）；想改成左右两侧互换 x/z 即可。
+  //   机制：前 FLOAT_TIME 秒球被锁在墙上做上下浮动 → 时间到后存活球脱离墙体追击玩家
+  //         → 进入 4×8 区域即自爆（伤害 SELF_DAMAGE，由 game._checkExplosions 结算）。
+  ORB_WALL: {
+    ENABLED: true,           // 第三阶段是否用黑白球墙：false → 回退到原「九宫格」BossNineGrid
+    HP: 1500,                // 每球血量
+    RADIUS: 0.75,            // 球半径 m（与第十五关 FlipGrid 球一致）
+    SPACING: 1.5,            // 3×3 阵列间距 m（球刚好相切）
+    CENTER_Y: 4.5,           // 阵列中心高度 m（3×3 共 4.5m → 覆盖 y 2.25~6.75）
+    FLOAT_TIME: 5,           // 上下浮动持续 s；到点后存活球脱离墙体开始追击
+    FLOAT_AMP: 0.35,         // 浮动幅度 m
+    FLOAT_FREQ: 1.6,         // 浮动频率 Hz
+    CHASE_SPEED: 3.0,        // 脱墙后追击速度 m/s
+    SELF_DAMAGE: 2,          // 进入 4×8 区域自爆时对玩家的伤害
+    SCORE: 0,                // 击破得分（0=不给分）
+    WHITE_COLOR: 0xffffff,   // 白球颜色
+    BLACK_COLOR: 0x111111,   // 黑球颜色
+    WALLS: [                 // 两片墙的中心点（y 统一用 CENTER_Y；x/z 相对场地中心）
+      { x: 0, z: -12 },      // 第 1 片：白球墙 · 玩家正前方 12m
+      { x: 0, z:  12 },      // 第 2 片：黑球墙 · 玩家正后方 12m
+    ],
+  },
+};
+
+// ============================================================
+// 传送门装饰（portal.js / game._spawnPortals 引用）
+//   小怪关在场地中心前后左右各放 4 个传送门，可被左手摇杆整体操控：
+//     左手 Y 轴（前推负）→ 4 门整体升降；左手 X 轴（右推正）→ 4 门整体远近（径向远离/收拢）
+//   TARGET_HEIGHT / HEIGHT_Y 为独立参数：直接写最终值，与缩放倍数无推导关系
+// ============================================================
+export const PORTAL = {
+  // —— 尺寸（独立参数，直接写最终米数；与缩放倍数解耦，可叠加）——
+  TARGET_HEIGHT: 2.2,  // 门整体高度（米）：基准高度，独立参数
+  SCALE: 1,            // 整体缩放倍数：在 TARGET_HEIGHT 基础上再整体放大/缩小（高宽厚一起）
+                       //   1 = 按 TARGET_HEIGHT 原样；2 = 整体再大一倍；0.5 = 整体再小一半
+  HEIGHT_Y: -2.6,      // 门中心离地高度（米）—— 注意：负值=中心在地面以下
+  // 门距场地中心水平距离（米）：前/后门在 Z=±P，左/右门在 X=±P
+  DISTANCE_P:   20,
+  // 左/右门绕 X/Y/Z 三轴朝向（弧度）：模型正面默认朝玩家，侧门旋转面向场内
+  //   左右门可分别指定；前/后门恒为 {x:0,y:0,z:0}
+  ROT: {
+    X: { LEFT: 0, RIGHT: 0 },                         // 绕 X 轴（弧度）
+    Y: { LEFT: 0, RIGHT: 0 },                         // 绕 Y 轴（弧度）
+    Z: { LEFT: Math.PI / 2, RIGHT: -Math.PI / 2 },    // 绕 Z 轴：左门逆时针90°/右门顺时针90°
+  },
+
+  // —— 上下浮动动画（纯装饰；数值标签显示用稳定值，不受浮动影响）——
+  FLOAT_AMP:  0.1,   // 浮动幅度（米）：0.25 过大改轻微
+  FLOAT_FREQ: 1.2,   // 浮动频率（Hz）
+
+  // —— 每关传送门方向与数量（仅非 boss、非激光机制关生成；见 game._spawnPortals）——
+  // 方向键：FRONT(前,-Z) BACK(后,+Z) LEFT(左,-X) RIGHT(右,+X)
+  // 前几关固定布局；其余非机制/非Boss关从 RANDOM.POOL 随机抽 RANDOM.COUNT 个方向
+  LEVEL_DIRS: {
+    1: ['FRONT'],                     // 第1关：仅前门
+    2: ['FRONT', 'LEFT'],             // 第2关：前+左
+    4: ['FRONT', 'RIGHT'],            // 第4关：前+右
+    5: ['FRONT', 'LEFT', 'RIGHT'],    // 第5关：前+左+右
+    // 3/6/9/12/15/18 为激光或Boss关，由 isLaser/isBoss 跳过；其余关随机
+  },
+  RANDOM: {
+    COUNT: 3,                         // 随机关传送门数量
+    POOL: ['FRONT', 'BACK', 'LEFT', 'RIGHT'], // 随机抽选方向池
+  },
+};
+
+// ============================================================
+// 出怪光点（waves._queueSpawn 引用）——「怪物从传送门飞出」
+//   普通关（有传送门）：每只怪在真正 spawn 前，从其最近传送门中心飞出一个光点
+//   到出生点，落地后怪物才出现。Boss/激光关无传送门 → _queueSpawn 自动退化为
+//   直接 spawn（视觉无变化）。龙 Boss / _spawnStress 不走此系统。
+// ============================================================
+export const PORTAL_BEAM = {
+  ENABLED: true,          // 总开关：false 时所有 _queueSpawn 直接同步 spawn
+  SPEED: 25,              // 光点飞行速度 m/s（门距出生点 18~32m → 时长 0.72~1.0s，接近 DDA cooldown）
+  DUR_MIN: 0.25,          // 飞行时长下限 s（近门 clamp，防过短闪烁）
+  DUR_MAX: 1.0,           // 飞行时长上限 s（远门 clamp，防节奏拖慢）
+  START_Y_OFFSET: 3,      // 光点出发点相对门中心的上抬高度（米）：让光点从门上方飞出，视觉更明显
+  Y_GAP_MAX: 6,           // 门中心与出生点 y 差距 > 此值(m) → 光点起点 y 向目标收敛（水平进场）
+  COLOR: 0xff8a8a,        // 光点颜色（浅红）
+  SIZE: 0.08,             // 光点球体半径 m
+  OPACITY: 0.95,          // 光点不透明度（AdditiveBlending 叠加发光）
+  // 类型范围开关（全部默认 true = 每只怪一个光点；单项 false = 该来源直接 spawn）
+  // 注意：Boss 关无传送门，Boss 本体/子实体本就走无门兜底；此开关仅在 Boss 关也布门时生效。
+  APPLY_SUMMON: true,     // 召唤怪小兵
+  APPLY_FACE_SUB: true,   // 脸谱 Boss 子实体/旗子/克隆
+};
+
+// ============================================================
+// 关卡开场「穿云」特效 + 出怪/动画延迟（cloudFx.js / game._loadLevel 引用）
+//   每关开始先在玩家前方生成 COLS×ROWS 软雾团，整团向后飘 DRIFT_DUR 秒，
+//   再「由前向后」缩短 SHRINK_DUR 秒（表现玩家突破云层），
+//   期间冻结出怪与 Boss/机制动画，但场景(天空/传送门/激光几何/龙)已先出现。
+//   总延迟 = INTRO_DELAY(默认 4s) = DRIFT_DUR(3) + SHRINK_DUR(1)，调参请保持此关系。
+// ============================================================
+export const CLOUD = {
+  ENABLED:       true,    // 总开关：false → 跳过穿云与延迟，关卡直开
+  COLS:          5,       // 横向(宽)雾团列数
+  ROWS:          9,       // 纵深(前→后)雾团排数
+  SPREAD_X:      14,      // 云雾总宽度（米）：越大越铺满视野
+  DEPTH:         20,      // 云雾总纵深（米，沿玩家正前方向）
+  FRONT_DIST:    0,       // 最前排距玩家的距离（米）：云在身前多远处起
+  Y:             2.6,     // 云雾中心高度（米，约玩家眼高）
+  Y_JITTER:      2.0,     // 单团高度随机抖动（米）：增加体积感
+  PUFF_SIZE:     3.5,     // 单团基础尺寸（米）
+  OPACITY:       0.95,     // 单团基础不透明度 0~1：越大越浓
+  COLOR:         0xffffff,// 云雾颜色
+  DRIFT_DUR:     3.0,     // 阶段1：整团向后飘动持续（秒）
+  DRIFT_SPEED:   5.0,     // 阶段1：向后飘动速度（米/秒）
+  SHRINK_DUR:    1.0,     // 阶段2：由前向后缩短持续（秒）
+  INTRO_DELAY:   4.0,     // 关卡开场总延迟（秒）：普通关出怪 / Boss·机制关动画 延后至此才启动
+};
+
+// ============================================================
+// 进入游戏前的「开场视频」过场（introVideo.js / game._startIntroVideo 引用）
+//   触发时机：玩家在头显里点「进入 VR」→ 第 1 关加载之前（仅 VR；桌面预览直接进第 1 关）。
+//   期间场景只留「飞毯 + 星空」（纯黑底）：隐藏渐变天空球并冻结天空缓动，见 world.setIntroBackdrop。
+//   视频播完（或出错/看门狗兜底）才进入第 1 关，之后照常走 CLOUD 穿云过场。
+//   参数单位见注释；改完刷新页面即生效（userConfig.INTRO_VIDEO 可热调）。
+// ============================================================
+export const INTRO_VIDEO = {
+  ENABLED:           true,                    // 总开关：false → 完全跳过开场视频，直接进第 1 关
+  SRC:               'assets/intro/intro.mp4', // 视频相对路径（跟随页面 origin；ASCII 文件名，避免中文 git 路径坑）
+  X_M:               -8,                      // 屏幕中心 X（米）：场地中心左方 8m。玩家开局面朝 -Z，其左手边即 -X
+  Z_M:               0,                       // 屏幕中心 Z（米）：与场地中心同排
+  BOTTOM_Y_M:        1.0,                     // 屏幕【底边】离地高度（米）：0=贴地，1=约膝盖以上
+  ROT_Y_DEG:         90,                      // 屏幕绕 Y 轴旋转（度）：+90 → 法线由 +Z 转向 +X，正对场地中心
+  WIDTH_M:           7.2,                     // 屏幕最大宽度（米）：按视频真实宽高比等比 contain
+  HEIGHT_M:          4.05,                    // 屏幕最大高度（米）：16:9 素材下 = 7.2 / (16/9)
+  VOLUME:            1.0,                     // 视频音量 0~1（静音重试时的 muted 状态不受此值影响）
+  STAR_OPACITY:      0.95,                    // 过场期间星空不透明度 0~1（冻结天空缓动后手动设定；黄昏默认约 0.5）
+  WATCHDOG_PAD_S:    2.0,                     // 看门狗余量（秒）：兜底超时 = 视频时长 + 该值，防黑屏软锁。
+                                                 //   ⚠ 仅作最后兜底：正常走「ended 事件 + currentTime 自然结束检测」前进，
+                                                 //     余量过大会让『ended 未触发』的头显出现长时间（如原 30s）不能射击的卡死感
+  FALLBACK_DURATION_S: 16.02,                 // 元数据未就绪时的假定时长（秒）：本素材 16.02s
+  // —— 切换抖动控制（视频播完那一帧不要做重活，否则视频最后几帧会顿挫）——
+  HANDOFF_DELAY_S:   0.08,                    // 播完后先让画面静止多久再加载关卡（秒）：0.08≈6帧@72Hz，静止画面的卡顿不可感知
+  DISPOSE_DELAY_S:   2.0,                     // 画面摘除后，解码器真正回收再延迟多久（秒）：藏进穿云里，避免与关卡加载挤同一帧
+};
+
+// ============================================================
+// VR 桌面镜像（mirror.js / main.js 动画循环引用）
+//   进入 VR 沉浸会话后，运行游戏的标签页被头显接管而黑屏；
+//   此功能在独立「非沉浸式」弹出窗口实时显示头显第一人称画面，让 PC 显示器也能看到。
+//   实现：同一 renderer 上下文、用本帧头显相机(左眼)渲染到低分辨率 RenderTarget，
+//   再 readRenderTargetPixels 读回 CPU，经 BroadcastChannel 发给镜像窗。
+//   注意：每帧多一次低分辨率渲染 + 一次读回，会占一点 GPU/CPU；用 W/H/INTERVAL 权衡清晰度与开销。
+// ============================================================
+export const MIRROR = {
+  ENABLED:    true,     // 总开关：false → 不截帧（镜像窗口打开也收不到画面）
+  MODE:       'page',   // 镜像呈现方式：'page'=页内预览 canvas（默认，无需弹窗、不抢手势激活）；'popup'=独立弹出窗口（旧方案，可回退）
+  W:          1920,     // 镜像分辨率宽（像素）：越高越清晰、越费（PC 端不卡可拉满 1080p；若掉帧降到 1280/720）
+  H:          1080,     // 镜像分辨率高（像素）
+  INTERVAL:   2,        // 每 N 帧截一帧（降帧省开销）：1=每帧，2=隔帧，3=每 3 帧
+  AUTO_OPEN:  true,     // 是否在「进入 VR」时自动显示镜像（仅 PCVR/PC 显示器有用；独立头显自动跳过，见 mirror.js）
+};
+
+// ============================================================
+// 玩家参数覆盖（userConfig.js）—— 改动后刷新页面即生效
+// 原理：本文件是依赖图叶子模块（无 import 业务模块），此合并先于所有消费方求值。
+// 用户唯一编辑入口：src/core/userConfig.js（只写想改的键，其余保持默认）。
+// ============================================================
+import { USER_CONFIG } from './userConfig.js';
+
+// 递归深合并：patch 为数组 → 整体替换；为对象 → 逐键合并；其余 → 覆盖
+function deepMerge(base, patch) {
+  if (Array.isArray(patch)) return patch;
+  if (patch && typeof patch === 'object') {
+    const out = { ...base };
+    for (const k of Object.keys(patch)) out[k] = deepMerge(base?.[k], patch[k]);
+    return out;
+  }
+  return patch !== undefined ? patch : base;
+}
+
+// 校验键名：拼错静默失效，此处给控制台提示（新增键也提示，忽略即可）
+function _checkKeys(name, base, patch, path) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return;
+  if (!base || typeof base !== 'object') return;
+  for (const k of Object.keys(patch)) {
+    if (!(k in base)) {
+      console.warn(`[userConfig] ${name}.${path ? path + '.' : ''}${k} 不是有效配置键，未生效；请对照 constants.js 的 ${name} 检查拼写。`);
+    } else {
+      _checkKeys(name, base[k], patch[k], path ? `${path}.${k}` : k);
+    }
+  }
+}
+
+// 可覆盖对象白名单：只处理这 6 个；未来要加对象 → 此处加一行 + userConfig.js 加对应键
+const _OVERRIDES = [
+  ['PORTAL',  PORTAL,  USER_CONFIG.PORTAL],
+  ['MOVE',    MOVE,    USER_CONFIG.MOVE],
+  ['SHOOT',   SHOOT,   USER_CONFIG.SHOOT],
+  ['BALLOON', BALLOON, USER_CONFIG.BALLOON],
+  ['GUN',     GUN,     USER_CONFIG.GUN],
+  ['WAVE',    WAVE,    USER_CONFIG.WAVE],
+  ['PORTAL_BEAM', PORTAL_BEAM, USER_CONFIG.PORTAL_BEAM],
+  ['SPAWN_RING', SPAWN_RING, USER_CONFIG.SPAWN_RING],
+  ['LASER_SWORD', LASER_SWORD, USER_CONFIG.LASER_SWORD],
+  ['BUDDHA', BUDDHA, USER_CONFIG.BUDDHA],
+  ['RENDER', RENDER, USER_CONFIG.RENDER],
+  ['CLOUD', CLOUD, USER_CONFIG.CLOUD],
+  ['INPUT', INPUT, USER_CONFIG.INPUT],
+  ['TEST', TEST, USER_CONFIG.TEST],
+  ['BGM_VOLUME', BGM_VOLUME, USER_CONFIG.BGM_VOLUME],
+  ['SHURIKEN',       SHURIKEN,       USER_CONFIG.SHURIKEN],
+  ['DRAGON_SUMMON', DRAGON_SUMMON, USER_CONFIG.DRAGON_SUMMON],
+  ['DRAGON_VOICE', DRAGON_VOICE, USER_CONFIG.DRAGON_VOICE],
+  ['DRAGON', DRAGON, USER_CONFIG.DRAGON],
+  ['FACE_BOSS', FACE_BOSS, USER_CONFIG.FACE_BOSS],
+  ['OPENING_MAGICIAN', OPENING_MAGICIAN, USER_CONFIG.OPENING_MAGICIAN],
+  ['SKILL_HINT', SKILL_HINT, USER_CONFIG.SKILL_HINT],
+  ['WRIST_UI',  WRIST_UI,  USER_CONFIG.WRIST_UI],
+  ['BASIC_VOICE', BASIC_VOICE, USER_CONFIG.BASIC_VOICE],
+  ['MAGICIAN_BOSS', MAGICIAN_BOSS, USER_CONFIG.MAGICIAN_BOSS],
+  ['INTRO_VIDEO', INTRO_VIDEO, USER_CONFIG.INTRO_VIDEO],
+  ['MIRROR', MIRROR, USER_CONFIG.MIRROR],
+];
+for (const [name, target, patch] of _OVERRIDES) {
+  if (patch && typeof patch === 'object') {
+    _checkKeys(name, target, patch);
+    Object.assign(target, deepMerge(target, patch));
+  }
+}
+
+// 立绘命中系数：允许在 userConfig.DEPTH_SPRITE.HIT_MUL 单独覆盖（它是独立常量，不入上面的对象白名单）
+if (USER_CONFIG?.DEPTH_SPRITE?.HIT_MUL !== undefined) {
+  DEPTH_SPRITE_HIT_MUL = USER_CONFIG.DEPTH_SPRITE.HIT_MUL;
+  console.log('[userConfig] DEPTH_SPRITE.HIT_MUL 覆盖为', DEPTH_SPRITE_HIT_MUL);
+}
+
+// —— PORTAL 尺寸：TARGET_HEIGHT / HEIGHT_Y 为独立参数（与缩放解耦），直接按 userConfig 覆盖结果生效，
+//    无需联动推导（SCALE/BASE_HEIGHT 已移除）。
+
