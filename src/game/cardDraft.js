@@ -113,7 +113,7 @@ export class CardDraft {
     this._playerPos = new THREE.Vector3(); // 光点飞行目标（玩家位置，触发时记录）
   }
 
-  // 由 Game.setCardTextures 注入预加载好的 PNG 纹理表
+  // 由 main.js 经 game.cards.setCardTextures 注入预加载好的 PNG 纹理表
   // 未注入时 _makeCardMesh 自动回落到 canvas 文字卡（heal/cooldownReduction/refresh/技能卡）
   setCardTextures(map) {
     this.cardTextures = map || {};

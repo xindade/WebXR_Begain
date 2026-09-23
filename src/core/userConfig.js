@@ -140,4 +140,22 @@ export const USER_CONFIG = {
     LEVEL_INC: 0.5,       // 关卡常数推进增量（每关 +0.5）
     pool: ['basic'],      // 出怪类型池
   },
+
+  // ==================== 直播推流（?cast=1 时生效） ====================
+  // 覆盖 constants.js 的 CAST。本文件在 PC 端 CONFIG_MANIFEST 里 → 改这里会由 EXE 自动
+  // 下发到头显覆盖层，**不用重打包 APK**（纯本地模式仍走 assets，需重打包）。
+  CAST: {
+    HIDE_PANO: false,   // 直播画面是否隐藏 360 全景穹顶（决定「直播端有没有天空」）
+                        //   false = 直播端也画全景天空，与头显一致；
+                        //           代价：全景纹理要在「第二个 GL 上下文」里再占一份显存
+                        //           —— 4K 全景(第1/18关)约 44MB，6K(第3关)约 100MB。
+                        //   true  = 原默认：直播端只画渐变天空球，省显存但看着像「纯色」。
+                        // 详见 cast.js 渲染段（dome.visible / grad.visible）与 cast-architecture.md。
+    // WARMUP: false,   // 【排查「影片阶段闪屏」的对照开关，默认别去掉注释】
+                        //   影片阶段头显本该「不渲染、不编码」（CAST.PAUSE_BEFORE_PLAY），
+                        //   但预热的 1fps H.264 编码仍在跑 → 与影片解码争 PICO 的媒体引擎(VPU)
+                        //   → 头显里影片一闪一闪（见 cast-architecture.md 第二层根因）。
+                        //   置 false 可把影片期间的编码彻底停掉（代价：PC 端在预览/影片阶段
+                        //   没有占位画面；若 PC 端能播本地影片则观感不受影响）。
+  },
 };

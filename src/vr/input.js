@@ -279,7 +279,14 @@ export class InputManager {
         // A/B（边缘）→ 退出 VR
         const ab = btnA || btnB;
         if (ctrl) {
-          if (ab && !ctrl.userData.prevAB) session.end?.();
+          if (ab && !ctrl.userData.prevAB) {
+            // ★ 「玩家主动退出」标记（2026-09-19 六修）：main.js 的 sessionend 据此区分
+            //   · 玩家自己按 A/B → 回菜单清场（原行为）；
+            //   · 被别的应用抢前台、PICO 结束会话 → **保留本局**，只给一个「继续游戏」按钮。
+            //   XRSession 是普通对象，挂个私有标记即可（不依赖任何浏览器扩展）。
+            session._endedByPlayer = true;
+            session.end?.();
+          }
           ctrl.userData.prevAB = ab;
         }
       } else if (hand === 'left') {

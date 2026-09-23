@@ -43,6 +43,11 @@ export class World {
 
     this.scene = new THREE.Scene();
 
+    // 环境氛围组：天空/星空/边界/坐标网格等「世界背景」统一挂此组，
+    // 等待房间期间整体隐藏 → 背景纯黑、仅留视频屏幕（见 waitingRoom）。
+    this.ambient = new THREE.Group();
+    this.scene.add(this.ambient);
+
     // 相机放在 playerRig 下，由输入层控制移动
     this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 200);
 
@@ -84,7 +89,7 @@ export class World {
       depthWrite: false,
     });
     this.sky = new THREE.Mesh(geo, mat);
-    this.scene.add(this.sky);
+    this.ambient.add(this.sky);
   }
 
   // 知识库：三预设（日/夜/黄昏）指数缓动过渡
@@ -200,7 +205,7 @@ export class World {
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       const mat = new THREE.PointsMaterial({ color: 0xffffff, size, sizeAttenuation: true, transparent: true, opacity: 0.9 });
       const pts = new THREE.Points(geo, mat);
-      this.scene.add(pts);
+      this.ambient.add(pts);
       this._starLayers.push(pts);
       return pts;
     };
@@ -241,7 +246,7 @@ export class World {
       new THREE.LineBasicMaterial({ color: 0x4dabf7 })
     );
     edges.position.copy(this.boundary.position);
-    this.scene.add(edges);
+    this.ambient.add(edges);
   }
 
   // 场地坐标系：以 rig 原点(0,0,0) 为中心，0.5m 为单位的网格 + 数字标注。
@@ -277,7 +282,7 @@ export class World {
     ];
     const axisGeo = new THREE.BufferGeometry();
     axisGeo.setAttribute('position', new THREE.Float32BufferAttribute(axisPts, 3));
-    this.scene.add(new THREE.LineSegments(
+    this.ambient.add(new THREE.LineSegments(
       axisGeo,
       new THREE.LineBasicMaterial({ color: 0xffd43b, transparent: true, opacity: 0.9 })
     ));
@@ -297,7 +302,7 @@ export class World {
       if (vz === 0) continue;
       const sp = _textSprite(fmt(vz), '#69db7c');
       sp.position.set(0, labelY, vz);
-      this.scene.add(sp);
+      this.ambient.add(sp);
     }
 
     // --- 4) 原点标记 + 标注 “0” ---
@@ -306,10 +311,16 @@ export class World {
       new THREE.MeshBasicMaterial({ color: 0xffffff })
     );
     origin.position.set(0, y + 0.03, 0);
-    this.scene.add(origin);
+    this.ambient.add(origin);
     const oLabel = _textSprite('0', '#ffffff');
     oLabel.position.set(0, labelY + 0.05, 0);
-    this.scene.add(oLabel);
+    this.ambient.add(oLabel);
+  }
+
+  // 等待房间用：整体隐藏/恢复「世界背景」（天空/星空/边界/坐标网格），
+  // 使开场影片期间背景纯黑、仅留视频屏幕，影片结束恢复。
+  setAmbientVisible(v) {
+    if (this.ambient) this.ambient.visible = v;
   }
 
   _onResize() {
