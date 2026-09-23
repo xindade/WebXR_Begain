@@ -32,9 +32,14 @@ export const SKY_PANORAMA = {
 // 若头显里城堡不在正前方：左右偏差约 ±π/2、背后则 ±π，调此值刷新即生效（同时影响 3/12/15 关天空，但皆为对称天空无影响）。
 export const PANO_DOME_YAW = Math.PI / 2;
 
-// 渲染分辨率系数（WebXR 帧缓冲缩放）：1.0=最稳，1.25=更清晰但更费 GPU，1.5 易掉帧。
-// PICO 4 双目高分辨率下 1.0 最稳；若某关流畅可热调到 1.25 提清晰度（userConfig.RENDER 可调）。
-export const RENDER = { FRAMEBUFFER_SCALE: 1.0 };
+// ⚠⚠⚠ 渲染分辨率系数（WebXR 帧缓冲缩放）——【VR 优化绝对禁止下调 FRAMEBUFFER_SCALE_STANDALONE】⚠⚠⚠
+//   · 当前代码不会再按 STANDALONE 调用 setFramebufferScaleFactor：main.js 已去除独立头显分支；
+//     world.js 构造期仅按桌面值 FRAMEBUFFER_SCALE(=1.0) 设置，STANDALONE 完全不被应用（即 inert）。
+//   · 教训（2026-09-18 PICO 实测）：一旦代码把 STANDALONE 调到 0.6/0.7 并应用到 XR 合成层(XRWebGLLayer)，
+//     PICO 运行时无法正确合成缩小后的层 → 画面全黑（但音频照常播放）。只有 1.0 正常。
+//   · 独立头显帧率瓶颈是「几何(顶点数)」不是「填充率」，降分辨率既救不了帧率又致黑屏，双输。
+//   · 两值仅作「禁用标记」保持 1.0；请勿在代码中新增「按 STANDALONE 调用缩放」的逻辑，也勿误改。
+export const RENDER = { FRAMEBUFFER_SCALE: 1.0, FRAMEBUFFER_SCALE_STANDALONE: 1.0 };
 
 // 全景天空亮度倍率（天地朝向已确认正确，只调亮度用）。
 // 1.0 = 原样；<1 = 变暗；>1 = 变亮。改完刷新页面即生效。
@@ -1067,7 +1072,9 @@ export const INTRO_VIDEO = {
   HEIGHT_M:          4.05,                    // 屏幕最大高度（米）：16:9 素材下 = 7.2 / (16/9)
   VOLUME:            1.0,                     // 视频音量 0~1（静音重试时的 muted 状态不受此值影响）
   STAR_OPACITY:      0.95,                    // 过场期间星空不透明度 0~1（冻结天空缓动后手动设定；黄昏默认约 0.5）
-  WATCHDOG_PAD_S:    30,                      // 看门狗余量（秒）：兜底超时 = 视频时长 + 该值，防黑屏软锁
+  WATCHDOG_PAD_S:    2.0,                     // 看门狗余量（秒）：兜底超时 = 视频时长 + 该值，防黑屏软锁。
+                                                 //   ⚠ 仅作最后兜底：正常走「ended 事件 + currentTime 自然结束检测」前进，
+                                                 //     余量过大会让『ended 未触发』的头显出现长时间（如原 30s）不能射击的卡死感
   FALLBACK_DURATION_S: 16.02,                 // 元数据未就绪时的假定时长（秒）：本素材 16.02s
   // —— 切换抖动控制（视频播完那一帧不要做重活，否则视频最后几帧会顿挫）——
   HANDOFF_DELAY_S:   0.08,                    // 播完后先让画面静止多久再加载关卡（秒）：0.08≈6帧@72Hz，静止画面的卡顿不可感知
@@ -1177,6 +1184,23 @@ export const CAST = {
 };
 
 // ============================================================
+// VR 桌面镜像（mirror.js / main.js 动画循环引用）
+//   进入 VR 沉浸会话后，运行游戏的标签页被头显接管而黑屏；
+//   此功能在独立「非沉浸式」弹出窗口实时显示头显第一人称画面，让 PC 显示器也能看到。
+//   实现：同一 renderer 上下文、用本帧头显相机(左眼)渲染到低分辨率 RenderTarget，
+//   再 readRenderTargetPixels 读回 CPU，经 BroadcastChannel 发给镜像窗。
+//   注意：每帧多一次低分辨率渲染 + 一次读回，会占一点 GPU/CPU；用 W/H/INTERVAL 权衡清晰度与开销。
+// ============================================================
+export const MIRROR = {
+  ENABLED:    true,     // 总开关：false → 不截帧（镜像窗口打开也收不到画面）
+  MODE:       'page',   // 镜像呈现方式：'page'=页内预览 canvas（默认，无需弹窗、不抢手势激活）；'popup'=独立弹出窗口（旧方案，可回退）
+  W:          1920,     // 镜像分辨率宽（像素）：越高越清晰、越费（PC 端不卡可拉满 1080p；若掉帧降到 1280/720）
+  H:          1080,     // 镜像分辨率高（像素）
+  INTERVAL:   2,        // 每 N 帧截一帧（降帧省开销）：1=每帧，2=隔帧，3=每 3 帧
+  AUTO_OPEN:  true,     // 是否在「进入 VR」时自动显示镜像（仅 PCVR/PC 显示器有用；独立头显自动跳过，见 mirror.js）
+};
+
+// ============================================================
 // 玩家参数覆盖（userConfig.js）—— 改动后刷新页面即生效
 // 原理：本文件是依赖图叶子模块（无 import 业务模块），此合并先于所有消费方求值。
 // 用户唯一编辑入口：src/core/userConfig.js（只写想改的键，其余保持默认）。
@@ -1236,6 +1260,7 @@ const _OVERRIDES = [
   ['MAGICIAN_BOSS', MAGICIAN_BOSS, USER_CONFIG.MAGICIAN_BOSS],
   ['INTRO_VIDEO', INTRO_VIDEO, USER_CONFIG.INTRO_VIDEO],
   ['CAST', CAST, USER_CONFIG.CAST],
+  ['MIRROR', MIRROR, USER_CONFIG.MIRROR],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {
