@@ -234,8 +234,9 @@ export class Game {
   //   真正生效还需 INTRO_VIDEO.ENABLED 且当前处于 VR 会话内（world.isPresenting）——
   //   three.js 在派发 sessionstart（main.js 里触发本方法）之前就已置 isPresenting=true，
   //   所以「桌面预览」与「关卡直达面板」自然都不播视频。
-  start(atIndex = 0, gunMode = 'preview', playIntro = null) {
+  start(atIndex = 0, gunMode = 'preview', playIntro = null, loadout = null) {
     this.gunMode = gunMode;
+    this.loadout = loadout || null;        // ★ 第二十二修：本局开局加成（rapid / power / null）
     const withIntro = (playIntro === null) ? (atIndex === 0) : !!playIntro;
     this._disposeIntroVideo();  // 防御：上一次过场若异常残留，先释放并还原背景
     // 从待机态（平台已关闭本局）被唤醒时，一并清掉待机标记与渲染暂停 ——
@@ -244,7 +245,7 @@ export class Game {
     this._closedIdle = false;
     this._renderPaused = false;
     this._hidePlatformClosed();
-    this.player.reset(gunMode);
+    this.player.reset(gunMode, this.loadout);
     this.input?.setGunMode(gunMode);
     this.player.input = this.input; // 让射速卡能触达真实节流源（input.setFireRateMul）
     this.balloons.clear();
@@ -264,7 +265,7 @@ export class Game {
     this._clearExplosions();
     this.attackBonus = 0;     // 新一局：攻击力加成重置，从 0 重新累计
     this._clearAttackHint();  // 清残留攻击力提示
-    this.log('游戏开始');
+    this.log(`游戏开始${this.loadout ? `（开局加成：${this.loadout}）` : ''}`);
     VRPlusGame.launch();   // cmd 3 启动游戏（上报平台：游戏已启动，等待握手完成）
     // 进入 VR 后播放开场视频：仅在 VR 会话内(isPresenting) 且本关是首关(withIntro) 时。
     //   ⚠ 不再以「是否独立头显」排除：PICO 浏览器伪造桌面 UA，UA 判定既不可靠又会错误跳过视频；

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SHOOT, BUDDHA, SHIP, GUN_MODES } from '../core/constants.js';
+import { SHOOT, BUDDHA, SHIP, GUN_MODES, LOADOUTS } from '../core/constants.js';
 
 // 模块级复用向量：避免每发子弹分配新对象（契合热循环 GC 优化）
 const _WORLD_UP = new THREE.Vector3(0, 1, 0);
@@ -23,7 +23,7 @@ export class Player {
     this.rig.add(this.ship);
   }
 
-  reset(gunMode = 'preview') {
+  reset(gunMode = 'preview', loadout = null) {
     const g = GUN_MODES[gunMode] || GUN_MODES.preview;
     this.atk = 100;
     this.shootCooldown = g.cooldown;   // 射击冷却 ms（实际节流在 input.js，player 仅用于存档快照）
@@ -41,6 +41,17 @@ export class Player {
     this.buddhaTimer = 0;
     this.shieldTime = 0;
     this.ship.visible = true;
+
+    // ★ 第二十二修：进 VR 前二选一的**开局加成**。只改初始值，后续卡牌/死亡加成不受影响。
+    //   取整/下限是为了让腕表 UI 与 HUD 上显示的是干净数字（射速保留一位小数）。
+    const lo = loadout ? LOADOUTS[loadout] : null;
+    if (lo) {
+      this.atk = Math.max(1, Math.round(this.atk * lo.atkMul));
+      this.fireRate = Math.max(0.5, Math.round(this.fireRate * lo.fireRateMul * 100) / 100);
+      this.loadoutKey = lo.key;
+    } else {
+      this.loadoutKey = null;
+    }
   }
 
   get alive() { return this.hp > 0; }

@@ -128,6 +128,21 @@ if ($srcOk) {
     Write-Host "== ⚠ 跳过源码同步（源目录缺失或无 .js：$srcDir）—— 包内 JS 可能是旧版！"
 }
 
+# ── 2.55) 同步根级页面（index.html / mirror.html）→ assets/game ──────
+# 为什么必须有这步（第二十二修实测踩到）：
+#   GameServer 的游戏根 = assets/game/（见 GameServer.java 的 BASE="game"，`/` → `/index.html`），
+#   所以**页面本体**也是「包内副本」。2.5 只覆盖 src/，一旦改了根 index.html 而忘了拷，
+#   头显上跑的还是旧页面（新按钮/新布局根本不出现），而构建照样打印 SUCCESS。
+#   故根级 HTML 与 src 一样，统一用「项目根的覆盖包内的」。
+$projRoot   = (Resolve-Path (Join-Path $root '..\..')).Path
+$assetsGame = Join-Path $root 'app\src\main\assets\game'
+foreach ($rel in @('index.html', 'mirror.html')) {
+    $fromFile = Join-Path $projRoot $rel
+    if (-not (Test-Path $fromFile)) { Write-Host "== ⚠ 项目根缺少 $rel，跳过" ; continue }
+    if (-not (Test-Path $assetsGame)) { New-Item -ItemType Directory -Path $assetsGame -Force | Out-Null }
+    Copy-Item $fromFile (Join-Path $assetsGame $rel) -Force
+    Write-Host ("== 已同步根级页面 {0}（{1} 字节）" -f $rel, (Get-Item $fromFile).Length)
+}
 # ── 2.6) 授权公钥必须已注入（占位符绝不能进包）────────────────────
 # 为什么必须拦：LICENSE_PUBKEY_B64 若还是占位符，头显侧**所有** license 校验都会失败，
 # 现象是「直播端明明是正版却永远验不过」—— 与「两端签名算法没对齐」完全一样，极难定位。

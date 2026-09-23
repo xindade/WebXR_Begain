@@ -24,6 +24,11 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
-    "asar": true
+    "asar": true,
+    "extraResources": [
+      { "from": "../../src/content", "to": "game-cfg/src/content" },
+      { "from": "../../src/core/userConfig.js", "to": "game-cfg/src/core/userConfig.js" },
+      { "from": "../../assets/intro/intro.mp4", "to": "game-cfg/assets/intro/intro.mp4" }
+    ]
   }
 }

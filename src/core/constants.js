@@ -109,6 +109,16 @@ export const GUN_MODES = {
   full:    { shotCount: 5, cooldown: 100 },  // 5 弹道 / 10 发每秒
 };
 
+// 「进入 VR」二选一开局加成（2026-09-23 第二十二修）。
+//   · 只作用于**初始属性**：在 Player.reset 里按倍率乘到 atk / fireRate 上；
+//     之后的抽卡（攻击力 +100 / 射速 +2）与死亡重开（攻击力 +50）照旧在其之上叠加。
+//   · fireRate 是「发/秒」模型，最终落到真实节流源 = game._loadLevel 里的 input.setFireRate(player.fireRate)。
+//   · 键名同时用作 URL/日志里的标识；label 就是按钮文案（蓝=rapid，红=power）。
+export const LOADOUTS = {
+  rapid: { key: 'rapid', atkMul: 0.5, fireRateMul: 2,   label: '⚡ 射速加倍 · 攻击力减半' },
+  power: { key: 'power', atkMul: 2,   fireRateMul: 0.5, label: '💥 攻击力加倍 · 射速减半' },
+};
+
 // 积分散射技能（前期默认技能）：消耗积分，从枪口喷出 COUNT 弹头，轴向 DIST 米处铺成半径 RADIUS 圆盘
 export const SCATTER = {
   COST: 500,          // 释放消耗积分（积分 <COST 时不释放、不进冷却）

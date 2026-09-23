@@ -223,6 +223,9 @@ class Cast {
     });
     this._rtcFailTimer = setTimeout(() => this._fallbackToJpeg(), 6000);
     this.push.start();
+    // ★ 第二十二修：告诉 PC 端「现在推的是占位画面」。PC 端据此改用自己渲染的大号文案，
+    //   不再把 960×540 的占位帧放大铺满大屏（放大后文字会糊；PC 侧是矢量渲染，任何分辨率都清晰）。
+    this.notifyWarmup(true);
     log(`预热链路已启动（2D 占位画面 ${fps}fps，未创建 GL 上下文 → 头显不闪）`);
   }
 
@@ -246,6 +249,8 @@ class Cast {
     ctx.font = `${Math.round(big * 0.62)}px sans-serif`;
     // 影片阶段 PC 端播的是本地影片（本画面被遮住），但头显若没发通知就会落到这一层，
     // 所以文案要能反映真实阶段，避免大屏显示"等待开始游戏"而其实正在放片。
+    // 每 ~5 秒重报一次「占位中」：信令丢了（PC 端窗口后启动 / 重连）也能自愈
+    if (((w._notifyTick = (w._notifyTick || 0) + 1) % 5) === 0) this.notifyWarmup(true);
     const intro = this.world.scene?.userData?.castIntro;
     ctx.fillText(intro ? '开场影片播放中…' : `等待头显开始游戏${'.'.repeat(w.dots)}`,
       W / 2, H / 2 + big * 0.35);
@@ -259,6 +264,7 @@ class Cast {
     const w = this._warm;
     if (!w) return;
     this._warm = null;
+    this.notifyWarmup(false);          // 占位结束 → PC 端收起自绘文案、切回真实画面
     clearInterval(w.timer);
     try { w.track?.stop(); } catch (e) { /* 忽略 */ }
     try { w.canvas.remove(); } catch (e) { /* 忽略 */ }
@@ -583,6 +589,20 @@ class Cast {
    * @param {'play'|'end'} stage
    * @param {string} src 影片相对路径（PC 端同源取，可省略 → 用 WAITING_ROOM.VIDEO_URL）
    */
+  /**
+   * ★ 第二十二修：通知 PC 端占位画面的开始 / 结束。
+   *
+   * <p>为什么需要这条信令：占位画面是 960×540 的 2D canvas（见 CAST.W/H），PC 大屏把它
+   * 铺满以后文字会明显发糊（用户的现场反馈）。PC 端自己会画一份同样内容的矢量文案，
+   * 只要知道「当前是占位阶段」就能把它显示出来替代放大帧；用户看到的就是清晰文字。
+   * 头显侧的占位帧照旧推（链路预热、编码器保活都不变），只是不再被显示。
+   *
+   * @param {boolean} on true=进入占位阶段（菜单/等待房间），false=切到真实游戏画面
+   */
+  notifyWarmup(on) {
+    try { this.signal.send({ type: 'warmup', on: !!on }); } catch (e) { /* 信令未就绪则忽略 */ }
+  }
+
   notifyIntro(stage, src) {
     try {
       this.signal.send({ type: 'intro', stage, src: src || WAITING_ROOM.VIDEO_URL });

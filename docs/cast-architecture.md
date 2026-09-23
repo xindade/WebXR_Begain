@@ -50,7 +50,15 @@ WebRTC 走硬件编码器 → 实时；JPEG 走软编码 → 无论分辨率降�
              · ICE：iceServers 为空 → 只收集 host candidate，同网段直连
 ```
 
-**静态资源为什么要代理到 PC**：PC 端托管的是 `E:\AI_Work\WebXR_Begain`（`main.js` 的 `GAME_ROOT`），改 JS 后 PICO 刷新即可生效，**免重打包**。这与推流帧率是两条线，互不影响。
+**静态资源从哪来（第二十二修 · 档1 改口径）**：页面 / JS / GLB / 影片**一律取 APK 包内** `assets/game/**`
+（`GameServer.serve()` 本地优先 —— 发现 PC 也照样读包内），PC 代理降级为「包内缺文件」时的兜底。
+历史口径「PC 用 `GAME_ROOT` 实时托管整站、改 JS 免重打包」已于 2026-09-23 撤销（路径②停用）：
+头显浏览器不再能直连 PC 整站，页面上拿掉了这条误用面。因此**改前端必须重打 APK** ——
+`tools/cast-apk/build-apk.ps1` 的 2.5 / 2.55 两步会把 `src/**` 与根级 `index.html` / `mirror.html`
+一起同步进 `assets/game/`（只覆盖不删除）。
+
+唯一仍由 PC 下发的静态内容是**受管配置**：头显启动时按 `CONFIG_MANIFEST` 取 `src/content/` 与
+`src/core/userConfig.js`（需授权，落地到私有覆盖层 `filesDir/game-overlay`，优先级高于包内且缺失即 404）。
 
 ---
 
@@ -205,9 +213,10 @@ PC 端画面静止证明「确实没在编码」，可头显**照闪** → 干�
 
 **要点**
 
-1. **影片从哪来**：EXE 托管游戏目录时，`serveRoot = GAME_ROOT`（`main.js:374`），接收端页面与之同源
-   → 直接 `GET /assets/intro/intro.mp4` 即可（路径由头显在信令里带过来，不写死）。
-   未托管游戏目录时会 404 → 自动收起影片层并打告警，退回占位画面，**不会卡住**。
+1. **影片从哪来**：PC 端只托管 EXE 内置目录 `resources/game-cfg`（`main.js` 的 `currentServeRoot()`），
+   接收端页面与之同源 → 直接 `GET /assets/intro/intro.mp4` 即可（路径由头显在信令里带过来，不写死）。
+   头显侧 `assets/game/assets/intro/intro.mp4` 是同一份（打 APK 时打进去了）。
+   取不到时会 404 → 自动收起影片层并打告警，退回占位画面，**不会卡住**。
 2. **对齐**：以**头显为准**。头显影片一结束立即恢复推流；PC 端若本地影片还没播完就被切（正常情况），
    若本地先播完则停在末帧并显示「等待头显影片结束」，1.2s 后仍未收到结束通知则自动切回。
 3. **三重兜底**（防止影片层永久遮挡游戏画面）：① 收到 `end` 信令；② 本地 `ended` 后 1.2s；
@@ -370,8 +379,9 @@ ANDROID_HOME="C:/Users/x/AppData/Local/Android/Sdk" \
 
 | 改动位置 | 是否需要重打包 | 说明 |
 |---|---|---|
-| 游戏 `src/**`、`index.html` | ❌ 不需要 | 由 PC 的 `GAME_ROOT` 实时托管、APK `proxyStatic` 实时取；PICO 刷新（必要时清缓存）即生效 |
-| APK 内置资源 `assets/game/**` | ✅ 需重打 APK | 仅在 PC 未托管/未发现 PC 时才会用到，但为一致性建议同步 |
+| 游戏 `src/**`、`index.html`、`mirror.html` | ✅ **需重打 APK** | 头显只认包内（`GameServer` 本地优先）；`build-apk.ps1` 2.5/2.55 会自动同步 —— 忘了打就是「跑了旧页面」 |
+| APK 内置重资源 `assets/game/{Model,Sky,music,vendor,assets}/**` | ✅ 需重打 APK | 同上（必须进包；包内缺文件才会回退 PC 代理兜底） |
+| 受管配置 `src/content/**`、`src/core/userConfig.js` | ❌ 不需要 | 头显每局从 PC `/api/config/dump` 取（需授权），走覆盖层 |
 | `tools/cast-apk/**/*.java` | ✅ 需重打 APK | 例如改 `getCastUrl()` |
 | `tools/cast-pc/**` | ✅ 需重打 EXE | Electron 主进程/渲染进程代码在 `app.asar` 内 |
 
@@ -708,4 +718,51 @@ restoreClientAndCloseBrowser() castMode && castRoundOver 分支：
    看「悬浮窗权限=已授予/未授予」与「已发出顶客户端请求 #1/#2/#3」。
 5. 手动双击 EXE（不带平台参数）→ 仍可用 PC 的 `▶ 开始本局 / ■ 结束本局` 完整演练。
 
+## D.5 第二十二修（2026-09-23 深夜）· 档1 + PC 占位文案 + 进入 VR 二选一
 
+### D.5.1 档1：撤掉路径②（头显浏览器直连整站）
+
+- **PC 端**（`tools/cast-pc/main.js`）：`SERVE_GAME` → `EXT_CFG`；`currentServeRoot()` 打包版**只**返回
+  `resources/game-cfg`（配置 + 开场影片），不再 serve 外部游戏目录；`isValidGameRoot()` 删除，
+  外部目录只当**可选配置覆盖来源**（判据 `hasConfigTree()`）；新增 `PANELS`（`--panels` 或开发模式才显示
+  「外部配置目录」面板，正式界面连按 `H` 也看不到）；`/api/info` 去掉 `root`/`serveGame`，新增
+  `extCfg`/`configRoot`/`bundledCfg`/`serveRoot`/`panels`；`GET /index.html` 由 404 改为**带排查指引的 404**
+  （状态码不变，方便脚本判定）。
+- **APK 端**（`GameServer.java`，本轮最关键的联动修复）：删掉「发现 PC 后一律 `proxyStatic` 静态代理」。
+  页面 origin 固定是 `http://localhost:8080`（WebXR 安全上下文），若仍把 `/index.html` 代理给 PC，
+  而 PC 已不托管整站，头显会**直接白屏**。现在改为**包内优先**，PC 代理只在包内缺该文件时兜底。
+- **打包脚本**（`build-apk.ps1` 新增 2.55）：把根级 `index.html` / `mirror.html` 也同步进 `assets/game/`。
+  起因：2.5 只覆盖 `src/**`，根 HTML 一直靠手抄 —— 本轮实测抓到这个坑（改了按钮但包内仍是旧页面）。
+
+### D.5.2 PC 大屏「PICO 连接」字样发糊
+
+- **根因**：菜单/等待房间阶段头显推的是 960×540 的 2D 占位画（`CAST.WARMUP_FPS=1`），PC 大屏按
+  `object-fit: cover` 铺满 1920 宽 → 位图文字被放大 2 倍以上。
+- **改法**：新增信令 `{type:'warmup', on}`；PC 端收到后**不显示**占位帧，改由本窗口渲染矢量文案
+  （`#hint.big`，`clamp(22px,3vw,64px)`，任意分辨率都清晰）。头显侧占位帧**照旧推**（预热链路、
+  编码器保活都不变），每 5 帧重报一次防信令丢失；`intro end` 与断流时都会复位。
+
+### D.5.3 「进入 VR」二选一开局加成
+
+| 按钮 | 键 | 初始属性变化（基线 攻击力 100 / 射速 2 发/秒） |
+|---|---|---|
+| 蓝 `⚡ 射速加倍 · 攻击力减半` | `rapid` | 攻击力 100→**50**、射速 2→**4 发/秒** |
+| 红 `💥 攻击力加倍 · 射速减半` | `power` | 攻击力 100→**200**、射速 2→**1 发/秒** |
+
+- 倍率表在 `src/core/constants.js` 的 `LOADOUTS`（键名同时用于日志与调试）；
+  `src/game/player.js` 的 `reset(gunMode, loadout)` 在**初始值算完后**乘倍率 —— 后续抽卡
+  （攻击力 +100 / 射速 +2）与死亡重开（攻击力 +50）照旧叠加，不受影响。
+- `src/main.js`：`pendingLoadout` 由点击决定，`sessionstart` 时传给 `game.start()`；
+  进 VR 期间两个按钮都禁用、只有被点那个显示「⏳ 启动中...」，退出 VR / 失败后文案复位。
+- `src/vr/availability.js` 的 `watchXRAvailability` 支持多按钮（只切 `disabled`，不覆盖各自文案，
+  提示文案改走 `onLabel` → `#status-msg`）。
+
+### D.5.4 本轮验证（2026-09-23 深夜，本机实跑）
+
+- 语法：8 个改过的 JS 全部 `node --check` 通过。
+- 打包版 EXE 实跑（`dist/win-unpacked`，端口 18443）：`/api/info` 无 `serveGame`、`panels:false`、
+  `bundledCfg:true`、`serveRoot=…resources/game-cfg`；`HEAD /assets/intro/intro.mp4`→200；
+  `GET /index.html`→404（路径②确已停用）；平台通道 `gameChannel.bound=true`；`/api/config/dump` 未授权时
+  正确拒绝。
+- APK 解包核对：`assets/game/index.html` 含 `#enter-vr-rapid`/`#enter-vr-power`，
+  `src/core/constants.js` 含 `LOADOUTS`，与项目根哈希一致（证明 2.55 同步生效）。

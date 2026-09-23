@@ -23,6 +23,9 @@ let iceCount = 0;          // 收到的 ICE 候选计数（用于诊断：一个
 let lastPub = null;        // 上次 publisher 状态，用于在变化时打日志
 let lastVw = null;
 let gotFrame = false;      // 是否已收到过任意一帧（决定画面区显示画面还是等待提示）
+// ★ 第二十二修：头显当前推的是 960×540 的「占位画面」（预热链路）→ 不要把它铺满大屏
+//   （放大后文字很糊），改用本窗口自绘的大号文案显示同样内容。
+let warmupOn = false;
 let introMuted = false;    // ★ 平台对接：默认**不静音** —— 现场观众要听到开场影片的声音。
                            //   （头显播影片期间不推流也不推音频，故不存在「两端声音打架」。）
 let introVisible = false;  // 本地影片层是否正显示
@@ -180,20 +183,61 @@ async function pollInfo() {
       if (lastVw !== null) log(`接收端 SSE ${info.viewer ? '已连接' : '断开'}`, info.viewer ? 'l-ok' : 'l-warn');
       lastVw = info.viewer;
     }
-    // 把游戏根信息反映到 cfgbox
+    // 配置来源反映到 cfgbox（第二十二修：不再有「托管整站 / 路径②」这个概念，只报配置来自哪）
     const cs = el('cfgStatus');
-    if (info.serveGame) {
+    if (info.extCfg) {
       cs.className = 'gs';
-      cs.textContent = `✓ 已托管：${info.gameRoot}`;
+      cs.textContent = `✓ 外部配置：${info.gameRoot}`;
+    } else if (info.bundledCfg) {
+      // ★ 第二十一修：EXE 自带配置（换电脑零配置），无需再手填游戏目录
+      cs.className = 'gs';
+      cs.textContent = '✓ 已内置配置（随 EXE 安装，无需填写）';
     } else {
       cs.className = 'gb';
-      cs.textContent = '✗ 未托管游戏页面（仅信令可走）';
+      cs.textContent = '✗ 没有可用配置（头显会被拒绝启动）';
     }
+    // ★ 第二十二修：运维面板（「游戏目录」）正式包默认不显示，只有 --panels 才露出来
+    if (typeof info.panels === 'boolean') document.body.classList.toggle('no-cfg', !info.panels);
     updateHint(info);      // 画面区状态提示：没帧时明确告诉用户当前卡在哪一步
   } catch (e) {
     el('ips').textContent = '（无法连接本机服务）';
   }
 }
+/**
+ * ★ 第二十二修：占位画面的显示切换。
+ *
+ * <p>头显在菜单/等待房间阶段推的是 960×540 的 2D 占位画（见 src/net/cast.js 的 _startWarmup）；
+ * PC 大屏把它铺满后文字很糊（现场反馈）。这里在收到 `warmup` 信令时改用本窗口渲染的
+ * 大号矢量文案（#hint.big），并暂时不显示视频层；头显切到真实游戏画面后再交回常规逻辑。
+ *
+ * @param {boolean} on 头显是否处于占位阶段
+ */
+function setWarmupView(on) {
+  const next = !!on;
+  if (next === warmupOn) return;
+  warmupOn = next;
+  if (warmupOn) {
+    video.classList.remove('on');
+    img.classList.remove('on');
+    hint.style.display = '';
+    hint.classList.add('big');
+    hint.innerHTML = 'PICO 直播 · 已连接'
+      + '<span class="sub">等待头显开始游戏…（进入第 1 关后自动切换到游戏画面）</span>';
+    log('头显当前推的是占位画面 → 大屏改用自绘文案显示（避免放大发糊）', 'l-dim', true);
+    return;
+  }
+  hint.classList.remove('big');
+  // 占位结束 = 真实游戏画面来了：有流就把视频层显示出来，否则交回 updateHint 的常规判断
+  if (usingVideo && video.srcObject) {
+    video.classList.add('on');
+    img.classList.remove('on');
+    hint.style.display = 'none';
+    log('头显已切到游戏画面', 'l-ok', true);
+  } else {
+    updateHint(lastInfo);
+  }
+}
+
 // ——————————————— 画面区等待提示 ———————————————
 // 「一直黑屏、连是否连上都不知道」是最常被反馈的困惑。画面区在没有帧时按当前进度
 // 显示明确状态（等待设备 / 正在协商 / 已连接等待开始游戏），而不是一句静态文案。
@@ -204,6 +248,15 @@ function updateHint(info) {
     hint.innerHTML = '本机影片已播完<br /><span class="dim">等待头显影片结束，随后自动进入游戏画面。</span>';
     return;
   }
+  // ★ 第二十二修：占位阶段 → 用本窗口自绘的大号清晰文案（替代被放大的 960×540 占位帧）
+  if (warmupOn && !introVisible) {
+    hint.style.display = '';
+    hint.classList.add('big');
+    hint.innerHTML = 'PICO 直播 · 已连接'
+      + '<span class="sub">等待头显开始游戏…（进入第 1 关后自动切换到游戏画面）</span>';
+    return;
+  }
+  hint.classList.remove('big');
   if (gotFrame || introVisible) { hint.style.display = 'none'; return; }
   hint.style.display = '';
   const rtc = pc ? pc.connectionState : '';
@@ -233,7 +286,7 @@ function startIntro(src) {
   clearTimeout(introStopTimer);
   const rel = String(src || '').replace(/^\/+/, '');
   if (!rel) return;
-  const url = '/' + rel;                 // 同源：由 EXE 托管的游戏目录提供
+  const url = '/' + rel;                 // 同源：由 EXE 内置目录（resources/game-cfg）提供
   if (intro.dataset.src !== url) { intro.dataset.src = url; intro.src = url; }
   intro.muted = introMuted;              // 默认静音：两端声音必然不同步，会互相干扰
   try { intro.currentTime = 0; } catch (e) { /* 尚未加载完，忽略 */ }
@@ -243,7 +296,7 @@ function startIntro(src) {
   const p = intro.play();
   if (p && p.catch) {
     p.catch((e) => {
-      log(`本地影片播放失败：${e.message}（多为未托管游戏目录，取不到 ${url}）`, 'l-warn', true);
+      log(`本地影片播放失败：${e.message}（取不到 ${url}：EXE 没装内置配置，也没配外部配置目录）`, 'l-warn', true);
       stopIntro();
     });
   }
@@ -276,7 +329,7 @@ intro.addEventListener('ended', () => {
 });
 intro.addEventListener('error', () => {
   if (!introVisible) return;
-  log('本地影片加载失败：检查 EXE 是否已托管游戏目录、文件是否存在', 'l-warn', true);
+  log('本地影片加载失败：检查 EXE 内置配置是否完整（assets/intro/intro.mp4），或已托管完整游戏目录', 'l-warn', true);
   stopIntro();
 });
 // 硬兜底：无论发生什么，影片时长 +5s 后必定收起（信令丢失也不会一直挡着游戏画面）
@@ -342,9 +395,13 @@ function showVideo(stream) {
     log(`已接入远端音频轨 ${audioTracks.length} 条 → 大屏出声`, 'l-ok', true);
   }
   video.play().catch(() => {});
-  video.classList.add('on');
-  img.classList.remove('on');
-  hint.style.display = 'none';
+  // ★ 第二十二修：占位阶段先不显示视频层（那帧是 960×540 的占位画，铺满会糊）；
+  //   等头显切到真实游戏画面（warmup off）再显示。
+  if (!warmupOn) {
+    video.classList.add('on');
+    img.classList.remove('on');
+    hint.style.display = 'none';
+  }
   log('收到远端媒体流，开始显示画面 ✅', 'l-ok');
   startVideoWatchdog();
 }
@@ -413,6 +470,8 @@ function resetPc() {
   iceCount = 0;
   usingVideo = false;
   gotFrame = false;          // 画面已断开 → 等待提示重新出现
+  warmupOn = false;          // ★ 第二十二修：断开后占位显示一并复位
+  hint.classList.remove('big');
   stopIntro();               // 链路断了，本地影片一并收起（否则会一直挡着画面）
   if (vwTimer) { clearInterval(vwTimer); vwTimer = null; }   // 停掉收帧诊断，避免误判告警
   el('rtc').textContent = '-';
@@ -436,6 +495,9 @@ function rtcConnected() {
 // 免去原先「PC 每 33ms 轮询 GET /api/frame」的空帧/重复帧抖动（卡顿根因）。
 function showFrame(buf) {
   if (usingVideo) return;                  // WebRTC 视频已接管，忽略 JPEG 帧
+  // ★ 第二十二修：占位阶段（JPEG 兜底模式同理）不显示被放大的占位帧 —— 大屏用自绘文案，
+  //   这里只记「活着」，等 warmup off 再照常出画。
+  if (warmupOn) { gotFrame = true; return; }
   gotFrame = true;
   const blob = new Blob([buf], { type: 'image/jpeg' });
   const url = URL.createObjectURL(blob);
@@ -509,13 +571,22 @@ function connect() {
       case 'welcome':
         log('已注册为接收端，监听中…');
         break;
+      case 'warmup':
+        // ★ 第二十二修：头显告知「现在推的是占位画面」→ 切到自绘清晰文案（见 setWarmupView）
+        setWarmupView(m.on);
+        break;
       case 'peer-ready':
         log('推流端已上线，等待其发起 offer…', 'l-ok');
         break;
       case 'intro':
         // 头显开场影片的开始 / 结束（PC 端据此同步播放本地影片）
         if (m.stage === 'play') startIntro(m.src);
-        else scheduleStopIntro(400);        // 稍等，让头显的 replaceTrack 完成再切，避免闪占位画面
+        else {
+          scheduleStopIntro(400);           // 稍等，让头显的 replaceTrack 完成再切，避免闪占位画面
+          // ★ 第二十二修：影片结束 = 马上进第 1 关 = 占位阶段结束。这里强制解除占位显示，
+          //   兜住「warmup 信令丢失」的情况（否则大屏会一直停在自绘文案上）。
+          setWarmupView(false);
+        }
         break;
       case 'offer':
         onOffer(m.sdp);
@@ -553,8 +624,10 @@ async function refreshCfg() {
     const cfg = await window.castCfg.get();
     el('cfgRoot').value = cfg.gameRoot || '';
     const cs = el('cfgStatus');
-    if (cfg.serveGame) { cs.className = 'gs'; cs.textContent = `✓ 已托管：${cfg.gameRoot}`; }
-    else { cs.className = 'gb'; cs.textContent = '✗ 未托管游戏页面（仅信令可走）'; }
+    if (cfg.extCfg) { cs.className = 'gs'; cs.textContent = `✓ 外部配置：${cfg.gameRoot}`; }
+    else if (cfg.bundledCfg) { cs.className = 'gs'; cs.textContent = '✓ 已内置配置（随 EXE 安装，无需填写）'; }
+    else { cs.className = 'gb'; cs.textContent = '✗ 没有可用配置（头显会被拒绝启动）'; }
+    if (typeof cfg.panels === 'boolean') document.body.classList.toggle('no-cfg', !cfg.panels);
   } catch (e) { /* 忽略 */ }
 }
 el('cfgApply').onclick = async () => {
@@ -565,8 +638,9 @@ el('cfgApply').onclick = async () => {
     const r = await window.castCfg.set({ gameRoot: v });
     if (r.ok) {
       log(`游戏目录已更新：${r.gameRoot || '（清空）'}`, 'l-ok');
-      el('cfgStatus').className = r.serveGame ? 'gs' : 'gb';
-      el('cfgStatus').textContent = r.serveGame ? `✓ 已托管：${r.gameRoot}` : '✗ 已清空（重启 EXE 生效）';
+      el('cfgStatus').className = (r.extCfg || r.bundledCfg) ? 'gs' : 'gb';
+      el('cfgStatus').textContent = r.extCfg ? `✓ 外部配置：${r.gameRoot}`
+        : (r.bundledCfg ? '✓ 已清空 → 改用 EXE 内置配置' : '✗ 已清空（重启 EXE 生效）');
     } else {
       el('cfgStatus').className = 'gb';
       el('cfgStatus').textContent = `✗ ${r.msg}`;

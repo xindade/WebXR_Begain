@@ -755,4 +755,119 @@ MainActivity: static boolean castConfigured()      // 直播模式也走退出�
 - `VRPlusLink.java` / `MainActivity.java` 改了 ⇒ **APK 重打**（`build-apk.ps1`）。
 - `src/game/game.js` / `src/main.js` 改了 ⇒ 已随 `build-apk.ps1` 同步进 `assets/game/src`。
 
+---
 
+## 附录 E · 2026-09-23 晚 第二十一修实现记录（配置随 EXE 安装，换电脑零配置）
+
+**动因**：换一台电脑后 PC 端 `GAME_ROOT` 解析不到游戏目录（自动探测候选是写死的本机路径），
+而头显启动必须拿到 `GET /api/config/dump` 的轻量配置（头显侧**只认下发、不回落 assets**）⇒
+现场就得手填「游戏目录」。用户要求「把配置打包进 EXE，装完就从安装目录里发」。
+
+**做法**（`tools/cast-pc/package.json` 的 `extraResources`）：
+
+```json
+"extraResources": [
+  { "from": "../../src/content",              "to": "game-cfg/src/content" },
+  { "from": "../../src/core/userConfig.js",   "to": "game-cfg/src/core/userConfig.js" },
+  { "from": "../../assets/intro/intro.mp4",   "to": "game-cfg/assets/intro/intro.mp4" }
+]
+```
+
+**`main.js` 的解析变化**（关键：把「配置下发根」与「静态托管根」拆开）：
+
+| 概念 | 解析顺序 | 说明 |
+|---|---|---|
+| `CONFIG_ROOT`（/api/config/dump） | 完整游戏目录 > `resources/game-cfg` | 非 null 即可跑 APK 路径 |
+| `currentServeRoot()`（静态托管） | 完整游戏目录 > `resources/game-cfg` > （未打包时）项目根 | null 才回那段「未托管」提示 |
+
+- 新增 `BUNDLED_ROOT = path.join(process.resourcesPath, 'game-cfg')`、`hasConfigTree()`（看有没有
+  `src/content` 或 `src/core/userConfig.js` —— **内置目录没有 index.html**，故不能用 `isValidGameRoot` 判）。
+- 启动日志与 `/api/info` 新增 `configRoot` / `bundledCfg` / `serveRoot`；UI 顶栏据此显示
+  「✓ 已内置配置（随 EXE 安装，无需填写）」。
+- `cfg:set` 清空游戏目录时**回落内置配置**（`CONFIG_ROOT = GAME_ROOT || BUNDLED_ROOT`）。
+- ⚠ **区分**：内置目录只有「配置 + 开场影片」。（**2026-09-23 深夜 第二十二修已撤掉路径②**，
+  该区分随之消失：外部目录降级为可选的「配置覆盖来源」，判据统一为 `hasConfigTree()`；
+  另注意头显侧必须同步改 `GameServer.java`，否则代理到已停管的 PC 会白屏 —— 见附录 F。）
+- 体积：EXE 安装包 77.95 MB → **97.09 MB**（+19 MB = 那条 `intro.mp4`）。APK 无需重打。
+
+**验证**（2026-09-23 22:11 本机）：
+- 三态定点验证（用真实源码文本 + 真实打包目录）：有外部目录 → 用外部；无外部目录但有内置 → 用内置；
+  两者都没有 → `CONFIG_ROOT=null` 走原告警。
+- 打包后实跑 `dist/win-unpacked`：`/api/info` 返回 `bundledCfg:true`、`configRoot` 有值、
+  `HEAD /assets/intro/intro.mp4` 200、平台通道仍 `bound:true`。
+
+## 附录 F · 2026-09-23 深夜 第二十二修实现记录（档1 + 占位文案清晰化 + 进入 VR 二选一）
+
+### F.1 三条需求与落点
+
+| # | 需求（用户原话要点） | 落点 |
+|---|---|---|
+| 1 | 「档位1」= 现场已不需要网页直连，撤掉路径② | `tools/cast-pc/main.js`、`GameServer.java`、`build-apk.ps1` |
+| 2 | PC 大屏影片播放前的「PICO 连接」字样特别糊 | `src/net/cast.js`（`notifyWarmup`）、`renderer.js`/`index.html`（`#hint.big`） |
+| 3 | APK「进入 VR」改二选一：蓝=射速加倍/攻击减半、红=攻击加倍/射速减半 | `constants.js` `LOADOUTS`、`player.js` `reset`、`main.js`、`availability.js`、`index.html` |
+
+### F.2 档1：撤掉路径②
+
+**PC 端**：
+
+- `SERVE_GAME` → **`EXT_CFG`**；`isValidGameRoot()` **删除**（它要求外部目录含 `index.html`，是路径②时代的判据），
+  `resolveGameRoot()` / `autoDetectGameRoot()` 统一改用 `hasConfigTree()`（有 `src/content` 或 `src/core/userConfig.js` 即可）。
+- `currentServeRoot()`：打包版**只**返回 `resources/game-cfg`（= 轻量配置 + `assets/intro/intro.mp4`），
+  **不再** serve 外部游戏目录；开发模式（未打包）仍 serve 项目根。
+- 新增 `PANELS = hasFlag('panels') || !app.isPackaged`：正式界面**不显示**「外部配置目录」面板（连按 `H` 也看不到），
+  配合 `renderer.js` 的 `body.no-cfg` CSS 一起隐藏。
+- `/api/info` 字段：去掉 `root` / `serveGame`，新增 `extCfg` / `configRoot` / `bundledCfg` / `serveRoot` / `panels`。
+- `GET /index.html` 仍是 404（脚本判据不变），但响应体换成**排查指引**（说明路径②已停用、本程序还提供什么）。
+
+**APK 端（本轮最关键的联动修复，不修会白屏）**：
+
+```java
+// 旧：发现 PC 就把所有静态资源代理过去
+if (pcBase != null) { return proxyStatic(session, uri); }
+
+// 新：包内优先，PC 代理只兜底
+try { return assets.open("game/" + rel); ... }
+catch (IOException e) { if (pcBase != null) return proxyStatic(session, uri); ... 404 }
+```
+
+为什么必须改：头显页面 origin 固定为 `http://localhost:8080`（WebXR 安全上下文），**页面本体也走这条路**。
+PC 一旦不再托管整站，`GET /index.html` 就会被代理成 404 → 整个游戏页打不开。包内 `assets/game/**` 是**完整副本**
+（Model / Sky / music / vendor / assets 与项目根逐个同尺寸核对过，含 19.2 MB 的 `intro.mp4`），所以包内优先零风险，
+且顺带获得「PC 掉线也能玩」。受管配置（`src/content/`、`src/core/userConfig.js`）仍走覆盖层，优先级更高，门禁语义不变。
+
+### F.3 打包脚本补漏：根级页面从来不同步（本轮实测抓到）
+
+`build-apk.ps1` 原来只有 2.5（`src/**` → `assets/game/src`）。**根级 `index.html` / `mirror.html` 一直是手抄**，
+所以本轮改完按钮后第一次打包，包内还是旧的单按钮页面（`enter-vr-btn`）——构建却照样 SUCCESS。新增 2.55 步：
+
+```powershell
+foreach ($rel in @('index.html', 'mirror.html')) { Copy-Item (Join-Path $projRoot $rel) (Join-Path $assetsGame $rel) -Force }
+```
+
+⚠ **以后改根级 HTML 也要跑 `build-apk.ps1`**（它已自动同步，但仍需重打才进包）。
+
+### F.4 PC 大屏占位文案清晰化
+
+- 根因：等待阶段头显推 960×540 的 2D 占位画（`CAST.WARMUP_FPS=1`），PC 按 `object-fit: cover` 放大铺满 → 字糊。
+- 头显：`cast.js` 新增 `notifyWarmup(on)` 信令（进入/退出占位、每 5 帧重报一次防丢）；占位帧照旧推。
+- PC：`warmupOn` 时不显示视频层/JPEG 帧，改显示 `#hint.big` 矢量大字（`clamp(22px,3vw,64px)` + `text-shadow`），
+  `resetPc()`、`intro end`、断流三处复位。`body.pure #hint.big` 单独再声明一次（否则被 `body.pure #hint` 的 13px 盖掉）。
+
+### F.5 进入 VR 二选一开局加成
+
+| 按钮 | 键 | 攻击力 | 射速 | 说明 |
+|---|---|---|---|---|
+| 蓝 `⚡ 射速加倍 · 攻击力减半` | `rapid` | 100 → **50** | 2 → **4** 发/秒 | `atkMul:0.5`、`fireRateMul:2` |
+| 红 `💥 攻击力加倍 · 射速减半` | `power` | 100 → **200** | 2 → **1** 发/秒 | `atkMul:2`、`fireRateMul:0.5` |
+
+- 只改**初始值**：`Player.reset()` 在原赋值之后乘倍率，抽卡（+100 攻击 / +2 射速）与死亡重开（+50 攻击）照旧叠加。
+- 射速的真实节流源仍是 `game._loadLevel()` 里的 `input.setFireRate(player.fireRate)`（`input.js:253`）。
+- 多按钮适配：`watchXRAvailability({buttons, onLabel})` 只切 `disabled`、不覆盖各自文案，设备不可用的提示转 `#status-msg`。
+- 卡片镜像预开守卫从 `e.target === enterVRBtn` 改为 `enterVrBtns.includes(e.target)`（否则第二个按钮的点击会被镜像窗吃掉激活，
+  导致 VR 进不去）。
+
+### F.6 本轮重打包边界
+
+- 改了 `src/**` 与根级 `index.html`，且改了 `GameServer.java` ⇒ **APK 必须重打**。
+- 改了 `tools/cast-pc/**` ⇒ **EXE 必须重打**。
+- 受管配置未变 ⇒ 无需重新授权；平台通道协议未变。

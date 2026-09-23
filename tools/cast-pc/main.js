@@ -2,7 +2,8 @@
 //
 // 一个 HTTP 端口同时做三件事（全部同源，明文信令，免去自签证书信任问题；
 // 媒体流仍由 WebRTC 自身 DTLS 加密，仅信令/帧明文，局域网内可接受）：
-//   GET  /*                  静态托管游戏（让头显浏览器能直接打开）
+//   GET  /*                  静态文件：打包版只出 **EXE 内置目录**（配置 + 开场影片），
+//                            供接收端页面同源取影片；**不再托管游戏整站**（第二十二修 · 档1）
 //   GET  /api/events         SSE 下行（welcome / peer-ready / offer / answer / ice / peer-left）
 //   POST /api/signal         上行信令（offer / answer / ice）
 //   POST /api/frame          JPEG 兜底：游戏端推二进制帧
@@ -108,18 +109,21 @@ function logPlatformArgs() {
 let PORT = Number(argValue('port', 8443));   // 实际启动端口由 tryListen 决定（fallback）
 // 打包后（asar 内）__dirname 指向 resources/app.asar，'../..' 会算到错误的目录；
 // 且 EXE 定位是「纯接收端」——游戏本体由头显 APK 自带，没必要把整个项目目录暴露出去。
-// 因此打包运行默认关闭静态托管（仍可用 --root=<路径> 显式开启）。
+// ★ 第二十二修：打包运行**永不** serve 项目根，只 serve 内置目录（见 currentServeRoot）。
 const NO_SERVE = hasFlag('no-serve') || (typeof app.isPackaged === 'boolean' && app.isPackaged);
 const ROOT = path.resolve(argValue('root', path.join(__dirname, '..', '..')));
+// 「游戏目录」这类运维面板：开发模式默认可见，正式包只在 --panels 时可见（现场按 H 也看不到）
+const PANELS = hasFlag('panels') || !app.isPackaged;
 const RENDERER_DIR = path.join(__dirname, 'renderer');
 
-// ——— 游戏页面托管（旁路 APK 代理链的最强诊断 / 兜底） ———
-// 头显浏览器直接打开 http://<电脑IP>:8443/?cast=1
-//   · 游戏页面从 PC 端 GAME_ROOT 提供（替代 APK 内的 NanoHTTPD）
-//   · 信令同源 /api 直接走 PC（替代 APK 代理）
-// 配置优先级：CLI --game-root <路径>  >  userData/config.json  >  常见路径自动探测
-let GAME_ROOT = null;            // 可变：UI 修改后立即生效
-let SERVE_GAME = false;          // 仅当 GAME_ROOT 有效且包含 index.html 时为 true
+// ——— 静态托管：只出 **EXE 内置目录**（第二十二修 · 档1） ———
+// ★ 现场已不需要「头显浏览器直连整站」（旧称路径②），这条路连同它的误用面一起撤掉：
+//   · 打包版对外只提供 resources/game-cfg —— 即「轻量配置 + assets/intro/intro.mp4」；
+//   · 不再从外部游戏目录 serve 游戏整站；GAME_ROOT 降级为**可选的配置覆盖来源**。
+//   · 开发模式（npm start）仍 serve 项目根，配 --root 本地调页面。
+// 配置（/api/config/dump 的素材）优先级：CLI --game-root  >  userData/config.json  >  自动探测  >  EXE 内置目录
+let GAME_ROOT = null;            // 外部**配置**目录（可选）：可变，UI 修改后立即生效
+let EXT_CFG = false;             // 是否在用外部目录的配置（false = 用 EXE 内置 resources/game-cfg）
 const CONFIG_PATH = path.join(app.getPath('userData'), 'cast-pc-config.json');
 
 function loadConfig() {
@@ -132,13 +136,8 @@ function saveConfig(cfg) {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
   } catch (e) { console.warn('[cast-pc] 写配置失败：', e.message); }
 }
-function isValidGameRoot(p) {
-  if (!p) return false;
-  try {
-    const idx = path.join(p, 'index.html');
-    return fs.existsSync(idx) && fs.statSync(idx).isFile();
-  } catch (e) { return false; }
-}
+// ⚠ 第二十二修：不再要求外部目录含 index.html（那是路径②时代「整站托管」的判据）。
+//   现在外部目录只用来**覆盖配置**，判据与内置目录一致 = 有配置树即可（hasConfigTree，见下）。
 // 常见路径自动探测（开发机常用盘符）
 function autoDetectGameRoot() {
   const candidates = [
@@ -153,22 +152,55 @@ function autoDetectGameRoot() {
     'D:/AI_Work/WebXR_Begain',
     'C:/AI_Work/WebXR_Begain',
   ].filter(Boolean).map(p => path.resolve(p));
-  for (const c of candidates) if (isValidGameRoot(c)) return c;
+  for (const c of candidates) if (hasConfigTree(c)) return c;
   return null;
 }
 function resolveGameRoot() {
   // 1) CLI 参数
   const cliRoot = argValue('game-root', null);
-  if (cliRoot && isValidGameRoot(path.resolve(cliRoot))) return path.resolve(cliRoot);
+  if (cliRoot && hasConfigTree(path.resolve(cliRoot))) return path.resolve(cliRoot);
   // 2) 持久化配置
   const cfg = loadConfig();
-  if (cfg.gameRoot && isValidGameRoot(cfg.gameRoot)) return cfg.gameRoot;
+  if (cfg.gameRoot && hasConfigTree(cfg.gameRoot)) return cfg.gameRoot;
   // 3) 自动探测
   return autoDetectGameRoot();
 }
 GAME_ROOT = resolveGameRoot();
-SERVE_GAME = !!GAME_ROOT;
+EXT_CFG = !!GAME_ROOT;
+
+// ★ 第二十一修（2026-09-23）：把「轻量配置 + 本机开场影片」随 EXE 一起**安装到本机**
+//   （package.json 的 extraResources → resources/game-cfg）。换一台电脑**零配置**即可跑通：
+//   /api/config/dump 从 CONFIG_ROOT 读，外接游戏目录没配时就用内置那份。
+const BUNDLED_ROOT = (() => {
+  try { return path.join(process.resourcesPath, 'game-cfg'); } catch (e) { return null; }
+})();
+function hasConfigTree(p) {
+  if (!p) return false;
+  try {
+    return fs.existsSync(path.join(p, 'src', 'content'))
+        || fs.existsSync(path.join(p, 'src', 'core', 'userConfig.js'));
+  } catch (e) { return false; }
+}
+const BUNDLED_SERVE = hasConfigTree(BUNDLED_ROOT);
+/** 配置下发根（/api/config/dump）：完整游戏目录 > EXE 内置目录；null = 头显会被拒绝启动 */
+let CONFIG_ROOT = GAME_ROOT || (BUNDLED_SERVE ? BUNDLED_ROOT : null);
+/**
+ * 静态托管根（第二十二修 · 档1）。
+ *
+ * <p>打包版**只**对外提供 EXE 内置目录（配置清单 + assets/intro/intro.mp4）：按现场需求，
+ * 头显浏览器「直连整站」那条路（旧称路径②）已撤掉，不再 serve 外部游戏目录 —— 留着它
+ * 既是没人用的功能，也是个误用面。PC 大屏的开场影片仍由这里提供，所以这段路由必须保留。
+ *
+ * <p>开发模式（未打包）仍 serve 项目根，配合 --root / --no-serve 本地调页面。
+ *
+ * @returns {string|null} null = 不托管静态文件（回「未托管」提示）
+ */
+function currentServeRoot() {
+  if (BUNDLED_SERVE) return BUNDLED_ROOT;
+  return NO_SERVE ? null : ROOT;
+}
 if (GAME_ROOT) console.log(`[cast-pc] 游戏页面托管根目录：${GAME_ROOT}`);
+else if (BUNDLED_SERVE) console.log(`[cast-pc] 未配置外部游戏目录 → 使用 EXE 内置配置：${BUNDLED_ROOT}`);
 else console.log('[cast-pc] 未配置游戏根目录（头显请用 APK 启动，或在 UI 配置游戏目录后重启 EXE）');
 
 // ————————————————————————— 工具 —————————————————————————
@@ -229,9 +261,11 @@ function pushStatus() {
   mainWindow.webContents.send('cast:status', {
     port: PORT,
     ips: lanIPs(),
-    root: NO_SERVE ? null : ROOT,
     gameRoot: GAME_ROOT,
-    serveGame: SERVE_GAME,
+    extCfg: EXT_CFG,
+    configRoot: CONFIG_ROOT,
+    bundledCfg: BUNDLED_SERVE,
+    panels: PANELS,
     publisher: !!publisher,
     viewer: !!viewer,
   });
@@ -353,21 +387,17 @@ function handleStatic(req, res, pathname) {
     res.writeHead(404); res.end('404'); return;
   }
 
-  if (NO_SERVE) {
-    // 优先走「游戏托管」分支：SERVE_GAME 时直接 serve GAME_ROOT
-    if (SERVE_GAME) {
-      // 透传到下面的通用静态处理
-    } else {
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end(
-        'cast-pc 信令服务运行中（未托管游戏页面）。\n'
-        + '两种使用方式：\n'
-        + '  1) 用 APK 在头显启动（推荐）—— APK 会自动发现本机并代理信令。\n'
-        + '  2) 让本程序托管游戏页面：在本窗口「游戏目录」处配置 E:\\AI_Work\\WebXR_Begain 后重启 EXE，\n'
-        + '     然后头显浏览器直接打开 http://<电脑IP>:8443/?cast=1（同源，最稳的诊断路径）。\n'
-      );
-      return;
-    }
+  // ★ 第二十二修：托管根只有「EXE 内置目录」（打包版）或项目根（开发版），为 null 才回这段提示。
+  const serveRoot = currentServeRoot();
+  if (!serveRoot) {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(
+      'cast-pc 信令服务运行中（未托管静态文件）。\n'
+      + '正常使用方式：用 APK 在头显启动 —— APK 会自动发现本机、代理信令，\n'
+      + '并从这里取走「轻量配置」（GET /api/config/dump）。\n'
+      + '（头显浏览器直连整站那条路已于 2026-09-23 停用。）\n'
+    );
+    return;
   }
 
   let rel;
@@ -378,12 +408,21 @@ function handleStatic(req, res, pathname) {
   }
   if (rel === '/' || rel === '') rel = '/index.html';
 
-  // 路径穿越防护：解析后必须仍在 ROOT 内
-  // SERVE_GAME 模式下从 GAME_ROOT 服务（与 NO_SERVE 互不冲突，CLI --root 仍可用）
-  const serveRoot = SERVE_GAME ? GAME_ROOT : ROOT;
+  // 路径穿越防护：解析后必须仍在托管根内（serveRoot 见本函数开头）
   const file = path.resolve(serveRoot, '.' + rel);
   if (!file.startsWith(serveRoot) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    // ★ 第二十二修：头显浏览器直连整站（旧称路径②）已停用 —— 打开 `http://<电脑IP>:8443/`
+    //   不再是诊断路径而是错误路径（EXE 只托管自带配置 + 开场影片），
+    //   故把桁糊的 "404 /index.html" 换成明确的排查指引（状态码仍为 404，方便脚本判定）。
+    if (rel === '/index.html') {
+      res.end(
+        '404 —— 本程序不再托管游戏页面。\n'
+        + '  · 头显浏览器直连整站（旧称路径②）已于 2026-09-23 停用，请改用 APK 启动。\n'
+        + '  · 本程序仍提供：/api（信令与录制引导）、开场影片 /assets/intro/intro.mp4、配置下发 /api/config/dump。\n'
+        + '  · 状态自检：GET /api/info');
+      return;
+    }
     res.end(`404 ${rel}`);
     return;
   }
@@ -432,8 +471,11 @@ app.whenReady().then(() => {
     if (pathname === '/api/info') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({
-        port: PORT, ips: lanIPs(), root: NO_SERVE ? null : ROOT,
-        gameRoot: GAME_ROOT, serveGame: SERVE_GAME,
+        port: PORT, ips: lanIPs(),
+        gameRoot: GAME_ROOT, extCfg: EXT_CFG,
+        panels: PANELS,
+        // ★ 第二十一修：配置下发根（外接目录没配时 = EXE 内置目录）+ 是否在用内置配置。
+        configRoot: CONFIG_ROOT, bundledCfg: BUNDLED_SERVE, serveRoot: currentServeRoot(),
         publisher: !!publisher, viewer: !!viewer,
         // 启动授权能力标识：头显 APK 用它区分「地址上跑的是旧版接收端（没有
         // /api/launch/request）」与「这个地址根本不是直播接收端」。不带这个字段的
@@ -484,8 +526,10 @@ app.whenReady().then(() => {
     console.log('==================================================');
     console.log(`[cast-pc] HTTP 已启动  http://0.0.0.0:${usedPort}`);
     console.log(`[cast-pc] 本机 IP：${ips.join(', ')}`);
-    console.log(`[cast-pc] 静态根目录：${NO_SERVE ? '（已关闭）' : ROOT}`);
-    console.log(`[cast-pc] 游戏托管：${SERVE_GAME ? GAME_ROOT : '（未配置）'}`);
+    console.log(`[cast-pc] 静态托管根：${currentServeRoot() || '（未托管）'}`
+      + (BUNDLED_SERVE ? '（EXE 内置：配置 + 开场影片）' : '（开发模式：项目根）'));
+    console.log(`[cast-pc] 配置下发根：${CONFIG_ROOT || '（无 —— 头显会拒绝启动）'}`
+      + (GAME_ROOT ? '（外部游戏目录）' : (BUNDLED_SERVE ? '（EXE 内置 resources/game-cfg）' : '')));
     console.log('[cast-pc] 头显请打开：' + (ips[0] ? `http://${ips[0]}:${usedPort}/?cast=1` : '(未取到局域网 IP)'));
     logPlatformArgs();
     console.log('==================================================');
@@ -495,23 +539,28 @@ app.whenReady().then(() => {
     // ——— IPC：让 UI 改游戏目录配置（持久化 + 立即影响新请求） ———
     ipcMain.handle('cfg:get', () => ({
       gameRoot: GAME_ROOT,
-      serveGame: SERVE_GAME,
-      gameRootValid: !!GAME_ROOT,
+      extCfg: EXT_CFG,
+      configRoot: CONFIG_ROOT,
+      bundledCfg: BUNDLED_SERVE,
+      panels: PANELS,
       configPath: CONFIG_PATH,
     }));
     ipcMain.handle('cfg:set', (_e, patch) => {
       if (patch && typeof patch.gameRoot === 'string') {
         const next = patch.gameRoot.trim() ? path.resolve(patch.gameRoot.trim()) : null;
-        if (next && !isValidGameRoot(next)) {
-          return { ok: false, msg: '该目录不含 index.html，不是有效的游戏根' };
+        if (next && !hasConfigTree(next)) {
+          return { ok: false, msg: '该目录没有配置树（需含 src/content 或 src/core/userConfig.js）' };
         }
         GAME_ROOT = next;
-        SERVE_GAME = !!next;
+        EXT_CFG = !!next;
+        // ★ 第二十一修：清空外部目录时要**回落内置配置**，否则头显当场拿不到配置
+        CONFIG_ROOT = GAME_ROOT || (BUNDLED_SERVE ? BUNDLED_ROOT : null);
         const cfg = loadConfig();
         cfg.gameRoot = next || null;
         saveConfig(cfg);
         console.log(`[cast-pc] 游戏根目录已更新：${GAME_ROOT || '（清空）'}`);
-        return { ok: true, gameRoot: GAME_ROOT, serveGame: SERVE_GAME };
+        return { ok: true, gameRoot: GAME_ROOT, extCfg: EXT_CFG,
+                 configRoot: CONFIG_ROOT, bundledCfg: BUNDLED_SERVE };
       }
       return { ok: false, msg: '无有效 patch' };
     });
@@ -987,9 +1036,11 @@ function loadGuard() {
   console.log(`[cast-pc] 白名单 ${GUARD.allowList.length} 台，自动登记=${GUARD.autoAllow ? '开' : '关'}`
       + (pairing ? '　★ 配对窗口：白名单为空，首个来请求的设备将自动登记' : ''));
   console.log(`[cast-pc] 配置下发清单 ${CONFIG_MANIFEST.length} 项：${CONFIG_MANIFEST.join('  ')}`);
-  if (!GAME_ROOT) {
-    console.log('[cast-pc] ⚠ 未配置游戏目录 → /api/config/dump 将失败，头显会拒绝启动');
-    console.log('[cast-pc]   在本窗口「游戏目录」处设置游戏项目根目录后重启 EXE');
+  if (!CONFIG_ROOT) {
+    console.log('[cast-pc] ⚠ 未配置游戏目录，且 EXE 内也没有内置配置 → /api/config/dump 将失败，头显会拒绝启动');
+    console.log('[cast-pc]   用 --game-root=<项目根> 启动，或加 --panels 后在窗口里填「外部配置目录」');
+  } else if (!GAME_ROOT) {
+    console.log('[cast-pc] ✓ 头显配置由 EXE 内置目录下发（换电脑不用配置游戏目录）');
   }
   // ★ 授权（License）：本机 Ke + license 落盘文件 + 到期状态。兜底 0 天 ⇒ 这里不合法就是停放行。
   loadLicense();
@@ -1120,7 +1171,7 @@ function handleMasterAllow(req, res) {
  * @throws  {Error} 游戏目录未配置 / 清单展开后为空
  */
 function buildConfigDump() {
-  if (!GAME_ROOT) throw new Error('未配置游戏目录（在本窗口「游戏目录」处设置后重启 EXE）');
+  if (!CONFIG_ROOT) throw new Error('未配置游戏目录，且 EXE 内也没有内置配置（在本窗口「游戏目录」处设置后重启 EXE）');
   const out = [];
   const push = (abs, rel) => {
     const ext = path.extname(rel).toLowerCase();
@@ -1136,7 +1187,7 @@ function buildConfigDump() {
     });
   };
   const walk = (rel) => {
-    const abs = path.join(GAME_ROOT, rel);
+    const abs = path.join(CONFIG_ROOT, rel);
     if (!fs.existsSync(abs)) { console.warn(`[cast-pc] 下发清单项不存在，已跳过：${rel}`); return; }
     if (fs.statSync(abs).isDirectory()) {
       for (const n of fs.readdirSync(abs).sort()) walk(path.join(rel, n));

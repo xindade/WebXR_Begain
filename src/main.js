@@ -14,7 +14,7 @@ import { prewarmIntroVideo } from './game/introVideo.js';
 import { LEVELS } from './content/levels.js';
 import { preloadDragonAssets } from './game/dragonLevel.js';
 import { preloadGLB } from './game/glbCache.js';
-import { SKY_PANORAMA, MASTER_GATE, RELEASE_UI } from './core/constants.js';
+import { SKY_PANORAMA, MASTER_GATE, RELEASE_UI, LOADOUTS } from './core/constants.js';
 import { MODEL_URL as PORTAL_MODEL_URL } from './game/portal.js';
 import { MODEL_URL as OPENING_MODEL_URL } from './game/openingModel.js';
 import { createCast } from './net/cast.js';
@@ -249,8 +249,8 @@ if (!RELEASE) {
     session.addEventListener('end', () => session.removeEventListener('visibilitychange', onVisibility), { once: true });
   });
 }
-function startGame(index, mode, intro) {
-  pause.clear(); input.reset(); game.start(index, mode, intro);
+function startGame(index, mode, intro, loadout = null) {
+  pause.clear(); input.reset(); game.start(index, mode, intro, loadout);
 }
 
 
@@ -281,7 +281,7 @@ world.xr.addEventListener('sessionstart', () => {
   // ⚠ 帧缓冲缩放：本工程**不调用** renderer.xr.setFramebufferScaleFactor（保持 three 默认 1.0，
   //   原因见 enterVR 内的注释）。此处若再设置，因 sessionstart 时 isPresenting 已为 true，
   //   three 会拒绝并报警告 "Cannot change framebuffer scale while presenting"。故此处只触发开局。
-  if (game.state === 'menu') startGame(pendingStartIndex, gunMode(), pendingPlayIntro);
+  if (game.state === 'menu') startGame(pendingStartIndex, gunMode(), pendingPlayIntro, pendingLoadout);
 });
 // 桌面：开始按钮（idx 0=第1关，2=第3关激光测试）—— 桌面预览不播开场视频
 // 桌面「开始游戏」按钮：正式包不创建（见 src/ui/hud.js 的 devUI），故只在调试包接线
@@ -290,7 +290,30 @@ if (!RELEASE) hud.onStart((idx = 0) => { audio.unlock(); startGame(idx, gunMode(
 // ── 自定义 PICO 兼容 VR 进入按钮（参考 vr-controller-kit skill）──
 // 不使用 three 自带 VRButton：改用 requiredFeatures:['local-floor'] + 无参回退，
 // PICO 的 Chrome/105 不支持某些特性参数时才能顺利进入。
-const enterVRBtn = document.getElementById('enter-vr-btn');
+// ★ 第二十二修：「进入 VR」由单个按钮改为**二选一**开局加成（蓝=射速加倍/攻击减半，红=攻击加倍/射速减半）。
+//   enterVrBtns[0] ↔ LOADOUTS.rapid（蓝）、enterVrBtns[1] ↔ LOADOUTS.power（红）；
+//   点哪个都会进游戏，并把 loadout 键名一路传到 game.start → Player.reset 改初始属性。
+const enterVRBox = document.getElementById('enter-vr-box');
+const enterVrBtns = [
+  document.getElementById('enter-vr-rapid'),
+  document.getElementById('enter-vr-power'),
+].filter(Boolean);
+/** 兼容旧引用点（只关心「有没有按钮 / 是否忙碌」），取第一个按钮即可 */
+const enterVRBtn = enterVrBtns[0] || null;
+let pendingLoadout = null;      // 本局开局加成（'rapid' / 'power' / null），由 sessionstart 消费
+const enterVrDisabled = () => enterVrBtns.some((b) => b.disabled);
+const setEnterVrDisabled = (v) => { for (const b of enterVrBtns) b.disabled = v; };
+/** 进 VR 期间：两个按钮都禁用，只有被点那个显示「启动中」 */
+function setEnterVrBusy(loadoutKey) {
+  setEnterVrDisabled(true);
+  const idx = loadoutKey === 'power' ? 1 : (loadoutKey === 'rapid' ? 0 : -1);
+  if (idx >= 0 && enterVrBtns[idx]) enterVrBtns[idx].textContent = '⏳ 启动中...';
+}
+/** 复位两个按钮文案（进不去 / 退出 VR 后） */
+function resetEnterVrLabels() {
+  if (enterVrBtns[0]) enterVrBtns[0].textContent = LOADOUTS.rapid.label;
+  if (enterVrBtns[1]) enterVrBtns[1].textContent = LOADOUTS.power.label;
+}
 const statusMsg = document.getElementById('status-msg');
 let vrStarting = false;
 const mirrorBtn = document.getElementById('mirror-btn');
@@ -457,7 +480,7 @@ function applyVRGate() {
   //   注意 `vrMaster.known` 为 false 时也算拦 —— 没拿到 PC 的明确允许就不放行（硬闸门口径）。
   const masterBlocked = MASTER_GATE_ON && !vrMaster.exempt && !masterGateAllowed();
   const show = vrGate.open && !inXR && !guardBlocked && !masterBlocked;
-  if (enterVRBtn) enterVRBtn.style.display = show ? 'block' : 'none';
+  if (enterVRBox) enterVRBox.style.display = show ? 'flex' : 'none';
   // 右侧「关卡快捷」面板点任一关也会进 VR → 与按钮同生死（不留第二个入口）
   // 正式包（RELEASE）里这一块由 body.release 的 CSS 永久隐藏（选关属自测入口），不再动态改它
   if (levelPanelEl && !RELEASE) levelPanelEl.style.display = show ? 'flex' : 'none';
@@ -773,12 +796,12 @@ gateQueryGuard();
 gateQueryMaster().finally(scheduleMasterPoll);
 
 
-async function enterVR() {
-  if (vrStarting || world.xr.getSession() || enterVRBtn.disabled) return;
+async function enterVR(loadoutKey = null) {
+  if (vrStarting || world.xr.getSession() || enterVrDisabled()) return;
   vrStarting = true;
+  pendingLoadout = (loadoutKey && LOADOUTS[loadoutKey]) ? loadoutKey : null;
   vrAvailability.invalidate();
-  enterVRBtn.disabled = true;
-  enterVRBtn.textContent = '⏳ 启动中...';
+  setEnterVrBusy(pendingLoadout);
   let session;
   try {
     if (!navigator.xr) throw new Error('浏览器不支持 WebXR（需 https 或 localhost + 支持 WebXR 的头显浏览器）');
@@ -813,13 +836,13 @@ async function enterVR() {
       world.renderer.xr.setReferenceSpace(referenceType === 'local'
         ? rs.getOffsetReferenceSpace(new XRRigidTransform({ x: 0, y: -1.6, z: 0 })) : rs);
     } catch (_) { /* 忽略：库内部 onSessionStart 也会自行解析 */ }
-    enterVRBtn.style.display = 'none';
+    if (enterVRBox) enterVRBox.style.display = 'none';
     if (statusMsg) statusMsg.style.display = 'none';
   } catch (err) {
     if (session) await session.end().catch(() => {});
     showStatus('❌ ' + err.message, true);
-    enterVRBtn.disabled = false;
-    enterVRBtn.textContent = '🎈 进入 VR';
+    setEnterVrDisabled(false);
+    resetEnterVrLabels();
   } finally {
     vrStarting = false;
   }
@@ -847,8 +870,9 @@ world.xr.addEventListener('sessionend', (ev) => {
   game.toMenu();            // B/退出 VR 后真正回到未开始状态（state='menu' 并清场，重进 VR 即从干净状态开局）
   pause.clear();
   pendingStartIndex = 0; // 复位，下次默认从第 1 关开始
-  enterVRBtn.disabled = false;
-  enterVRBtn.textContent = '🎈 进入 VR';
+  pendingLoadout = null; // 退出 VR 后不再沿用上一局的加成（下次点按钮重新选）
+  setEnterVrDisabled(false);
+  resetEnterVrLabels();
   vrAvailability.refresh();
   // 第十二修：显示与否交给门禁 —— 玩家自己退出 VR 时门禁仍开着（按钮照常出现，可以再进）；
   // 平台已结束本局时门禁是关的（保持隐藏，等平台下一次「开始」再出现）。
@@ -859,8 +883,9 @@ world.xr.addEventListener('sessionend', (ev) => {
 if (navigator.xr && navigator.xr.isSessionSupported) {
   navigator.xr.isSessionSupported('immersive-vr').then((ok) => {
     if (!ok) {
-      enterVRBtn.textContent = '桌面模式（无 VR 设备）';
-      enterVRBtn.disabled = true;
+      // 桌面（无 VR 设备）：二选一按钮禁用；桌面预览走关卡面板 / HUD 的「开始游戏」
+      setEnterVrDisabled(true);
+      if (enterVRBox) enterVRBox.title = '桌面模式（无 VR 设备）';
       // 第十二修：桌面（没有 immersive-vr）根本没得「进入 VR」，门禁对它毫无意义
       // —— 直接放行，免得桌面自测时按钮被藏 30 秒。
       // ★ 2026-09-23：主控门禁同理 —— 桌面预览不会「开出一局平台不知道的游戏」，
@@ -870,15 +895,17 @@ if (navigator.xr && navigator.xr.isSessionSupported) {
     }
   }).catch(() => {});
 } else {
-  enterVRBtn.textContent = '桌面模式（需 https/头显）';
-  enterVRBtn.disabled = true;
+  setEnterVrDisabled(true);
+  if (enterVRBox) enterVRBox.title = '桌面模式（需 https/头显）';
   vrMaster.exempt = true;      // 连 navigator.xr 都没有 ⇒ 桌面，主控门禁不适用
 }
 
 // 支持晚连接/运行时重启；暂未检测到设备时保留用户手动重试入口。
 const vrAvailability = watchXRAvailability({
-  xr: navigator.xr, button: enterVRBtn, windowTarget: window, documentTarget: document,
+  xr: navigator.xr, buttons: enterVrBtns, windowTarget: window, documentTarget: document,
   isBusy: () => vrStarting || !!world.xr.getSession(),
+  // 多按钮形态下**不覆盖**按钮文案（各自写着加成），需要提示时转到状态条
+  onLabel: (text) => { if (!text.startsWith('🎈')) showStatus(text, true); },
 });
 
 // 进入 VR：默认第 1 关（其余关用右侧 #level-panel 面板进入）—— 主按钮进第 1 关要播开场视频
@@ -886,7 +913,17 @@ const vrAvailability = watchXRAvailability({
 //   · page 模式（默认）：open() 只显示页内 canvas，不调用 window.open、不抢激活 → 首次点击即可同时进 VR+出镜像，无「二次点击」问题。
 //   · popup 模式：open() 用 window.open 需激活，若被先调用的 requestSession 占用会失败并注册「下次手势重试」，点「🖥 镜像」按钮也可开。
 //   镜像只在桌面 PC（isDesktopPage）生效；独立头显无论哪种模式都不开启（避免拖垮 Adreno XR2）。
-enterVRBtn.onclick = () => { audio.unlock(); pendingStartIndex = 0; pendingPlayIntro = true; prewarmIntroVideo(); enterVR(); if (MIRROR.AUTO_OPEN && isDesktopPage()) mirror.open(); };
+// 二选一：点哪个都直接进游戏，并把对应加成带到本局（键名见 core/constants.js 的 LOADOUTS）
+function onEnterVrClick(loadoutKey) {
+  audio.unlock();
+  pendingStartIndex = 0;
+  pendingPlayIntro = true;
+  prewarmIntroVideo();
+  enterVR(loadoutKey);
+  if (MIRROR.AUTO_OPEN && isDesktopPage()) mirror.open();
+}
+if (enterVrBtns[0]) enterVrBtns[0].onclick = () => onEnterVrClick('rapid');
+if (enterVrBtns[1]) enterVrBtns[1].onclick = () => onEnterVrClick('power');
 
 // 预开镜像窗（仅 popup 模式需要）：在「进入 VR」之外的首次用户点击(手势)里先把镜像窗建好，
 // 这样用户点「进入VR」时该窗口已存在 → mirror.open() 只 focus、不消耗激活 → VR 与镜像同一点击都能成。
@@ -895,7 +932,7 @@ enterVRBtn.onclick = () => { audio.unlock(); pendingStartIndex = 0; pendingPlayI
 //     若用户第一下就点「进入VR」，则镜像会在你下一次点击/按键，或点「🖥 镜像」按钮时弹出。）
 if (MIRROR.AUTO_OPEN && MIRROR.MODE === 'popup') {
   const tryPreopenMirror = (e) => {
-    if (e.target === enterVRBtn) return;                 // 进入 VR 的点击：保留激活给 requestSession
+    if (enterVrBtns.includes(e.target)) return;          // 进入 VR 的点击：保留激活给 requestSession
     if (!isDesktopPage() || !MIRROR.ENABLED) return;      // 独立头显不需要镜像
     if (mirror.win && !mirror.win.closed) { window.removeEventListener('pointerdown', tryPreopenMirror); return; }
     mirror.open();

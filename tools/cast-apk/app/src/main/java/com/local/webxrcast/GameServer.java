@@ -180,10 +180,10 @@ public class GameServer extends NanoHTTPD {
             return proxyApi(session, uri);
         }
 
-        // 静态资源代理：发现 PC 后把游戏文件同源代理到 PC。
+        // 静态资源：**本地优先** —— assets/game 就是游戏本体，与 PC 无关。
         // 关键：页面 origin 仍是 http://localhost → 仍是 WebXR 安全上下文（PICO 浏览器才会暴露
-        // navigator.xr，否则掉进「桌面模式 需 https/头显」）；而资源取自 PC，保证永远是最新代码。
-        // PC 未接入时回退到下方内置 assets/game（仅供本地游玩）。
+        // navigator.xr，否则掉进「桌面模式 需 https/头显」）。
+        // 资源取哪里见下方：先包内，包内没有才回退 PC 代理。
 
         // 防目录穿越：去掉 .. 与反斜杠
         String rel = uri.replace("..", "").replace('\\', '/');
@@ -215,10 +215,13 @@ public class GameServer extends NanoHTTPD {
             }
         }
 
-        if (pcBase != null) {
-            return proxyStatic(session, uri);
-        }
-
+        // ★ 第二十二修（档１）：删掉了旧的「发现 PC 后一律代理到 PC」——
+        //   PC 端已撤掉整站托管（路径②停用），若仍先代理，`GET /index.html` 会被
+        //   代理成 404 → 整个游戏页打不开（白屏）。页面本体本来就在包里，没有理由
+        //   绕一圈去问 PC；而且包内响应快、无网络依赖，现场 PC 掉线也照样能玩。
+        //   兜底保留：**包内确实没有**这份文件时才用 PC 代理（正常不会命中；
+        //   现场万一少个重资源能救）。受管路径（config 覆盖层）已在上方直接 return，
+        //   不会走到这里退化成软校验。
         String assetPath = BASE + "/" + rel;
 
         try {
@@ -227,6 +230,10 @@ public class GameServer extends NanoHTTPD {
             String mime = MIME.getOrDefault(ext, "application/octet-stream");
             return newChunkedResponse(Response.Status.OK, mime, is);
         } catch (IOException e) {
+            if (pcBase != null) {
+                Log.w(TAG, "包内缺少 " + rel + " → 回退 PC 代理兜底");
+                return proxyStatic(session, uri);
+            }
             return newFixedLengthResponse(
                     Response.Status.NOT_FOUND, "text/plain; charset=utf-8", "404 " + rel);
         }
@@ -623,7 +630,11 @@ public class GameServer extends NanoHTTPD {
 
     /**
      * 把游戏静态资源（HTML/JS/GLB/图片…）同源代理到 PC 接收端。
-     * 页面 origin 是 http://localhost → 仍是 WebXR 安全上下文；资源取自 PC，保证最新。
+     *
+     * ★ 第二十二修（档１）：本方法已降级为**兜底** —— 仅当包内 assets/game 确实没有该文件时才调用
+     * （见 serve() 的静态分支）。之前它是首选路径，依赖 PC 端托管整站；
+     * 随着路径②停用，那条路已不存在，故一律以包内为准。页面 origin 始终是
+     * http://localhost → WebXR 安全上下文不变。
      * 普通短响应，读全后原样返回（用 ByteArrayInputStream 保留二进制，避免按 String 破坏 glb/图片）。
      */
     private Response proxyStatic(IHTTPSession session, String uri) {

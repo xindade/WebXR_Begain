@@ -75,7 +75,25 @@
        按 H 切换（状态存 localStorage，下次启动保持）；按 F 切换全屏。
        排查时按 H 唤回面板，或用启动参数 --panels（= ?pure=0）强制显示完整面板。 */
     body.pure #bar, body.pure #cfgbox, body.pure #guardbox, body.pure #licbox, body.pure #logbox { display: none !important; }
+    /* ★ 第二十二修（档1）：「游戏目录」这类运维面板在正式包里彻底不显示（按 H 也不露），
+       只在启动参数 --panels 时出现（见 main.js 的 PANELS）。 */
+    body.no-cfg #cfgbox { display: none !important; }
     body.pure #hint { font-size: 13px; }
+    /* ★ 第二十二修：占位阶段的大号自绘文案。
+       头显推上来的占位帧只有 960×540，铺满大屏后文字明显发糊；这段文字由本窗口渲染，
+       任何分辨率都清晰。字号用 vw 跟屏幕走，4K 大屏也不虚。 */
+    #hint.big {
+      color: #e8eeff; font-size: clamp(22px, 3vw, 64px); font-weight: 700;
+      line-height: 1.45; letter-spacing: .02em;
+      text-shadow: 0 2px 12px rgba(0,0,0,.65);
+      -webkit-font-smoothing: antialiased;
+    }
+    #hint.big .sub {
+      display: block; margin-top: .55em; font-size: .46em; font-weight: 400;
+      color: #9fb0d0; letter-spacing: 0;
+    }
+    /* body.pure 的 13px 会盖掉上面的字号，故在纯模式里再声明一次 */
+    body.pure #hint.big { font-size: clamp(22px, 3vw, 64px); }
 
     #toast { position: fixed; left: 50%; top: 22px; transform: translateX(-50%);
              background: rgba(0,0,0,.72); color: #fff; padding: 8px 16px; border-radius: 8px;
@@ -126,13 +144,13 @@
       </div>
       <div>
         头显请打开：<code id="url">…</code><button id="copy">复制</button>
-        <span class="dim">&nbsp;&nbsp;路径①（推荐）：头显点 APK 自动发现；路径②（旁路）：头显浏览器直接打开上面地址</span>
+        <span class="dim">&nbsp;&nbsp;头显请点 APK：自动发现本机并拉起游戏（浏览器直连整站已于 2026-09-23 停用，上面地址仅供本机核对）</span>
         <span class="dim">&nbsp;&nbsp;·&nbsp; 快捷键：<b>H</b> 仅画面（纯净模式）/ <b>F</b> 全屏 / <b>M</b> 开场影片静音开关</span>
       </div>
     </div>
     <div id="cfgbox">
-      <span>游戏目录（PC 端托管路径②；可绕过 APK 直接 serve 游戏）：</span>
-      <input id="cfgRoot" type="text" placeholder="例如 E:\AI_Work\WebXR_Begain_Platform（需含 index.html）" />
+      <span>外部配置目录（可选 · 留空 = 用 EXE 内置配置；填了则用它的关卡/数值覆盖内置那份）：</span>
+      <input id="cfgRoot" type="text" placeholder="例如 D:\Games\WebXR_Begain（需含 src/content；留空 = 用 EXE 内置配置）" />
       <button id="cfgApply" class="sec">应用</button>
       <span id="cfgStatus" class="dim">（未配置）</span>
     </div>

@@ -71,16 +71,17 @@
 
 ```js
 // 打包后（asar 内）__dirname 指向 resources/app.asar，'../..' 会算到错误的目录 → 需特殊处理
-let SERVE_GAME = false;                 // 仅当 GAME_ROOT 有效且包含 index.html 时为 true
+let EXT_CFG = false;                    // 外部「配置覆盖目录」（可选）：有 src/content 或 src/core/userConfig.js 即为 true
 ...
 mainWindow.loadURL(`http://localhost:${usedPort}/__cast/index.html${hasFlag('pure') ? '?pure=1' : ''}`);
 ```
 
 - 渲染层页面从 **`/__cast/index.html`** 加载（Electron 窗口内的播放界面）。
-- 静态资源根：`const serveRoot = SERVE_GAME ? GAME_ROOT : ROOT;`（`main.js:374`）
-  → **配置了游戏目录后，`GAME_ROOT` 就是静态服务根**。
+- 静态托管根：`currentServeRoot()` —— 打包版**只**返回 EXE 内置目录 `resources/game-cfg`（配置 + `assets/intro/intro.mp4`），
+  开发版（`npm start`）才是项目根。**外部游戏目录不再是静态服务根**（第二十二修 · 档1 撤掉「直连整站」）。
   这也是**开场影片能同源播放**的前提（PC 端播本地 `/assets/intro/intro.mp4` 必须与页面同源）。
-- 因此：**首次使用必须先在 EXE 里配置游戏目录**（指向项目根，需含 `index.html`）。
+- 头显侧的**配置**走 `/api/config/dump` 下发（外部覆盖目录 > EXE 内置），所以**首次使用不再需要**在 EXE 里配置任何路径。
+  `main.js:374` 那个 `SERVE_GAME ? GAME_ROOT : ROOT` 的写法已不存在，别再按它排查。
 
 ### 2.3 构建命令
 
@@ -272,6 +273,35 @@ APK 本地游戏服务固定 **8080**。若现场 AP 开了**组播隔离**，�
   **APK 非重打不可**，否则「结束本局后浏览器不关、下一局连不上直播」会复现。
 - PC 端新增 `/api/round/end` 与 `round:get` / `round:set` IPC、界面 `#roundbar`（`▶ 开始本局` / `■ 结束本局`，快捷键 `S` / `E`）⇒
   **EXE 也需重打**（`npm run dist`）。
+---
+
+## 附 · 2026-09-23 晚 第二十一修（配置随 EXE 安装）
+
+- `tools/cast-pc/package.json` 新增 **`extraResources`**：把 `src/content`、`src/core/userConfig.js`
+  与 `assets/intro/intro.mp4` 复制到安装目录的 `resources/game-cfg/`（约 19.2 MB）。
+- `main.js` 把「配置下发根」(`CONFIG_ROOT`) 与「静态托管根」(`currentServeRoot()`) 拆开诊断：
+  两者都是「完整游戏目录 > 内置目录」。**内置目录没有 index.html**，故用 `hasConfigTree()` 判存在性。
+- ⚠ **改了 `extraResources` 的 `from` 路径 ⇒ EXE 必须重打**（`npm run dist`），否则安装目录里没有 game-cfg。
+- ~~路径②（头显浏览器直连整站）仍要填完整游戏目录~~ —— **2026-09-23 深夜 第二十二修已撤掉路径②**，
+  外部目录降级为可选的「配置覆盖来源」；`isValidGameRoot()` 删除，统一 `hasConfigTree()`。
+- 详见 `docs/cast-implementation-and-packaging.md` 附录 E、附录 F。
+
+---
+
 - 本轮产物（2026-09-23 20:05 / 20:06）：
   - APK `app-debug.apk` → `release/头显端-WebXR打气球.apk`（126.89 MB，SHA256 `6DCC3EE2…E2F5`）
   - EXE `dist/WebXR直播接收端 Setup 1.0.0.exe` → `release/PC端-直播接收端-Setup.exe`（77.94 MB，SHA256 `EF5D7AD0…B296`）
+
+## 附 · 2026-09-23 深夜 第二十二修（档1 + 二选一 + 根级页面同步）
+
+- **档1（撤路径②）**：`tools/cast-pc/main.js` 不再 serve 外部游戏目录（`currentServeRoot()` 打包版只返回
+  `resources/game-cfg`）；`isValidGameRoot()` 删除；新增 `--panels` 才显示的运维面板；
+  `/api/info` 去掉 `root`/`serveGame`，新增 `extCfg`/`configRoot`/`bundledCfg`/`serveRoot`/`panels`。
+- ⚠ **`GameServer.java` 同步改了静态资源口径（包内优先）** —— 不跟着改，头显会白屏（`/index.html` 被代理给已停管的 PC）。
+  ⇒ **APK 必须重打**。
+- ⚠ **`build-apk.ps1` 新增 2.55 步：根级 `index.html` / `mirror.html` 也同步进 `assets/game/`**。
+  以前只同步 `src/**`，根 HTML 靠手抄 —— 漏了就出现「构建成功但头显跑的是旧页面」。
+- ⚠ **改了 `main.js` 的静态托管口径与 404 文案 ⇒ EXE 必须重打**（`npm run dist`）。
+- 「进入 VR」二选一（蓝 ⚡射速加倍/攻击减半、红 💥攻击加倍/射速减半）改的是 `constants.js`/`player.js`/
+  `main.js`/`availability.js`/`index.html` ⇒ 同为 APK 重打范围。
+- 详见 `docs/cast-implementation-and-packaging.md` 附录 F。

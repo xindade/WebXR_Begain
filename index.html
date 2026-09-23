@@ -13,13 +13,21 @@
       color: #fff; font-family: sans-serif; font-size: 13px; opacity: .75;
       text-shadow: 0 1px 3px #000; z-index: 5; pointer-events: none;
     }
-    #enter-vr-btn {
+    /* ── 「进入 VR」二选一开局加成（2026-09-23 第二十二修）──
+       蓝 = 射速加倍 · 攻击力减半；红 = 攻击力加倍 · 射速减半。
+       点哪个都直接进游戏，并在 Player.reset 里把倍率乘到初始属性上（见 core/constants.js LOADOUTS）。 */
+    #enter-vr-box {
       position: fixed; bottom: 54px; left: 50%; transform: translateX(-50%);
-      z-index: 20; padding: 12px 30px; font-size: 17px; font-family: sans-serif;
-      border: none; border-radius: 10px; background: #6c5ce7; color: #fff;
-      cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.4);
+      z-index: 20; display: flex; gap: 16px; align-items: stretch;
     }
-    #enter-vr-btn:disabled { opacity: .6; cursor: default; }
+    #enter-vr-box button {
+      padding: 14px 28px; font-size: 17px; font-family: sans-serif; font-weight: 700;
+      border: none; border-radius: 12px; color: #fff; cursor: pointer; line-height: 1.35;
+      box-shadow: 0 6px 18px rgba(0,0,0,.45);
+    }
+    #enter-vr-box button:disabled { opacity: .6; cursor: default; }
+    #enter-vr-rapid { background: #1f6feb; }   /* 蓝：射速加倍 · 攻击力减半 */
+    #enter-vr-power { background: #d92b2b; }   /* 红：攻击力加倍 · 射速减半 */
 
     /* ── VR 桌面镜像按钮（让 PC 显示器也能看到头显画面）── */
     #mirror-btn {
@@ -166,7 +174,11 @@
     <div id="loading-text" data-page-node-id="qBaNSEBLoLijzHHqrm2E1C">正在加载天空资源…</div>
     <div id="loading-bar" data-page-node-id="KZfIkJHDdvfacXgYZeH8di"><div id="loading-bar-fill" data-page-node-id="b639S2ZfkLPUE5bmM31fGP"></div></div>
   </div>
-  <button id="enter-vr-btn" data-page-node-id="cdkBDFO7uUJG1azzAteMAK">🎈 进入 VR</button>
+  <!-- 进入 VR：二选一开局加成（蓝色=射速加倍/攻击减半，红色=攻击加倍/射速减半），点哪个都直接进游戏 -->
+  <div id="enter-vr-box" data-page-node-id="cdkBDFO7uUJG1azzAteMAK">
+    <button id="enter-vr-rapid">⚡ 射速加倍 · 攻击力减半</button>
+    <button id="enter-vr-power">💥 攻击力加倍 · 射速减半</button>
+  </div>
   <button id="mirror-btn">🖥 镜像</button>
   <!-- 页内镜像预览（MIRROR.MODE='page' 时由 mirror.js 显示；'popup' 模式不用） -->
   <canvas id="mirror-canvas"></canvas>
