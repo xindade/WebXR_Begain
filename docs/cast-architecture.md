@@ -720,6 +720,9 @@ restoreClientAndCloseBrowser() castMode && castRoundOver 分支：
 
 ## D.5 第二十二修（2026-09-23 深夜）· 档1 + PC 占位文案 + 进入 VR 二选一
 
+> 平台对接全流程（含 ②「开始游戏」与 ③ 调起客户端）的**成功方案结论版**见
+> `docs/平台对接成功方案.md` —— 本附录 C/D 是它的推演过程与抓包依据。
+
 ### D.5.1 档1：撤掉路径②（头显浏览器直连整站）
 
 - **PC 端**（`tools/cast-pc/main.js`）：`SERVE_GAME` → `EXT_CFG`；`currentServeRoot()` 打包版**只**返回
