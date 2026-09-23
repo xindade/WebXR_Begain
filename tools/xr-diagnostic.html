@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WebXR 画面诊断</title>
+<style>
+body{background:#141922;color:#eee;font:16px/1.6 system-ui;max-width:1000px;margin:30px auto;padding:0 20px}
+button,select{font:inherit;padding:8px 16px;margin:4px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#202938;padding:18px}canvas{width:240px;height:120px;border:1px solid #718096}
+</style>
+<h1>WebXR 画面诊断</h1>
+<p>不加载游戏、模型、视频或外部库。正常时头显双眼均显示深蓝背景和绿色方块。PC 小画布进入 VR 后不保证显示镜像。</p>
+<label>图形接口 <select id="api"><option value="webgl2">WebGL 2</option><option value="webgl">WebGL 1（对照）</option></select></label>
+<button id="start">进入 VR 诊断</button><button id="stop" disabled>退出 VR</button><button id="export">下载诊断记录</button>
+<p>戴好头显等待约 10 秒，再退出 VR，把下方报告截图或下载的 JSON 发回。更换图形接口前请刷新页面。</p>
+<canvas id="canvas" width="240" height="120"></canvas>
+<pre id="report">正在检查环境…</pre>
+<script type="module" src="./xr-diagnostic.js"></script>
+</html>

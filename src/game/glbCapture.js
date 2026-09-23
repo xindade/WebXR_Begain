@@ -139,6 +139,7 @@ export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.
   renderer.xr.enabled = false; // 防御：捕获期间禁用 XR，避免 render 被 XR 相机/帧缓冲接管导致 RT 为空
 
   let capturedOpaque = false;
+  try {
   for (let i = 0; i < frames; i++) {
     // idle 摆动：绕 Y 小幅 sin（i=0 与 i=frames-1 角度接近，循环平滑）
     obj.rotation.y = swing * Math.sin((2 * Math.PI * i) / frames);
@@ -168,16 +169,18 @@ export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.
     obj.traverse((o) => { if (o.isMesh && o.userData._m) { o.material = o.userData._m; delete o.userData._m; } });
   }
 
-  // 恢复 renderer 状态，避免污染主循环
+  } finally {
+  // 恢复 renderer 状态，即使抓帧失败也不可污染 XR 主循环
   renderer.xr.enabled = prevXr;
   renderer.setRenderTarget(prevTarget);
   renderer.setClearColor(prevClear, prevAlpha);
+  albedoRT.dispose();
+  depthRT.dispose();
+  }
 
   // 校验失败：捕获为空，拒绝并交回退逻辑（可见球体），杜绝「看不见但可击中」的幽灵气球
   if (!capturedOpaque) {
     console.error('[glbCapture] 捕获疑似全透明（第0帧几乎无可渲染像素）：立绘会不可见，已回退为可见球体。请检查 GLB 材质/渲染或 radius。');
-    albedoRT.dispose();
-    depthRT.dispose();
     return Promise.reject(new Error('glbCapture empty'));
   }
 
@@ -188,9 +191,6 @@ export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.
   depth.colorSpace = THREE.NoColorSpace; // 数据，不解码
   depth.needsUpdate = true;
 
-  albedoRT.dispose();
-  depthRT.dispose();
-
   return { albedo, depth, frameCount: frames, cols, rows };
 }
 
@@ -198,27 +198,42 @@ export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.
 // 手绘/离线素材到位后，在 constants.DEPTH_SPRITE_HANDPAINTED 按模型 url 填映射即可切换数据源。
 // 注意：depth 图是数据，colorSpace 必须为 NoColorSpace（不可被 sRGB 解码）。
 const _texLoader = new THREE.TextureLoader();
+const _sheetCache = new Map();
 export function loadDepthSpriteSheet(albedoUrl, depthUrl, { frameCount = 1, cols = frameCount, rows = 1 } = {}) {
-  return new Promise((resolve, reject) => {
+  const key = `${albedoUrl}:${depthUrl}:${frameCount}:${cols}:${rows}`;
+  if (_sheetCache.has(key)) return _sheetCache.get(key);
+  const task = new Promise((resolve, reject) => {
     _texLoader.load(albedoUrl, (albedo) => {
       albedo.colorSpace = THREE.SRGBColorSpace;
       _texLoader.load(depthUrl, (depth) => {
         depth.colorSpace = THREE.NoColorSpace;
         resolve({ albedo, depth, frameCount, cols, rows });
-      }, undefined, (e) => reject(e));
+      }, undefined, (e) => { albedo.dispose(); reject(e); });
     }, undefined, (e) => reject(e));
-  });
+  }).catch(error => { _sheetCache.delete(key); throw error; });
+  _sheetCache.set(key, task);
+  return task;
 }
 
+let _manifest;
+function bakedManifest() {
+  return _manifest ||= fetch('assets/depth-sprites/manifest.json').then(r => r.ok ? r.json() : {}).catch(() => ({}));
+}
 const _capCache = new Map(); // key -> Promise<{albedo, depth, frameCount, cols, rows}>
 
 // 按 url+frames+swing 缓存捕获结果（同类型气球共享纹理，仅各自新建 material）
 export function captureModelByUrl(renderer, url, radius, opts = {}) {
   const { frames = 1, swing = 0.0 } = opts;
-  const key = `${url}:${frames}:${swing}`;
+  const key = `${url}:${radius}:${frames}:${swing}`;
   if (_capCache.has(key)) return _capCache.get(key);
-  const p = loadBalloonModel(url)
-    .then((gltfScene) => captureGLB(renderer, gltfScene, { radius, frames, swing }))
+  const p = bakedManifest().then(async manifest => {
+    const baked = manifest[key];
+    if (baked) {
+      try { return await loadDepthSpriteSheet(baked.albedo, baked.depth, baked); }
+      catch (error) { console.warn('[立绘] 离线图集失败，回退运行时捕获:', url); }
+    }
+    return captureGLB(renderer, await loadBalloonModel(url), { radius, frames, swing });
+  })
     .catch((e) => { _capCache.delete(key); throw e; }); // 失败不缓存，便于重试
   _capCache.set(key, p);
   return p;

@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-import { GLTFLoader } from '../../vendor/GLTFLoader.js';
-import { DRACOLoader } from '../../vendor/DRACOLoader.js';
+import { loadGLB, cloneGLBScene } from './glbCache.js';
 import { DRAGON, DRAGON_SUMMON, DRAGON_VOICE, EXPLOSION } from '../core/constants.js';
 import { attachDragonSegment, loadBalloonModel } from './balloonModels.js';
 
@@ -55,22 +54,12 @@ export function preloadDragonAssets(onProgress) {
     if (!_animData) {
       try {
         const res = await fetch(DRAGON.ANIM_URL);
-        if (res.ok) _animData = await res.json();
-      } catch (e) { console.warn('[DragonBoss] 预加载动画 JSON 失败:', e); }
+        if (!res.ok) throw new Error(`动画请求失败 ${res.status}`);
+        _animData = await res.json();
+      } catch (e) { console.warn('[DragonBoss] 预加载动画 JSON 失败:', e); throw e; }
     }
     if (!_headGltf) {
-      const draco = new DRACOLoader();
-      draco.setDecoderPath('vendor/draco/');
-      const loader = new GLTFLoader();
-      loader.setDRACOLoader(draco);
-      _headGltf = await new Promise((resolve, reject) => {
-        loader.load(
-          DRAGON.HEAD_MODEL,
-          (g) => resolve(g),
-          (e) => onProgress && onProgress(e.loaded || 0, e.total || 1),
-          (err) => reject(err)
-        );
-      });
+      _headGltf = await loadGLB(DRAGON.HEAD_MODEL, onProgress);
     }
 
     // 预加载龙身/龙爪固定模型（BODY_MODEL / CLAW_MODEL）+ 兜底 NODE_MODEL：进龙关时直接命中缓存，避免开打后才异步加载出现短暂空缺
@@ -80,7 +69,7 @@ export function preloadDragonAssets(onProgress) {
     for (const m of modelsToPreload) {
       try { await loadBalloonModel(m); } catch (e) { console.warn('[DragonBoss] 预加载龙身模型失败:', m, e); }
     }
-  })();
+  })().catch(error => { _preloadPromise = null; throw error; });
   return _preloadPromise;
 }
 
@@ -162,6 +151,7 @@ export class DragonBoss {
   async start() {
     try {
       await preloadDragonAssets();
+      if (this.dead) return;
       const data = _animData;
       if (data) this._buildFromData(data);
       this._spawnBalloons();
@@ -363,24 +353,19 @@ export class DragonBoss {
     this.headGroup.visible = false; // 开场隐形：待首次 update 摆到脊柱后再揭示（见 update 末尾 _revealed）
     // 命中预览预加载缓存：直接复用已加载的 GLB（不重复下载/解码）
     if (_headGltf) {
-      this.headModel = _headGltf.scene;
+      this.headModel = cloneGLBScene(_headGltf);
       this._fitHead();
       this.headGroup.add(this.headModel);
       return;
     }
     // 兜底：未预加载时异步加载（含红色线框占位，便于上机确认路径正确）
-    const draco = new DRACOLoader();
-    draco.setDecoderPath('vendor/draco/');
-    const loader = new GLTFLoader();
-    loader.setDRACOLoader(draco);
-    loader.load(
-      DRAGON.HEAD_MODEL,
+    loadGLB(DRAGON.HEAD_MODEL).then(
       (gltf) => {
-        this.headModel = gltf.scene;
+        if (this.dead) return;
+        this.headModel = cloneGLBScene(gltf);
         this._fitHead();
         this.headGroup.add(this.headModel);
       },
-      undefined,
       (err) => {
         console.error('[DragonBoss] 龙头模型加载失败:', err);
         window.__pageLog?.error('[DragonBoss] 龙头加载失败：' + (err?.message || err));

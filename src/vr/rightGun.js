@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-import { GLTFLoader } from '../../vendor/GLTFLoader.js';
-import { DRACOLoader } from '../../vendor/DRACOLoader.js';
+import { loadGLB, cloneGLBScene } from '../game/glbCache.js';
 import { GUN, GUN_MODES, INPUT, SKILL_HINT } from '../core/constants.js';
 import { SkillHintPanel } from './skillHint.js';
 
@@ -27,18 +26,12 @@ export class RightGun {
   // 异步加载模型（GLTFLoader 回调式）；Ak枪.glb 用了 KHR_draco_mesh_compression，
   // 故挂上本地离线 DRACOLoader（解码器文件在 vendor/draco/）。失败放红色线框占位。
   _load() {
-    const draco = new DRACOLoader();
-    draco.setDecoderPath('vendor/draco/');   // 相对 index.html；解码器离线存放于 vendor/draco
-    const loader = new GLTFLoader();
-    loader.setDRACOLoader(draco);
-    loader.load(
-      GUN.MODEL_URL,
+    loadGLB(GUN.MODEL_URL).then(
       (gltf) => {
-        this.model = gltf.scene;
+        this.model = cloneGLBScene(gltf);
         this.root.add(this.model);
         window.__pageLog?.info('[RightGun] AK 枪模型加载完成');
       },
-      undefined,
       (err) => {
         console.error('[RightGun] 模型加载失败:', err);
         window.__pageLog?.error('[RightGun] AK 枪加载失败：' + (err?.message || err));
@@ -55,9 +48,10 @@ export class RightGun {
   update(dt, input, game) {
     this._applyTransform();
     this._applyRecoil(dt, input);
-    const anchor = input?.getGrip(INPUT.SWAP_HANDS ? 'left' : 'right');   // 右手握把空间（SWAP_HANDS 时交换到左手柄以校正 PICO 左右反）
+    const hand = input?.shootingHand || 'right';
+    const anchor = input?.getGrip(INPUT.SWAP_HANDS ? (hand === 'right' ? 'left' : 'right') : hand);
     if (anchor) {
-      if (!this._attached) { anchor.add(this.root); this._attached = true; }
+      if (this.root.parent !== anchor) { anchor.add(this.root); this._attached = true; }
       this.skillHint.attach(anchor);          // 幂等：挂到右手柄(grip)，视觉落在右手腕（原右手信息框位置）
     }
     if (SKILL_HINT.DEBUG && input) this.skillHint.debugMove(input, dt);  // 调试：左手柄摇杆/XY键 实时微调提示框位置（调参用）

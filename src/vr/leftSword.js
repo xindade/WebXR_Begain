@@ -176,9 +176,9 @@ export class LeftSword {
     this._updateBlade(dt);
     this._applyTransform();
     this._updateLaserHum();           // 激光剑嗡鸣：剑刃出现(展开)时响起、消失(收回)时淡出
-    if (this._attached) return;
-    const anchor = input?.getGrip(INPUT.SWAP_HANDS ? 'right' : 'left');   // 左手握把空间（SWAP_HANDS 时交换到右手柄以校正 PICO 左右反）
-    if (anchor) { anchor.add(this.root); this._attached = true; }
+    const hand = input?.supportHand || 'left';
+    const anchor = input?.getGrip(INPUT.SWAP_HANDS ? (hand === 'right' ? 'left' : 'right') : hand);
+    if (anchor && this.root.parent !== anchor) { anchor.add(this.root); this._attached = true; }
   }
 
   // 展开/收回动画：推进线性进度 → 缓动(easeOutBack 展开超调 / easeInOutCubic 收回) → 插值三量 → 应用

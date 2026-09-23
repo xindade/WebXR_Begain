@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-import { GLTFLoader } from '../../vendor/GLTFLoader.js';
-import { DRACOLoader } from '../../vendor/DRACOLoader.js';
+import { loadGLB } from './glbCache.js';
 import { DRAGON, DEPTH_SPRITE_MODE, DEPTH_SPRITE_TYPES, DEPTH_SPRITE_SCALE, DEPTH_SPRITE_FRAMES, DEPTH_SPRITE_SWING, DEPTH_SPRITE_HANDPAINTED, DEPTH_SPRITE_HIT_MUL } from '../core/constants.js';
 import { DepthSprite } from './depthSprite.js';
 import { captureModelByUrl, loadDepthSpriteSheet, captureFrameFit } from './glbCapture.js';
@@ -10,7 +9,6 @@ import { captureModelByUrl, loadDepthSpriteSheet, captureFrameFit } from './glbC
 // GLB 异步，气球构造是同步的，故采用「先建程序化球体 → 模型就绪后挂为子节点并隐藏球体」模式。
 // 碰撞是距离判定(game.js)，隐藏球体材质不影响命中。
 
-const _cache = new Map(); // url -> Promise<gltf.scene>
 
 // DepthSprite 捕获需要的 renderer（由 game.js 构造时注入 world.renderer）
 let _renderer = null;
@@ -48,19 +46,7 @@ export const MODEL_TUNING = {
 
 // 返回缓存的加载 Promise；失败则 reject（调用方兜底保留程序化球体）
 export function loadBalloonModel(url) {
-  if (_cache.has(url)) return _cache.get(url);
-  const p = new Promise((resolve, reject) => {
-    const draco = new DRACOLoader();
-    draco.setDecoderPath('vendor/draco/'); // 离线解码器，相对 index.html
-    const loader = new GLTFLoader();
-    loader.setDRACOLoader(draco);
-    loader.load(url, (gltf) => resolve(gltf.scene), undefined, (err) => {
-      console.error('[BalloonModels] 模型加载失败:', url, err);
-      reject(err);
-    });
-  });
-  _cache.set(url, p);
-  return p;
+  return loadGLB(url).then(gltf => gltf.scene);
 }
 
 // 把加载好的模型居中并缩放到与碰撞半径匹配：免去手猜 GLB 原生尺寸
@@ -83,6 +69,14 @@ export function fitToRadius(obj, radius) {
 // tint：通用身体(基础怪)按类型染色用；专用模型传 null 不打 tint。
 // tuningOverride：可选，覆盖 MODEL_TUNING 中该 url 的 {pos,rot,scale}（用于同一模型不同体型，如盾兵骑士 vs Boss 骑士）。
 export function attachBalloonModel(balloon, url, radius, tint = null, tuningOverride = null, extraScale = 1, typeId = null) {
+  // 下载/解码期间也必须可见，成功挂载后才隐藏占位。切关后不再操作失效实例。
+  balloon.mesh.material.visible = true;
+  const request = balloon._modelRequest = (balloon._modelRequest || 0) + 1;
+  const current = () => balloon.alive && balloon._modelRequest === request;
+  const fallback = () => {
+    if (current()) balloon.mesh.material.visible = true;
+    console.warn('[BalloonModels] 使用简化外观:', url);
+  };
   // —— DepthSprite 分支（开关 + 白名单）：用 GLB 捕获的 2D 立绘替 3D GLB ——
   if (DEPTH_SPRITE_MODE && _renderer && typeId && DEPTH_SPRITE_TYPES.includes(typeId)) {
     const tune = { ...(MODEL_TUNING[url] || { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 }), ...(tuningOverride || {}) };
@@ -93,7 +87,7 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
       : captureModelByUrl(_renderer, url, radius, { frames: DEPTH_SPRITE_FRAMES, swing: DEPTH_SPRITE_SWING });
     srcPromise
       .then(({ albedo, depth, frameCount, cols, rows }) => {
-        if (!balloon.alive) return; // 加载期间已被打死：不挂
+        if (!current()) return; // 加载期间已被打死或被新模型替代
         // 敌人整体缩放倍率（enemies.js 的 scale:3 等）：DepthSprite 挂在 scene（非 balloon.mesh），
         // 不会继承 mesh.scale，故此处手动乘上，保证视觉与 3D 模型怪/基础怪一致地放大。
         const enemyScale = balloon.effectiveRadius ? balloon.effectiveRadius / radius : 1;
@@ -111,18 +105,13 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
         balloon.hitRadius = balloon.effectiveRadius * (tune.scale ?? 1) * extraScale
                           * captureFrameFit(radius) * DEPTH_SPRITE_HIT_MUL;
       })
-      .catch(() => { /* 失败：保持程序化球体隐藏，不显示彩色兜底（避免破坏沉浸）；问题由 console.warn 暴露 */ });
+      .catch(fallback);
     return;
   }
   loadBalloonModel(url)
     .then((gltfScene) => {
       // 气球可能在加载期间已被打死/移除：直接释放克隆体，不挂场景
-      if (!balloon.alive) {
-        gltfScene.traverse((o) => {
-          if (o.isMesh) { o.geometry?.dispose?.(); o.material?.dispose?.(); }
-        });
-        return;
-      }
+      if (!current()) return; // 缓存几何体属于共享资源，不能由失效实例释放
       const clone = gltfScene.clone(true);
       fitToRadius(clone, radius);
 
@@ -155,10 +144,7 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
       // effectiveRadius 已含 mesh.scale，故 hitRadius 可覆盖整个模型（含上半身）
       balloon.hitRadius = balloon.effectiveRadius * (tune.scale ?? 1.0) * extraScale;
     })
-    .catch(() => {
-      // 加载失败：保持程序化球体隐藏（不再用彩色笑脸兜底，避免破坏沉浸）；仅告警便于定位 404/解码问题
-      console.warn('[BalloonModels] 模型加载失败，保持隐藏（无彩色兜底）:', url);
-    });
+    .catch(fallback);
 }
 
 // 脸谱 Boss 专用：移除旧模型并挂载新模型（用于每 10 秒变脸 / 龙身模型轮换）

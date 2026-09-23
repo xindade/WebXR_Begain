@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { TEST } from '../core/constants.js';
 import { Player } from './player.js';
 import { BalloonManager } from './balloons.js';
 import { ShurikenManager } from './shurikens.js';
@@ -65,7 +66,7 @@ export class Game {
 
     // DepthSprite 深度调试：按 D 把立绘切到「深度灰度视图」（中心亮=凸，边缘亮=凹）
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'd' || e.key === 'D') {
+      if (TEST.ENABLED && e.code === 'KeyD' && e.ctrlKey && e.shiftKey && !e.repeat) {
         if (this.balloons) this.balloons.depthDebug = !this.balloons.depthDebug;
       }
     });
@@ -214,6 +215,7 @@ export class Game {
     this.world.setIntroBackdrop(true);
     this.log('开场视频开始（舞台：飞毯 + 星空）');
     this._introVideo = new IntroVideo(this.world.scene, {
+      audio: this.audio,
       log: (m) => this.log(m),
       onDone: (reason) => this._onIntroVideoDone(reason),
     });
@@ -271,6 +273,7 @@ export class Game {
 
   // 回到「未开始」状态：供 sessionend 调用，使再次进入 VR 时 sessionstart 守卫生效、从干净状态开局
   toMenu() {
+    this.audio?.stopAllMedia();
     this.state = 'menu';                       // 关键：让 sessionstart 的 game.start 守卫重新生效
     this._disposeIntroVideo();                 // 开场视频若正在播（播放中退出 VR）：释放 + 还原背景舞台
     // 释放关卡专属实例（沿用 _loadLevel 头部写法）
@@ -317,6 +320,7 @@ export class Game {
   }
 
   _loadLevel(i) {
+    this.audio?.stopAllMedia();
     const lv = LEVELS[i];
     this.normalTest = false; // 默认非测试；仅普通关且 NORMAL_TEST.enabled 时被 startLevel 翻为 true
     // 离开上一关时清理激光关实例与玻璃网格
@@ -524,7 +528,7 @@ export class Game {
     if (!this._introPreloadQueue) return;
     if (this._introPreloadIdx >= this._introPreloadQueue.length) { this._introPreloadQueue = null; return; }
     const it = this._introPreloadQueue[this._introPreloadIdx++];
-    if (it.url) loadBalloonModel(it.url);                  // 进 glbCache，首只怪克隆零等待
+    if (it.url) loadBalloonModel(it.url).catch(() => {}); // 加载层记录失败，实体显示占位并可重试
     if (it.capture) preCaptureDepthSprite(it.url, it.radius); // 预热 DepthSprite 抓帧缓存（首帧零成本）
   }
 
@@ -592,14 +596,15 @@ export class Game {
   // 只复位高度：踩错掉落会把 rig.y 压到 -10（见 _updateGridPhase 失败动画），重生必须拉回 0；
   //   玩家现实身高由 XR pose 提供，不占用 rig.y。
   _respawnKeepPosition() {
-    this.rig.position.y = 0;
+    this.rig.position.y = this.input?.settings.heightOffset || 0;
   }
 
   // 重设「物理场地 ↔ 游戏区域」映射基准：rig 归零 ⇒ XR 原点即游戏区域中心。
   // 仅【回菜单】（一局结束、重设基准）时调用；重生 / 过场一律不调，否则会把玩家从原位拉走。
   // （JOYSTICK=0 纯现实行走时 rig 水平位置恒为 0，此调用等价于只把高度拉回 0。）
   _resetPlayerOrigin() {
-    this.rig.position.set(0, 0, 0);
+    this.rig.position.set(0, this.input?.settings.heightOffset || 0, 0);
+    this.rig.rotation.set(0, 0, 0);
   }
 
   // 同屏 DepthSprite 压测：在玩家前方生成 N 个 basic 立绘阵列（controlled 站定）。
@@ -1256,10 +1261,11 @@ export class Game {
   _updateSwordMelee() {
     this.leftSword.getBlade(this._hilt, this._tip);
     const now = this._gameTime;
-    const list = this.balloons.list;
+    // 连锁击杀可能同时移除 Boss/分身或召唤者/小怪，遍历快照保持索引稳定。
+    const list = this.balloons.list.slice();
     for (let i = list.length - 1; i >= 0; i--) {
       const b = list[i];
-      if (!b.alive) continue;
+      if (!b.alive || !this.balloons.list.includes(b)) continue;
       const rr = b.hitRadius; // 含立绘 0.6 系数/薄板近似，球体足够
       if (_pointSegDistSq(b.mesh.position, this._hilt, this._tip) > rr * rr) continue; // 剑刃未扫到
       if ((b._swordCdUntil || 0) > now) continue; // 同一只怪在 HIT_INTERVAL 内只受一次（剑刃持续扫到则可高频多次扣血）
@@ -1282,9 +1288,11 @@ export class Game {
       const halfH = BUDDHA.PLANE_HEIGHT * s * 0.5 * BUDDHA.HIT_MARGIN_XY; // 命中盒 Y 半高
       const zBand = BUDDHA.HIT_Z_BAND;                      // 命中盒 Z 半厚
       const px = fx.position.x, py = fx.position.y, pz = fx.position.z;
-      const list = this.balloons.list;
+      // 击杀回调会删除多个实体；快照中的已移除对象也不能继续受伤/计分。
+      const list = this.balloons.list.slice();
       for (let i = list.length - 1; i >= 0; i--) {
         const b = list[i];
+        if (!b.alive || !this.balloons.list.includes(b)) continue;
         if (this._buddhaHit.has(b)) continue;               // 本轮神掌已结算过，跳过
         const p = b.mesh.position;
         if (Math.abs(p.x - px) < halfW && Math.abs(p.y - py) < halfH && Math.abs(p.z - pz) < zBand) {

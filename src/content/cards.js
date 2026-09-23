@@ -23,7 +23,8 @@ export const ATTR_TYPES = [
   {
     id: 'atk', label: '攻击力+100', desc: '攻击力+100（上限700）',
     color: '#e67e22', icon: 'atk',
-    apply: (p) => { p.atk = Math.min(700, (p.atk || 100) + 100); },
+    // 死亡补偿可超过成长上限；强化绝不扣除已获得的攻击。
+    apply: (p) => { p.atk = Math.max(p.atk || 100, Math.min(700, (p.atk || 100) + 100)); },
   },
   {
     id: 'skillCost', label: '技能消耗-100', desc: '技能消耗-100（下限100）',
@@ -49,6 +50,34 @@ export const ATTR_TYPES = [
     },
   },
 ];
+
+const ATTRIBUTE_STATS = {
+  fireRate: ['fireRate', 2, 14, 2], multiShot: ['shotCount', 1, 7, 1], atk: ['atk', 100, 700, 100],
+  skillCost: ['skillCost', -100, 100, 500], skillDamage: ['skillDamageMul', 1, 5, 1],
+  selfRepair: ['regen', 2, 10, 0], hp: ['maxHp', 50, 400, 100],
+};
+export function attributePreview(card, player) {
+  const stats = ATTRIBUTE_STATS[card.id];
+  if (!stats) return card.desc;
+  const [key, step, limit, base] = stats;
+  const before = player[key] ?? base;
+  const after = step > 0 ? Math.max(before, Math.min(limit, before + step)) : Math.min(before, Math.max(limit, before + step));
+  return `${before} → ${after}${card.id === 'hp' ? '，并回血50' : ''}`;
+}
+export function availableAttributes(player, ids = ATTR_TYPES.map(c => c.id)) {
+  const useful = card => {
+    const [key, step, limit, base] = ATTRIBUTE_STATS[card.id];
+    return step > 0 ? (player[key] ?? base) < limit : (player[key] ?? base) > limit;
+  };
+  const pool = ATTR_TYPES.filter(card => ids.includes(card.id) && useful(card));
+  // 主池不足时补充仍可成长的生存属性；完全满级时提供明确的补给奖励。
+  for (const card of ATTR_TYPES) if (pool.length < 3 && useful(card) && !pool.includes(card)) pool.push(card);
+  if (!pool.length) pool.push({
+    id: 'resupply', label: '战场补给', desc: '回满生命，并获得3秒护盾', color: '#16a085', icon: 'hp',
+    apply: p => { p.hp = p.maxHp; p.shieldTime = Math.max(p.shieldTime || 0, 3); },
+  });
+  return pool;
+}
 
 // 技能卡（红色）：第3关固定三张（buddha/lightsaber/scatterburst）
 export const SKILL_CARDS = [

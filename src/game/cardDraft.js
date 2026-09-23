@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import { pointSegmentDistanceSq } from '../core/collision.js';
 import { CARD, RARITY } from '../core/constants.js';
-import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
+import { ATTR_TYPES, SKILL_CARDS, availableAttributes, attributePreview } from '../content/cards.js';
 
 // 抽卡：固定世界坐标 (Z=-4, Y=1) 均匀排开的 3D 卡牌，每张卡上方绑一个可射击气球。
 // 选卡方式 = 射击对应气球：气球爆炸 → 该卡化为光点飞向玩家；其余卡/气球无敌上飞到 10m（2s）后消失。
@@ -259,9 +260,7 @@ export class CardDraft {
       }
     } else {
       // 普通/Boss/机制关：从卡池抽 3 张不重复的属性卡（无刷新卡）
-      const pool = (this._state.pool || ATTR_TYPES.map(a => a.id))
-        .map(id => ATTR_TYPES.find(a => a.id === id))
-        .filter(Boolean);
+      const pool = availableAttributes(this._state.player, this._state.pool || undefined);
       let chosen;
       const g = this._guarantee;
       if (g && pool.some(a => a.id === g)) {
@@ -283,7 +282,7 @@ export class CardDraft {
       for (const attr of chosen) {
         picks.push({
           kind: 'attr', def: attr, rarity: 'gold',
-          label: attr.label, sub: attr.desc, color: attr.color, icon: attr.icon || null,
+          label: attr.label, sub: attributePreview(attr, this._state.player), color: attr.color, icon: attr.icon || null,
         });
       }
     }
@@ -388,10 +387,7 @@ export class CardDraft {
           const bx = it.holder.position.x;
           const by = it.holder.position.y + CARD.BALLOON_HEIGHT;
           const bz = it.holder.position.z;
-          const dx = b.pos.x - bx;
-          const dy = b.pos.y - by;
-          const dz = b.pos.z - bz;
-          if (dx * dx + dy * dy + dz * dz < (CARD.BALLOON_R + 0.12) ** 2) {
+          if (pointSegmentDistanceSq({ x: bx, y: by, z: bz }, b.prevPos || b.pos, b.pos) < (CARD.BALLOON_R + 0.12) ** 2) {
             bullets.release(b);
             this._triggerSelect(it, playerPos);
             return;

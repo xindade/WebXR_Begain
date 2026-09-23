@@ -1,0 +1,65 @@
+{
+  "Model/基础怪.glb:0.5:12:0.18": {
+    "albedo": "assets/depth-sprites/sprite-1-albedo.png",
+    "depth": "assets/depth-sprites/sprite-1-depth.png",
+    "frameCount": 12,
+    "cols": 4,
+    "rows": 3
+  },
+  "Model/忍者.glb:0.6:12:0.18": {
+    "albedo": "assets/depth-sprites/sprite-2-albedo.png",
+    "depth": "assets/depth-sprites/sprite-2-depth.png",
+    "frameCount": 12,
+    "cols": 4,
+    "rows": 3
+  },
+  "Model/骑士.glb:0.9:12:0.18": {
+    "albedo": "assets/depth-sprites/sprite-3-albedo.png",
+    "depth": "assets/depth-sprites/sprite-3-depth.png",
+    "frameCount": 12,
+    "cols": 4,
+    "rows": 3
+  },
+  "Model/章鱼.glb:0.9:12:0.18": {
+    "albedo": "assets/depth-sprites/sprite-4-albedo.png",
+    "depth": "assets/depth-sprites/sprite-4-depth.png",
+    "frameCount": 12,
+    "cols": 4,
+    "rows": 3
+  },
+  "Model/幽灵.glb:0.8:12:0.18": {
+    "albedo": "assets/depth-sprites/sprite-5-albedo.png",
+    "depth": "assets/depth-sprites/sprite-5-depth.png",
+    "frameCount": 12,
+    "cols": 4,
+    "rows": 3
+  },
+  "Model/召唤师.glb:0.7:12:0.18": {
+    "albedo": "assets/depth-sprites/sprite-6-albedo.png",
+    "depth": "assets/depth-sprites/sprite-6-depth.png",
+    "frameCount": 12,
+    "cols": 4,
+    "rows": 3
+  },
+  "Model/心形怪.glb:0.9:12:0.18": {
+    "albedo": "assets/depth-sprites/sprite-7-albedo.png",
+    "depth": "assets/depth-sprites/sprite-7-depth.png",
+    "frameCount": 12,
+    "cols": 4,
+    "rows": 3
+  },
+  "Model/宝箱.glb:0.7:12:0.18": {
+    "albedo": "assets/depth-sprites/sprite-8-albedo.png",
+    "depth": "assets/depth-sprites/sprite-8-depth.png",
+    "frameCount": 12,
+    "cols": 4,
+    "rows": 3
+  },
+  "Model/黑面脸谱.glb:1:12:0.18": {
+    "albedo": "assets/depth-sprites/sprite-9-albedo.png",
+    "depth": "assets/depth-sprites/sprite-9-depth.png",
+    "frameCount": 12,
+    "cols": 4,
+    "rows": 3
+  }
+}

@@ -10,7 +10,7 @@ export class HUD {
     this.root.appendChild(this.top);
 
     this.hpWrap = document.createElement('div');
-    this.hpWrap.style.cssText = 'position:absolute;top:14px;right:16px;width:180px;';
+    this.hpWrap.style.cssText = 'position:absolute;top:78px;right:145px;width:140px;';
     this.root.appendChild(this.hpWrap);
     this.hpBar = document.createElement('div');
     this.hpBar.style.cssText = 'height:16px;background:#2ecc71;border-radius:8px;transition:width .2s,background .2s;box-shadow:0 0 6px #000;';
@@ -35,12 +35,12 @@ export class HUD {
 
     // 倒计时横幅（第十五关 180s 用，平时隐藏）
     this.timer = document.createElement('div');
-    this.timer.style.cssText = 'position:absolute;top:14px;left:50%;transform:translateX(-50%);font-size:22px;font-weight:bold;text-shadow:0 2px 6px #000;display:none;';
+    this.timer.style.cssText = 'position:absolute;top:110px;left:16px;font-size:18px;font-weight:bold;text-shadow:0 2px 6px #000;display:none;';
     this.root.appendChild(this.timer);
 
     // 选中技能 + 冷却（第三关选卡后装备，右手握柄触发）
     this.skill = document.createElement('div');
-    this.skill.style.cssText = 'position:absolute;top:46px;left:16px;font-size:14px;line-height:1.5;text-shadow:0 1px 3px #000;';
+    this.skill.style.cssText = 'position:absolute;top:74px;left:16px;font-size:14px;line-height:1.5;text-shadow:0 1px 3px #000;';
     this.root.appendChild(this.skill);
   }
 

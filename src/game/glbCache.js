@@ -9,12 +9,13 @@ import { GLTFLoader } from '../../vendor/GLTFLoader.js';
 import { DRACOLoader } from '../../vendor/DRACOLoader.js';
 
 const _cache = new Map(); // url -> Promise<gltf>
+const draco = new DRACOLoader();
+draco.setDecoderPath('vendor/draco/');
+draco.setWorkerLimit(2);
+const loader = new GLTFLoader();
+loader.setDRACOLoader(draco);
 
 function _load(url, onProgress) {
-  const draco = new DRACOLoader();
-  draco.setDecoderPath('vendor/draco/'); // 离线解码器，相对 index.html
-  const loader = new GLTFLoader();
-  loader.setDRACOLoader(draco);
   return new Promise((resolve, reject) => {
     loader.load(
       url,
@@ -28,7 +29,6 @@ function _load(url, onProgress) {
 // 返回缓存的加载 Promise；同一 url 并发调用共享同一 Promise / 同一 gltf 对象。
 export function loadGLB(url, onProgress) {
   if (_cache.has(url)) {
-    onProgress?.(1, 1);
     return _cache.get(url);
   }
   const p = _load(url, onProgress).catch((err) => {

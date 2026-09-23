@@ -18,7 +18,7 @@
   function ensureDom() {
     if (body) return;
     var root = document.createElement('div');
-    root.className = 'pagelog';
+    root.className = 'pagelog collapsed';
     root.innerHTML =
       '<div class="pagelog-head">' +
       '<span class="pagelog-title">运行日志 · 最高优先</span>' +

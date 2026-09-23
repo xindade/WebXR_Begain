@@ -21,6 +21,10 @@ const BOSS_OST   = [0,0,7,0,12,0,7,0,0,12,7,0,0,7,12,7]; // 根-五-八 马达�
 
 export class AudioManager {
   constructor() {
+    this.volume = 1;
+    this.paused = false;
+    this._media = new Map();
+    this._resumeMedia = new Set();
     this.ctx = null;
     this.master = null;
     this.bgmBus = null;           // 程序化 BGM 总线（startBGM 创建，stopBGM 淡出后销毁）
@@ -43,14 +47,14 @@ export class AudioManager {
 
   // ===== 解锁（须在用户手势内调用）=====
   unlock() {
-    if (this._unlocked) return;
+    if (this._unlocked) { if (!this.paused) this.ctx?.resume().catch(() => {}); return; }
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     this.ctx = new AC();
     this.master = this.ctx.createGain();
-    this.master.gain.value = 0.5;
+    this.master.gain.value = 0.5 * this.volume;
     this.master.connect(this.ctx.destination);
-    if (this.ctx.state === 'suspended') this.ctx.resume();
+    if (this.ctx.state === 'suspended' && !this.paused) this.ctx.resume().catch(() => {});
     this._unlocked = true;
   }
 
@@ -86,6 +90,7 @@ export class AudioManager {
   }
 
   _schedule() {
+    if (this.paused) return;
     if (!this.ctx || !this.bgmBus) return;
     const now = this.ctx.currentTime;
     if (this.nextStepTime < now) this.nextStepTime = now + 0.05; // 休眠恢复后重新对齐（不清算补发）
@@ -761,7 +766,7 @@ export class AudioManager {
     if (!url) return;
     const el = new Audio(url);
     el.preload = 'auto';
-    el.volume = volume;
+    this.registerMedia(el, volume);
     el.play().catch(() => {});
     return el;
   }
@@ -773,7 +778,7 @@ export class AudioManager {
     const el = new Audio(url);
     el.preload = 'auto';
     el.loop = true;
-    el.volume = volume;
+    this.registerMedia(el, volume);
     el.play().catch(() => {});
     this._loopVoiceEl = el;
     return el;
@@ -781,6 +786,7 @@ export class AudioManager {
 
   stopLoopVoice() {
     if (this._loopVoiceEl) {
+      this.unregisterMedia(this._loopVoiceEl);
       try { this._loopVoiceEl.pause(); this._loopVoiceEl.src = ''; } catch (e) { /* 忽略 */ }
       this._loopVoiceEl = null;
     }
@@ -791,6 +797,36 @@ export class AudioManager {
       try { this._bgmEl.pause(); this._bgmEl.src = ''; } catch (e) { /* 忽略 */ }
       this._bgmEl = null;
       this._bgmUrl = null;
+    }
+  }
+
+  registerMedia(el, volume = 1) {
+    this._media.set(el, volume);
+    el.volume = Math.max(0, Math.min(1, volume * this.volume));
+    el.addEventListener('ended', () => this.unregisterMedia(el), { once: true });
+    el.addEventListener('error', () => this.unregisterMedia(el), { once: true });
+  }
+  unregisterMedia(el) { this._media.delete(el); this._resumeMedia.delete(el); }
+  stopAllMedia() {
+    for (const el of this._media.keys()) el.pause();
+    this._media.clear(); this._resumeMedia.clear();
+    this._loopVoiceEl = null;
+  }
+  setVolume(value) {
+    this.volume = value;
+    if (this.master) this.master.gain.value = 0.5 * value;
+    for (const [el, base] of this._media) el.volume = Math.max(0, Math.min(1, base * value));
+  }
+  setPaused(paused) {
+    if (this.paused === paused) return;
+    this.paused = paused;
+    if (paused) {
+      this.ctx?.suspend().catch(() => {});
+      for (const el of this._media.keys()) if (!el.paused && !el.ended) { this._resumeMedia.add(el); el.pause(); }
+    } else {
+      this.ctx?.resume().catch(() => {});
+      for (const el of this._resumeMedia) if (this._media.has(el) && !el.ended) el.play().catch(() => {});
+      this._resumeMedia.clear();
     }
   }
 }

@@ -55,6 +55,8 @@ export class IntroVideo {
     v.muted = false;
     try { v.volume = Math.max(0, Math.min(1, this._o.VOLUME)); } catch (e) { /* 忽略：个别内核设 volume 早于加载会抛 */ }
     this._video = v;
+    this._audio = opts.audio;
+    this._audio?.registerMedia(v, this._o.VOLUME);
 
     // ---- 事件处理器（绑定一次，dispose 时解绑）----
     this._onEnded = () => this._finish('播完');
@@ -126,12 +128,14 @@ export class IntroVideo {
     this._say('开始播放');
     const p = v.play();
     if (p && typeof p.catch === 'function') {
-      p.catch(() => {
-        if (this._disposed) return;
+      p.catch((error) => {
+        if (this._disposed || this._audio?.paused || error?.name === 'AbortError') return;
         // 带音轨的视频在没有用户手势时会被拦 → 静音重试（静音视频允许自动播放）
         v.muted = true;
         const p2 = v.play();
-        if (p2 && typeof p2.catch === 'function') p2.catch(() => this._finish('播放被拦且静音重试失败'));
+        if (p2 && typeof p2.catch === 'function') p2.catch((error) => {
+          if (!this._disposed && !this._audio?.paused && error?.name !== 'AbortError') this._finish('播放被拦且静音重试失败');
+        });
         // 一次性手势监听：玩家一交互就恢复声音；摘监听在 _removeUnmute
         this._unmute = () => { v.muted = false; this._removeUnmute(); };
         window.addEventListener('pointerdown', this._unmute);
@@ -189,6 +193,7 @@ export class IntroVideo {
   dispose() {
     if (this._disposed) return;
     this._disposed = true;
+    this._audio?.unregisterMedia(this._video);
     const v = this._video;
     if (v) {
       v.removeEventListener('ended', this._onEnded);

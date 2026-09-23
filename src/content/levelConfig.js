@@ -1,4 +1,6 @@
-// 集中配置表：关卡 + 敌人 + Boss（整合原 enemies.js / constants.js WAVE / waves.js / dragonLevel.js 的分散常量）
+// 历史设计参考（未接入运行时代码，修改本文件不会改变游戏）。
+// 实际入口：levels.js / enemies.js / spawnPlans.js / eliteMonsters.js / cards.js；参数覆盖见 core/userConfig.js。
+// 原集中配置表：关卡 + 敌人 + Boss
 // 机制关（第3/9/15关为激光关）不在此表内。
 // 出生点(spawn)指「敌人生成区域」，非玩家出生点（玩家出生点固定原点）。
 // 动画速度(animSpeed)仅对 Boss/特殊敌人有意义（普通球体气球为程序化移动，无独立动画播放速度；animSpeed 为本次新增字段，默认 1）。

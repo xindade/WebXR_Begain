@@ -1,14 +1,19 @@
 import * as THREE from 'three';
 import { World } from './core/world.js';
-import { preloadDragonAssets } from './game/dragonLevel.js';
+import { PauseState } from './core/pause.js';
+import { loadSettings } from './core/settings.js';
+import { PerformanceMonitor } from './core/performance.js';
+import { GameControls } from './ui/settings.js';
 import { HUD } from './ui/hud.js';
 import { AudioManager } from './vr/audio.js';
 import { InputManager } from './vr/input.js';
+import { watchXRAvailability } from './vr/availability.js';
 import { WristUI } from './vr/wrist-ui.js';
 import { Game } from './game/game.js';
 import { prewarmIntroVideo } from './game/introVideo.js';
 import { LEVELS } from './content/levels.js';
-import { preloadGLB } from './game/glbCache.js';
+import { loadGLB } from './game/glbCache.js';
+import { SKY_PANORAMA } from './core/constants.js';
 import { MODEL_URL as PORTAL_MODEL_URL } from './game/portal.js';
 import { MODEL_URL as OPENING_MODEL_URL } from './game/openingModel.js';
 
@@ -16,74 +21,8 @@ window.__pageLog?.info('[main] 模块开始执行（imports 已解析）');
 
 const canvas = document.getElementById('app');
 const world = new World(canvas);
-
-// 预览阶段预加载重资产（龙关动画 JSON/龙头 GLB + 传送门/激光剑 GLB + 抽卡图）。
-// 进度条走完才放行 Enter VR 按钮。天空(18 张 4K 全景)改为「进对应关时按需懒加载」，
-// 避免启动时一次性解码 18 张 ~600MB 占用内存；setSkyPanorama 自带异步兜底，进关即显示。
-// 进度条按体感分段：80% 停 6s、95% 停 3s、最后 1s 跑到 100%。
-(function preloadAll() {
-  const overlay = document.getElementById('loading-overlay');
-  const fill = document.getElementById('loading-bar-fill');
-  const text = document.getElementById('loading-text');
-
-  let dragonFrac = 0; // JSON 占 0.1，GLB 下载占 0.9
-  const dragonTask = preloadDragonAssets((loaded, total) => {
-    dragonFrac = 0.1 + 0.9 * (total ? Math.min(1, loaded / total) : 0);
-  }).then(() => { dragonFrac = 1; })
-    .catch(() => { dragonFrac = 1; });
-
-  // 传送门 + 开场魔术师动画 GLB：下载+DRACO 解码+parse 一次性完成，进关零等待（glbCache 命中，零重复加载）。
-  // 注：马戏团(CIRCUS)模型已按需求移除、其 GLB 不再预载；开场魔术师动画已恢复——机制关(3/9/15)进关即播放、10秒后自动消失。
-  // 激光剑已改为程序化 shader 光剑（不再预载 GLB，Model/激光剑.glb 仅留作资产备份）。
-  const glbParts = [0, 0];
-  const glbTasks = [PORTAL_MODEL_URL, OPENING_MODEL_URL].map((u, i) =>
-    preloadGLB(u, (loaded, total) => {
-      glbParts[i] = total ? Math.min(1, loaded / total) : 0;
-    }).then(() => { glbParts[i] = 1; })
-  );
-  const glbTask = Promise.all(glbTasks);
-
-  // 真实总进度：龙资产 / 传送门+开场动画 GLB 各占一半（天空已改为逐关懒加载，不进启动进度）
-  // 抽卡卡面现由 canvas 程序化绘制（简笔画图标），无需预加载 PNG。
-  const realFrac = () => {
-    const glb = glbParts.reduce((s, v) => s + v, 0) / glbParts.length;
-    return (dragonFrac + glb) / 2;
-  };
-
-  // —— 分段节奏（毫秒）——
-  const HOLD_80 = 6000;   // 80% 停顿 6 秒
-  const HOLD_95 = 3000;   // 95% 停顿 3 秒
-  const RAMP = 1000;      // 最后 1 秒冲到 100%
-  const HARD_TIMEOUT = 20000; // 兜底：无论如何 20 秒后强制放行，避免软锁
-  const START = performance.now();
-
-  function frame() {
-    const elapsed = performance.now() - START;
-    const real = realFrac();
-    let cap = 1, minShow = 0;
-    if (elapsed < HOLD_80) {
-      cap = 0.80;                                  // 0~6s：不超过 80%
-    } else if (elapsed < HOLD_80 + HOLD_95) {
-      cap = 0.95;                                  // 6~9s：不超过 95%
-    } else {
-      const k = Math.min(1, (elapsed - HOLD_80 - HOLD_95) / RAMP);
-      minShow = 0.95 + 0.05 * k;                   // 9~10s：缓动到 100%
-    }
-    let p = Math.min(real, cap);
-    p = Math.max(p, minShow);
-    if (fill) fill.style.width = Math.round(p * 100) + '%';
-    if (text) text.textContent = `正在加载游戏资源 ${Math.round(p * 100)}%`;
-
-    // 完成条件：资产全部就绪 且 已越过分段节奏
-    if ((real >= 1 && elapsed >= HOLD_80 + HOLD_95) || elapsed >= HARD_TIMEOUT) {
-      if (overlay) overlay.style.display = 'none'; // 揭开遮罩，显示 Enter VR 按钮
-      return;
-    }
-    requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
-  Promise.all([dragonTask, glbTask]).catch(() => {}); // 触发加载（帧循环独立读取进度）
-})();
+const settings = loadSettings();
+world.skyMaxDimension = settings.skySize;
 
 const hud = new HUD();
 const audio = new AudioManager();
@@ -96,6 +35,47 @@ const wristUI = new WristUI(); // 手腕面板：右手战斗信息 / 左手日�
 // 页面日志（最高优先，由 index.html 的经典脚本注入；three 失败时仍可用）
 const pageLog = window.__pageLog || null;
 game.setSystems(audio, input, wristUI, pageLog);
+
+const monitor = new PerformanceMonitor();
+let controls;
+const pause = new PauseState(paused => {
+  input.reset(); audio.setPaused(paused);
+  if (paused) document.exitPointerLock?.();
+  controls?.showPaused(paused);
+});
+function applySettings(next) {
+  game.rig.position.y += next.heightOffset - input.settings.heightOffset;
+  input.setSettings(next); audio.setVolume(next.volume);
+}
+function resumeGame() {
+  if (document.hidden || (world.xr.getSession() && world.xr.getSession().visibilityState !== 'visible')) return;
+  pause.remove('manual'); pause.remove('error');
+}
+function exitGame() {
+  if (world.isPresenting) world.xr.getSession()?.end().catch(console.warn);
+  else { game.toMenu(); pause.clear(); }
+}
+controls = new GameControls({ world, game, pause, settings, onSettings: applySettings, onResume: resumeGame, onExit: exitGame, monitor });
+applySettings(settings);
+function focusPause(reason, hidden) {
+  if (game.state === 'menu') return;
+  if (hidden) { pause.add('manual'); pause.add(reason); }
+  else pause.remove(reason); // 恢复焦点仍需玩家明确继续
+}
+input.onUnlock = () => focusPause('manual', true);
+window.addEventListener('blur', () => focusPause('window', true));
+window.addEventListener('focus', () => pause.remove('window'));
+document.addEventListener('visibilitychange', () => focusPause('hidden', document.hidden));
+world.xr.addEventListener('sessionstart', () => {
+  const session = world.xr.getSession();
+  const onVisibility = () => focusPause('xr', session.visibilityState !== 'visible');
+  session.addEventListener('visibilitychange', onVisibility);
+  session.addEventListener('end', () => session.removeEventListener('visibilitychange', onVisibility), { once: true });
+});
+function startGame(index, mode, intro) {
+  pause.clear(); input.reset(); game.start(index, mode, intro);
+}
+
 
 // ── 顶部枪械模式切换（预览界面按钮）：未点=初始态，点击=满状态 ──
 let gunFull = false;
@@ -117,15 +97,16 @@ const gunMode = () => (gunFull ? 'full' : 'preview');
 //   与 world.isPresenting（必须真在 VR 会话内）共同决定。
 let pendingStartIndex = 0;
 let pendingPlayIntro = false;
-world.xr.addEventListener('sessionstart', () => { pageLog?.resumeScroll(); if (game.state === 'menu') game.start(pendingStartIndex, gunMode(), pendingPlayIntro); });
+world.xr.addEventListener('sessionstart', () => { pageLog?.resumeScroll(); if (game.state === 'menu') startGame(pendingStartIndex, gunMode(), pendingPlayIntro); });
 // 桌面：开始按钮（idx 0=第1关，2=第3关激光测试）—— 桌面预览不播开场视频
-hud.onStart((idx = 0) => game.start(idx, gunMode(), false));
+hud.onStart((idx = 0) => { audio.unlock(); startGame(idx, gunMode(), false); });
 
 // ── 自定义 PICO 兼容 VR 进入按钮（参考 vr-controller-kit skill）──
 // 不使用 three 自带 VRButton：改用 requiredFeatures:['local-floor'] + 无参回退，
 // PICO 的 Chrome/105 不支持某些特性参数时才能顺利进入。
 const enterVRBtn = document.getElementById('enter-vr-btn');
 const statusMsg = document.getElementById('status-msg');
+let vrStarting = false;
 
 function showStatus(text, isError = false) {
   if (!statusMsg) return;
@@ -135,40 +116,46 @@ function showStatus(text, isError = false) {
 }
 
 async function enterVR() {
-  if (enterVRBtn.disabled) return;
+  if (vrStarting || world.xr.getSession() || enterVRBtn.disabled) return;
+  vrStarting = true;
+  vrAvailability.invalidate();
   enterVRBtn.disabled = true;
   enterVRBtn.textContent = '⏳ 启动中...';
+  let session;
   try {
     if (!navigator.xr) throw new Error('浏览器不支持 WebXR（需 https 或 localhost + 支持 WebXR 的头显浏览器）');
 
-    let session;
+    let referenceType = 'local-floor';
     try {
-      if (navigator.xr.isSessionSupported) {
-        const ok = await navigator.xr.isSessionSupported('immersive-vr');
-        if (!ok) throw new Error('设备不支持 immersive-vr');
-      }
       session = await navigator.xr.requestSession('immersive-vr', { requiredFeatures: ['local-floor'] });
     } catch (e) {
       // PICO 兼容：带参失败则无参回退
       console.log('使用 PICO 兼容模式:', e.message);
+      if (e.name === 'NotAllowedError' || e.name === 'SecurityError') throw e;
+      referenceType = 'local';
       session = await navigator.xr.requestSession('immersive-vr');
     }
 
+    world.renderer.xr.setReferenceSpaceType(referenceType);
     await world.renderer.xr.setSession(session);
     // 规避 three.js r168 在 PICO 上首帧 referenceSpace 仍为空导致
     // onAnimationFrame 调 frame.getPose(gripSpace, null) 抛非致命报错的坑：
     // 预解析并强制设置自定义参考空间（与会话 'local-floor' 一致），
     // 使每帧用 customReferenceSpace 覆盖库内可能暂为空的 referenceSpace。
     try {
-      const rs = await session.requestReferenceSpace('local-floor');
-      world.renderer.xr.setReferenceSpace(rs);
+      const rs = await session.requestReferenceSpace(referenceType);
+      world.renderer.xr.setReferenceSpace(referenceType === 'local'
+        ? rs.getOffsetReferenceSpace(new XRRigidTransform({ x: 0, y: -1.6, z: 0 })) : rs);
     } catch (_) { /* 忽略：库内部 onSessionStart 也会自行解析 */ }
     enterVRBtn.style.display = 'none';
     if (statusMsg) statusMsg.style.display = 'none';
   } catch (err) {
+    if (session) await session.end().catch(() => {});
     showStatus('❌ ' + err.message, true);
     enterVRBtn.disabled = false;
     enterVRBtn.textContent = '🎈 进入 VR';
+  } finally {
+    vrStarting = false;
   }
 }
 
@@ -176,24 +163,19 @@ async function enterVR() {
 world.xr.addEventListener('sessionend', () => {
   pageLog?.pauseScroll();
   game.toMenu();            // B/退出 VR 后真正回到未开始状态（state='menu' 并清场，重进 VR 即从干净状态开局）
+  pause.clear();
   pendingStartIndex = 0; // 复位，下次默认从第 1 关开始
   enterVRBtn.disabled = false;
   enterVRBtn.style.display = 'block';
   enterVRBtn.textContent = '🎈 进入 VR';
+  vrAvailability.refresh();
 });
 
-// 探测 WebXR 支持情况，给出明确提示
-if (navigator.xr && navigator.xr.isSessionSupported) {
-  navigator.xr.isSessionSupported('immersive-vr').then((ok) => {
-    if (!ok) {
-      enterVRBtn.textContent = '桌面模式（无 VR 设备）';
-      enterVRBtn.disabled = true;
-    }
-  }).catch(() => {});
-} else {
-  enterVRBtn.textContent = '桌面模式（需 https/头显）';
-  enterVRBtn.disabled = true;
-}
+// 支持晚连接/运行时重启；暂未检测到设备时保留用户手动重试入口。
+const vrAvailability = watchXRAvailability({
+  xr: navigator.xr, button: enterVRBtn, windowTarget: window, documentTarget: document,
+  isBusy: () => vrStarting || !!world.xr.getSession(),
+});
 
 // 进入 VR：默认第 1 关（其余关用右侧 #level-panel 面板进入）—— 主按钮进第 1 关要播开场视频
 enterVRBtn.onclick = () => { audio.unlock(); pendingStartIndex = 0; pendingPlayIntro = true; prewarmIntroVideo(); enterVR(); };
@@ -216,7 +198,7 @@ async function startLevelAt(idx) {
     ? await navigator.xr.isSessionSupported('immersive-vr').catch(() => false)
     : false;
   if (xrOk) enterVR();     // 头显：进 VR 后 sessionstart 触发 game.start(pendingStartIndex, mode, false)
-  else game.start(idx, mode, false);     // 桌面：直接开局预览（不播视频）
+  else startGame(idx, mode, false);     // 桌面：直接开局预览（不播视频）
 }
 (function buildLevelPanel() {
   const panel = document.getElementById('level-panel');
@@ -232,14 +214,43 @@ async function startLevelAt(idx) {
   });
 })();
 
+// 资源后台预热，不阻挡开始游戏；缺失资源沿用各模块的占位与重试处理。
+const startupAssets = [
+  { name: '首关天空', load: () => world.prepareSkyPano(SKY_PANORAMA[1]) },
+  { name: '传送门', load: () => loadGLB(PORTAL_MODEL_URL) },
+  { name: '开场模型', load: () => loadGLB(OPENING_MODEL_URL) },
+];
+for (const { name, load } of startupAssets) {
+  Promise.resolve().then(load).catch(error => console.warn(`[后台加载] ${name}：`, error));
+}
+
 const clock = new THREE.Clock();
+const lastErrors = new Map();
+function reportError(system, error) {
+  const now = performance.now();
+  if (!lastErrors.has(system) || now - lastErrors.get(system) > 5000) {
+    console.error(`[${system}]`, error); lastErrors.set(system, now);
+  }
+  pause.add('error');
+}
 world.renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
-  // 单帧异常只记录、不向上抛：否则会中断 XR 动画循环的排帧，导致 VR 黑屏
-  try { game.update(dt); } catch (e) { console.error('[主循环] game.update 异常:', e); }
-  // 飞毯每帧更新：dt 钳制到 1/30，避免掉帧时 Verlet 积分爆炸（见飞毯文档坑#7）；运动与玩家移动无关（恒定基线 + 缓慢自震荡）
-  try { world.carpet?.update(Math.min(dt, 1 / 30)); } catch (e) { console.error('[主循环] carpet.update 异常:', e); }
-  try { world.render(); } catch (e) { console.error('[主循环] world.render 异常:', e); }
+  const menuAction = input.pollMenu();
+  if (game.state !== 'menu' && menuAction && !document.querySelector('dialog[open]')) {
+    if (!pause.paused) pause.add('manual');
+    else if (menuAction === 'exit') exitGame();
+    else resumeGame();
+  }
+  const begin = performance.now();
+  if (!pause.paused) {
+    try { game.update(dt); } catch (e) { reportError('游戏更新', e); }
+    try { world.carpet?.update(Math.min(dt, 1 / 30)); } catch (e) { reportError('飞毯', e); }
+  }
+  const rendered = performance.now();
+  try { world.render(); } catch (e) { reportError('渲染', e); }
+  const sample = monitor.record(dt, rendered - begin, performance.now() - rendered, world.renderer.info,
+    { level: game.levelIndex + 1, state: game.state, paused: pause.paused, xr: world.isPresenting, skyCache: Object.keys(world._panoCache).length });
+  controls.updateStats(sample);
 });
 
 window.__game = game; // 调试用

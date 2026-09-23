@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { DEFAULT_SETTINGS } from '../core/settings.js';
 import { MOVE, SHOOT, GUN_MODES, TEST, SKILL_HINT } from '../core/constants.js';
 
 // 输入抽象层：一套接口同时支持
@@ -21,6 +22,11 @@ export class InputManager {
     this.world = world;
     this.rig = playerRig;
     this.camera = world.camera;
+    this.settings = { ...DEFAULT_SETTINGS };
+    this._menuPrev = { a: false, b: false };
+    this._menuQueued = null;
+    this._requireRelease = { left: false, right: false };
+    this._turnReady = true;
 
     this.keys = new Set();
     this.yaw = 0;
@@ -50,11 +56,15 @@ export class InputManager {
 
   _bindDesktop() {
     window.addEventListener('keydown', (e) => {
+      if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target?.tagName)) return;
+      if ((e.code === 'KeyP' || e.code === 'Escape') && !e.repeat) { this._menuQueued = 'toggle'; return; }
+      if (e.target?.tagName === 'BUTTON') return;
       this.keys.add(e.code);
-      if (e.code === 'KeyF') this._skillQueued = true; // 技能（桌面，触发选中技能）
+      if (e.code === 'KeyF' && !e.repeat) this._skillQueued = true;
       if (e.code === 'KeyG' && TEST.ENABLED && TEST.DESKTOP_KEY_G) this._creditQueued = TEST.ADD_SCORE; // 测试积分（桌面，等价于 VR 左手 X）
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    window.addEventListener('blur', () => this.reset());
 
     const canvas = this.world.renderer.domElement;
     canvas.addEventListener('mousedown', (e) => {
@@ -74,7 +84,9 @@ export class InputManager {
       this.pitch = THREE.MathUtils.clamp(this.pitch, -1.2, 1.2);
     });
     document.addEventListener('pointerlockchange', () => {
+      const wasLocked = this.locked;
       this.locked = document.pointerLockElement === canvas;
+      if (!this.locked) { this.reset(); if (wasLocked) this.onUnlock?.(); }
     });
   }
 
@@ -97,13 +109,14 @@ export class InputManager {
         this._gripHands[hand] = this._grips[i];
         // 右手射线：变红 + 绕 X 轴俯仰 RIGHT_PITCH_DEG（与子弹方向共用同一俯角）
         const ray = ctrl.userData.rayLine;
-        if (ray && hand === 'right') {
-          ray.material.color.setHex(SHOOT.RAY_COLOR);
-          ray.rotation.x = THREE.MathUtils.degToRad(SHOOT.RIGHT_PITCH_DEG);
+        if (ray) {
+          ray.material.color.setHex(hand === this.shootingHand ? SHOOT.RAY_COLOR : SHOOT.RAY_COLOR_LEFT);
+          ray.rotation.x = hand === this.shootingHand ? THREE.MathUtils.degToRad(SHOOT.RIGHT_PITCH_DEG) : 0;
         }
       });
       ctrl.addEventListener('disconnected', () => {
         if (ctrl.userData.hand) this._hands[ctrl.userData.hand] = null;
+        if (ctrl.userData.hand) this._gripHands[ctrl.userData.hand] = null;
         ctrl.userData.inputSource = null;
       });
 
@@ -180,11 +193,12 @@ export class InputManager {
     //   注意此处连下面的区域边界约束一并跳过（两者原本同段），故禁用摇杆后没有越界拦阻。
     if (!MOVE.JOYSTICK) return;
     if (m.x === 0 && m.z === 0) return;
-    const speed = MOVE.SPEED * dt;
+    const speed = this.settings.moveSpeed * dt;
     if (this.world.isPresenting) {
       // 顺相机水平朝向移动；PICO 摇杆前推为负 → 取反后作为前进量
-      const forward = _v.set(0, 0, -1).applyQuaternion(this.camera.quaternion); forward.y = 0; forward.normalize();
-      const right = _v2.set(1, 0, 0).applyQuaternion(this.camera.quaternion); right.y = 0; right.normalize();
+      this.camera.getWorldQuaternion(_q);
+      const forward = _v.set(0, 0, -1).applyQuaternion(_q); forward.y = 0; forward.normalize();
+      const right = _v2.set(1, 0, 0).applyQuaternion(_q); right.y = 0; right.normalize();
       const fwdAmt = -m.z; // 前推(负)→前进(正)
       this.rig.position.x += (forward.x * fwdAmt + right.x * m.x) * speed;
       this.rig.position.z += (forward.z * fwdAmt + right.z * m.x) * speed;
@@ -193,8 +207,8 @@ export class InputManager {
       const sin = Math.sin(yaw), cos = Math.cos(yaw);
       const wx = (m.x * cos + m.z * sin);
       const wz = (-m.x * sin + m.z * cos);
-      this.rig.position.x += wx * MOVE.SPEED * dt;
-      this.rig.position.z += wz * MOVE.SPEED * dt;
+      this.rig.position.x += wx * speed;
+      this.rig.position.z += wz * speed;
     }
     // 边界约束作用在「玩家世界位置」(rig + 现实偏移) 上，而不是 rig 本身：
     //   ① 真实行走的位移写在相机（rig 子节点）上，若只 clamp rig，玩家现实走远后实际已越界却不受约束；
@@ -251,7 +265,7 @@ export class InputManager {
 
   // 枪口位姿：取右手柄世界位置 + 瞄准方向（含俯角，与红射线/子弹一致）；无右手柄（桌面）回退相机
   getMuzzle(outPos, outDir) {
-    const ctrl = this._hands['right'];
+    const ctrl = this._hands[this.shootingHand];
     if (ctrl) { this._rightAim(ctrl, outPos, outDir); return; }
     this.camera.getWorldPosition(outPos);
     this._forwardOf(this.camera, outDir);
@@ -283,7 +297,8 @@ export class InputManager {
       const ctrl = this._hands[hand];
 
       const triggerVal = gp.buttons[0]?.value || 0;
-      const trigger = triggerVal > TRIGGER_THRESHOLD;
+      if (triggerVal <= TRIGGER_THRESHOLD) this._requireRelease[hand] = false;
+      const trigger = triggerVal > TRIGGER_THRESHOLD && !this._requireRelease[hand];
       const grip = gp.buttons[1]?.pressed || false;
       const btnA = gp.buttons[4]?.pressed || false; // 右:A / 左:X
       const btnB = gp.buttons[5]?.pressed || false; // 右:B / 左:Y
@@ -294,24 +309,19 @@ export class InputManager {
         ctrl.userData.prevGrip = grip;
       }
 
-      if (hand === 'right') {
+      if (hand === this.shootingHand) {
         // 右手扳机：射击（冷却控制）+ 抽卡确认（边缘）
         if (trigger) {
-          if (ctrl && this._cooldowns.right <= 0) {
+          if (ctrl && this._cooldowns[hand] <= 0) {
             this._rightAim(ctrl, _v, _v2);   // 方向含俯角、出生点含枪口偏移（与红色射线一致）
             this.shots.push({ position: _v.clone(), direction: _v2.clone() });
             this.shotsFired++;
-            this._cooldowns.right = this._gunCooldown;
+            this._cooldowns[hand] = this._gunCooldown;
           }
         }
         if (ctrl) ctrl.userData.prevTrigger = trigger;
 
-        // A/B（边缘）→ 退出 VR
-        const ab = btnA || btnB;
-        if (ctrl) {
-          if (ab && !ctrl.userData.prevAB) session.end?.();
-          ctrl.userData.prevAB = ab;
-        }
+        // A/B 在 pollMenu 中统一处理；普通游戏中不会单键误退出。
       } else if (hand === 'left') {
         // 左手扳机：记录扳机边缘状态
         if (ctrl) ctrl.userData.prevTrigger = trigger;
@@ -328,11 +338,58 @@ export class InputManager {
   update(dt) {
     this.shots.length = 0;
     this._applyDesktopLook();
+    this._applyTurn(dt);
     const m = this._moveVector();
     this._applyLocomotion(m, dt);
 
     if (this.world.isPresenting) this._updateXR(dt);
     else this._tryShootDesktop(dt);
+  }
+
+  get shootingHand() { return this.settings.dominantHand; }
+  get supportHand() { return this.shootingHand === 'left' ? 'right' : 'left'; }
+
+  setSettings(settings) {
+    this.settings = { ...settings };
+    this.reset();
+    for (const [hand, ctrl] of Object.entries(this._hands)) {
+      const ray = ctrl?.userData.rayLine;
+      if (!ray) continue;
+      ray.material.color.setHex(hand === this.shootingHand ? SHOOT.RAY_COLOR : SHOOT.RAY_COLOR_LEFT);
+      ray.rotation.x = hand === this.shootingHand ? THREE.MathUtils.degToRad(SHOOT.RIGHT_PITCH_DEG) : 0;
+    }
+  }
+
+  reset() {
+    this.keys.clear(); this.shots.length = 0;
+    this.desktopShooting = false; this._skillQueued = false; this._creditQueued = 0;
+    this._requireRelease = { left: true, right: true };
+    for (const ctrl of Object.values(this._hands)) if (ctrl) ctrl.userData.prevGrip = true;
+  }
+
+  pollMenu() {
+    const queued = this._menuQueued; this._menuQueued = null;
+    const gp = this._gamepadOf('right');
+    const a = !!gp?.buttons[4]?.pressed, b = !!gp?.buttons[5]?.pressed;
+    const action = a && !this._menuPrev.a ? 'toggle' : b && !this._menuPrev.b ? 'exit' : queued;
+    this._menuPrev = { a, b };
+    return action;
+  }
+
+  _applyTurn(dt) {
+    if (!this.world.isPresenting || this.settings.turnMode === 'none') return;
+    const gp = this._gamepadOf('left');
+    const x = gp ? (gp.axes.length >= 4 ? gp.axes[2] : gp.axes[0]) || 0 : 0;
+    if (Math.abs(x) < 0.25) this._turnReady = true;
+    if (Math.abs(x) < 0.65) return;
+    if (this.settings.turnMode === 'snap' && !this._turnReady) return;
+    this._turnReady = false;
+    const angle = -Math.sign(x) * (this.settings.turnMode === 'snap' ? Math.PI / 6 : dt * Math.PI / 2);
+    this.camera.getWorldPosition(_locCam);
+    this.rig.rotateY(angle); this.rig.updateMatrixWorld(true);
+    this.camera.getWorldPosition(_locRig);
+    this.rig.position.x += _locCam.x - _locRig.x;
+    this.rig.position.z += _locCam.z - _locRig.z;
   }
 
   // 取手柄（targetRay，用于射击/瞄准/挂面板）

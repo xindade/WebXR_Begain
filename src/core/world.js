@@ -47,6 +47,9 @@ export class World {
     this._texLoader = new THREE.TextureLoader();
     this._exrLoader = new EXRLoader();
     this._panoCache = {};
+    this.panoCacheLimit = 3;
+    this.skyMaxDimension = 4096;
+    this._panoRequest = 0;
     this._panoLoading = {}; // 在途加载 Promise（去重：同一 url 并发只起一次真实加载）
     this._panoActive = false;
     this._skydome = null; // 全景天空穹顶（环绕原点的大球，用真实网格采样贴图，完整保留 8K + 各向异性）
@@ -88,7 +91,7 @@ export class World {
   // 知识库：三预设（日/夜/黄昏）指数缓动过渡
   setSkyMood(mood) {
     // 若上一关是全景天空，先复原渐变球+星空，再切回渐变
-    if (this._panoActive) this.clearSkyPanorama();
+    this.clearSkyPanorama();
     const presets = {
       day:   { top: 0x4aa3ff, bottom: 0xbfe3ff },
       dusk:  { top: 0x1a2a6c, bottom: 0xff9a76 },
@@ -108,6 +111,14 @@ export class World {
 
   // 纹理色彩 / 过滤配置（EXR 与 JPG 不同），抽出供 setSkyPanorama 与 loadSky 复用
   _configurePano(tex, isEXR) {
+    // 2K 档减少 GPU 上传/驻留内存；源 JPG 的下载大小不变。
+    if (!isEXR && tex.image?.width > this.skyMaxDimension) {
+      const canvas = document.createElement('canvas');
+      canvas.width = this.skyMaxDimension;
+      canvas.height = Math.round(tex.image.height * canvas.width / tex.image.width);
+      canvas.getContext('2d').drawImage(tex.image, 0, 0, canvas.width, canvas.height);
+      tex.image = canvas;
+    }
     if (isEXR) {
       // OpenEXR 为线性 HDR 数据：
       // - 不应用 sRGB 解码（否则会二次提亮），走 DataTexture 默认线性色彩；
@@ -139,7 +150,10 @@ export class World {
     return new Promise((resolve, reject) => {
       const isEXR = url.toLowerCase().endsWith('.exr');
       const cached = this._panoCache[url];
-      if (cached) { onProgress?.(1, 1); resolve(cached); return; }
+      if (cached) {
+        delete this._panoCache[url]; this._panoCache[url] = cached;
+        onProgress?.(1, 1); resolve(cached); return;
+      }
       // 在途去重：抽卡阶段预热与切关加载可能并发请求同一 pano
       if (this._panoLoading[url]) { this._panoLoading[url].then(resolve, reject); return; }
       const loader = isEXR ? this._exrLoader : this._texLoader;
@@ -165,12 +179,26 @@ export class World {
       if (!tex._gpuReady) {
         try { this.renderer.initTexture(tex); tex._gpuReady = true; } catch (e) { /* 忽略：首帧自然上传兜底 */ }
       }
+      this._trimPanos(url);
       return tex;
     });
   }
 
+  _trimPanos(keep) {
+    const protectedUrls = new Set([keep, this._panoUrl, this._displayedPanoUrl]);
+    for (const url of Object.keys(this._panoCache)) {
+      if (Object.keys(this._panoCache).length <= this.panoCacheLimit) break;
+      if (protectedUrls.has(url)) continue;
+      this._panoCache[url].dispose();
+      delete this._panoCache[url];
+    }
+  }
+
   setSkyPanorama(url) {
+    const request = ++this._panoRequest;
+    this._panoUrl = url;
     const apply = (tex) => {
+      if (request !== this._panoRequest) return;
       if (!this._skydome) {
         const geo = new THREE.SphereGeometry(90, 64, 48);
         const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, depthWrite: false });
@@ -189,16 +217,24 @@ export class World {
       this.sky.visible = false;                              // 隐藏渐变天空球
       this._starLayers.forEach((l) => { l.visible = false; }); // 隐藏星空（全景自带天空）
       this._panoActive = true;
+      this._displayedPanoUrl = url;
+      this._trimPanos(url);
     };
     const cached = this._panoCache[url];
     // 已缓存且已完成 GPU 上传 → 直接套用（无首帧上传卡顿）；否则先 prepare（含 initTexture）再 apply
     if (cached && cached._gpuReady) { apply(cached); return; }
-    this.prepareSkyPano(url).then(apply).catch(() => {}); // 兜底：未预加载/未上传时也能用
+    return this.prepareSkyPano(url).then(apply).catch((error) => {
+      if (request === this._panoRequest) console.warn('[天空] 加载失败，使用渐变背景:', url, error.message);
+    });
   }
 
   // 退出全景关：恢复渐变球+星空，隐藏穹顶
   clearSkyPanorama() {
+    ++this._panoRequest;
+    this._panoUrl = null;
+    this._displayedPanoUrl = null;
     if (this._skydome) this._skydome.visible = false;
+    if (this._skydome) this._skydome.material.map = null;
     this.sky.visible = true;
     this._starLayers.forEach((l) => { l.visible = true; });
     this._panoActive = false;

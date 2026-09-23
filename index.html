@@ -78,6 +78,18 @@
       width: 0%; height: 100%; border-radius: 6px;
       background: linear-gradient(90deg, #6c5ce7, #00b894); transition: width .15s ease;
     }
+    #loading-actions { display:flex; gap:12px; margin-top:18px; }
+    #loading-actions button { padding:10px 18px; border:0; border-radius:8px; cursor:pointer; }
+    #game-controls { position:fixed; bottom:100px; left:50%; transform:translateX(-50%); z-index:45; display:flex; flex-wrap:wrap; justify-content:center; gap:8px; width:min(650px,80vw); color:white; font:12px sans-serif; }
+    #game-controls button, #pause-panel button, #settings-dialog button { padding:8px 14px; border:0; border-radius:6px; cursor:pointer; }
+    #performance-status { width:100%; text-align:center; text-shadow:0 1px 4px black; }
+    #pause-panel { position:fixed; top:35%; left:50%; transform:translateX(-50%); z-index:100; background:#171923; padding:30px; border-radius:12px; color:white; text-align:center; font:20px sans-serif; }
+    #pause-panel p { margin-bottom:20px; }
+    #settings-dialog { margin:auto; padding:24px; border:1px solid #777; border-radius:12px; background:#171923; color:white; font:15px sans-serif; width:min(460px,90vw); }
+    #settings-dialog::backdrop { background:#0009; }
+    #settings-dialog label { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:16px 0; }
+    #settings-dialog input, #settings-dialog select { width:160px; padding:6px; }
+    .pagelog.collapsed { display:none; }
 
     /* ── 最高优先级页面日志：浏览器最左侧，占 1/4 面积 ── */
     .pagelog {
@@ -115,14 +127,10 @@
   <canvas id="app"></canvas>
   <button id="gun-mode-btn">🔫 枪支：初始（1弹道 / 2发每秒）</button>
   <div id="status-msg"></div>
-  <div id="loading-overlay">
-    <div id="loading-text">正在加载天空资源…</div>
-    <div id="loading-bar"><div id="loading-bar-fill"></div></div>
-  </div>
   <button id="enter-vr-btn">🎈 进入 VR</button>
   <!-- 特殊关居中按钮已移除；全关卡入口见右侧 #level-panel -->
   <div id="level-panel"><h4>关卡快捷</h4></div>
-  <div id="hint">桌面：WASD 移动 · 鼠标看 · 左键射击 · F 放大招 · 点击画面锁定鼠标 | 头显：摇杆移动 · 扳机射击 · 握柄放大招 · A/B 退出</div>
+  <div id="hint">桌面：WASD 移动 · 鼠标看 · 左键射击 · F 技能 · P/Esc 暂停 | 头显：右摇杆移动 · 惯用手扳机射击 · 握柄技能 · 右手 A/B 暂停</div>
   <!-- 最高优先级页面日志：经典脚本优先加载，不依赖 three，可捕获黑屏类致命错误 -->
   <script src="./src/ui/pagelog.js"></script>
   <script type="module" src="./src/main.js"></script>

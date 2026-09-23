@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><base href="/"><title>离线敌人立绘生成</title>
+<script type="importmap">{"imports":{"three":"./vendor/three.module.js"}}</script>
+<style>body{font:16px sans-serif;background:#171923;color:#eee;padding:24px}button{padding:12px}canvas{max-width:100%;max-height:260px}pre{white-space:pre-wrap}</style></head>
+<body><h1>离线敌人立绘生成</h1><p>使用项目自带模型与材质生成颜色／深度图集，保存到 assets/depth-sprites。完成后重新打开游戏即可使用。</p>
+<button id="bake">生成并保存全部图集</button><pre id="status">请通过 python tools/bake-server.py 启动此工具。</pre>
+<script type="module" src="./tools/bake-depth-sprites.js"></script></body></html>
