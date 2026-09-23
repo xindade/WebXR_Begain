@@ -1,0 +1,50 @@
+== 本机 IPv4 ==
+192.168.31.228  以太网
+== 相关进程 ==
+8928  node  C:\Users\x\.workbuddy\binaries\node\versions\22.22.2-3\node.exe
+18120  node  C:\Users\x\.workbuddy\binaries\node\versions\22.22.2-3\node.EXE
+3828  ps_service_launcher  
+20440  WeMailNode_x64  C:\Users\x\AppData\Roaming\Tencent\WXWork\WeMailNode_x64\16.20.2.1\WeMailNode_x64\WeMailNode_x64.exe
+== UDP 监听端口（含所属进程名） ==
+192.168.31.228:137  pid=4  System
+192.168.31.228:138  pid=4  System
+0.0.0.0:500  pid=3492  svchost
+:::500  pid=3492  svchost
+::1:1900  pid=6636  svchost
+fe80::7753:282f:8e34:5969%4:1900  pid=6636  svchost
+192.168.31.228:1900  pid=6636  svchost
+127.0.0.1:1900  pid=6636  svchost
+:::1947  pid=3796  hasplms
+0.0.0.0:1947  pid=3796  hasplms
+0.0.0.0:3702  pid=19856  svchost
+:::3702  pid=19856  svchost
+0.0.0.0:4500  pid=3492  svchost
+:::4500  pid=3492  svchost
+0.0.0.0:5050  pid=9240  svchost
+0.0.0.0:5353  pid=16156  WXWorkWeb
+:::5353  pid=26420  svchost
+0.0.0.0:5355  pid=2336  svchost
+:::5355  pid=2336  svchost
+:::9955  pid=26420  svchost
+0.0.0.0:9955  pid=26420  svchost
+:::9956  pid=26420  svchost
+0.0.0.0:9956  pid=26420  svchost
+127.0.0.1:10010  pid=8408  nvcontainer
+127.0.0.1:10011  pid=9700  NVIDIA Overlay
+127.0.0.1:10012  pid=8388  nvcontainer
+0.0.0.0:52635  pid=26420  svchost
+0.0.0.0:52636  pid=26420  svchost
+:::52636  pid=26420  svchost
+0.0.0.0:52670  pid=4596  dasHost
+:::52671  pid=4596  dasHost
+:::53433  pid=26420  svchost
+0.0.0.0:54183  pid=11100  ToDesk
+192.168.31.228:54186  pid=11100  ToDesk
+127.0.0.1:55580  pid=8408  nvcontainer
+127.0.0.1:56684  pid=4684  svchost
+fe80::7753:282f:8e34:5969%4:62812  pid=6636  svchost
+::1:62813  pid=6636  svchost
+192.168.31.228:62814  pid=6636  svchost
+127.0.0.1:62815  pid=6636  svchost
+0.0.0.0:64000  pid=19856  svchost
+:::64001  pid=19856  svchost

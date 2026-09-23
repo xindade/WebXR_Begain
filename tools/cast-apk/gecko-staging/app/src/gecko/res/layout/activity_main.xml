@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 方案A（gecko 风味）布局：GeckoView 占满全屏渲染游戏；底部保留手动兜底面板 -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- GeckoView：应用内渲染游戏（自带 WebXR / OpenXR 后端） -->
+    <org.mozilla.geckoview.GeckoView
+        android:id="@+id/geckoView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- 手动兜底面板：仅用于未自动发现 PC 时输入推流地址；以及 GeckoView 万一不支持 VR 时的逃生按钮 -->
+    <LinearLayout
+        android:id="@+id/manualPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="24dp"
+        android:background="#cc101014"
+        android:layout_gravity="bottom">
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#ffffff"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:layout_marginBottom="12dp" />
+
+        <EditText
+            android:id="@+id/etPc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="PC 接收端地址（192.168.x.x:8443）"
+            android:textColor="#ffffff"
+            android:hintTextColor="#888890"
+            android:inputType="text"
+            android:layout_marginBottom="12dp" />
+
+        <Button
+            android:id="@+id/btnStart"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="启动推流"
+            android:textColor="#ffffff"
+            android:backgroundTint="#3a7afe"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/btnBrowser"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="用 PICO 浏览器打开（兜底）"
+            android:textColor="#ffffff"
+            android:backgroundTint="#3a3a44" />
+    </LinearLayout>
+
+</FrameLayout>

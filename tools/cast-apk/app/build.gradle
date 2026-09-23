@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.local.webxrcast'
+    compileSdk 34
+    // 本地 SDK 已装 build-tools 35（未装 34），显式指定避免 AGP 联网下载 34.0.0
+    buildToolsVersion '35.0.0'
+
+    defaultConfig {
+        // 安装身份（决定 dumpsys / 启动器前缀扫描命中）：VR+ 平台按 com.GoodNet.DeepmindHacker 枚举本游戏版本号，必须与此一致，否则平台看不到 2.0.5
+        applicationId 'com.GoodNet.DeepmindHacker'
+        minSdk 24
+        targetSdk 34
+        versionCode 205
+        versionName '2.0.5'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // 本地验证用 debug 签名即可；正式分发请改为自己的 release 签名
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+        // ★ 必须显式指定 UTF-8（2026-09-19 定位）。
+        //   本机 JDK 的 file.encoding/native.encoding 都是 GBK，而本项目所有 .java 都是 UTF-8：
+        //   javac 按 GBK 解 UTF-8 源码会有两个后果 ——
+        //     ① 中文**字符串字面量**（日志/留痕文本）编译进 dex 后全是乱码，设备侧根本读不懂；
+        //     ② 更阴险：CJK 字符是 3 字节，字节错位会把紧跟的 `"` 或 `\` 吞进一个 GBK 双字节字符，
+        //        于是语法直接坏掉（实测报错「对于 write(String), 找不到合适的方法」，位置在无关的一行）。
+        //   指定 UTF-8 后两者一并解决，且不改变任何运行逻辑。
+        encoding 'UTF-8'
+    }
+}
+
+// 双保险：对 Gradle 的 JavaCompile 任务也显式设编码（AGP 之外的变体/子任务同样受益）
+// 用全限定类名，避免不同 Gradle 版本默认 import 差异导致脚本报错
+tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    // Chrome Custom Tabs：仅作为“WebView 不支持 WebXR 时”的 PICO 浏览器兜底入口
+    implementation 'androidx.browser:browser:1.8.0'
+    // 轻量本地 HTTP 服务，从 assets 读取游戏资源
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
+}

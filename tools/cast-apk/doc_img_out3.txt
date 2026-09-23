@@ -1,0 +1,4 @@
+error: JSON-RPC 错误 -32603: doc_to_image: file not found: F:\desk\LinSHi\VR+平台对接协议V2.9.doc
+{"ok": false, "exit_code": 1, "error": "JSON-RPC 错误 -32603: doc_to_image: file not found: F:\\desk\\LinSHi\\VR+平台对接协议V2.9.doc", "rpc_code": -32603}
+error: JSON-RPC 错误 -32603: doc_to_image: file not found: F:\desk\LinSHi\VR+平台对接协议V2.9.doc
+{"ok": false, "exit_code": 1, "error": "JSON-RPC 错误 -32603: doc_to_image: file not found: F:\\desk\\LinSHi\\VR+平台对接协议V2.9.doc", "rpc_code": -32603}

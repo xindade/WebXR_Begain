@@ -1,0 +1,8 @@
+{
+  "ok": true,
+  "alg": "ECDSA-P256-SHA256",
+  "keyB64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEo6rcLRUG15wFPgi/uhimaEGB1geL+jf+pa5Ae2fOdunHRSjEq5ewOO0XvPasoF0QtrkEKrP3PkJoYQG4ycRlLg==",
+  "fingerprint": "4156b73a8b5d5e6aa7cda445",
+  "derSha256": "f3909f306ffc3dab8676042b841ff03b6029e3deaff50651f9b73bdd586f41e0",
+  "note": "两端硬编码的公钥 = keyB64（只暴露公钥，私钥绝不出网）"
+}

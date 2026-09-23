@@ -1,0 +1,24 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.WebXRCast" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowFullscreen">true</item>
+    </style>
+
+    <!--
+      「免打扰」路径专用主题（2026-09-20 六修）：**完全没有窗口**，也就不产生任何 2D 面板。
+
+      为什么必须有它（实测留痕 18:24:04）：
+        平台每次重拉都是 `am start -n <pkg>/.MainActivity`。即使我们在 onCreate 里**不**
+        setContentView、立刻 finish()，系统在 handleResumeActivity 时仍会往窗口树里加一个
+        「空窗口」（窗口背景是不透明的）→ PICO 的 XRShell 会给它建一个 2D 面板并顶到最前 →
+        浏览器里那一帧 `visibility:hidden` → **PICO 当场结束 XR 沉浸式会话** → 页面回到 2D
+        预览界面（玩家描述为「被弹出 VR / 点一下继续游戏就退出到预览界面」，本局作废）。
+
+      用法：MainActivity 在 super.onCreate() 之前判定本次是不是「平台驱动 + 页面仍在」，
+            是则 setTheme(本主题)。本主题 windowNoDisplay=true + windowIsTranslucent=true，
+            且 windowBackground=@null ⇒ 不会创建任何可见窗口，浏览器保持可见、会话不被打断。
+
+      ⚠ 约束：用本主题的 Activity **必须在 onResume 之前 finish()**（否则系统抛
+        IllegalStateException）。走这条路径的代码在 onCreate 内就 finish（见 yieldToBrowser）。
+    -->
+    <style name="Theme.WebXRCast.Passthrough" parent="@android:style/Theme.NoDisplay" />
+</resources>

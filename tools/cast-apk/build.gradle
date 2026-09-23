@@ -1,0 +1,16 @@
+// 根 build.gradle —— 仅声明 Android Gradle Plugin classpath
+// buildscript 仓库必须显式声明（pluginManagement 不覆盖 buildscript classpath）
+// 用阿里云镜像（dl.google.com 不通时回退官方源）
+buildscript {
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // AGP 8.4 兼容 Gradle 8.6（本地即用版本）；8.5+ 需 Gradle 8.7+
+        classpath 'com.android.tools.build:gradle:8.4.2'
+    }
+}

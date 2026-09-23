@@ -1,0 +1,19 @@
+# 私钥与数据一律不进版本库
+secrets/
+data/
+
+# 跨语言验证工具生成的样本（每次跑 xlang/gen.js 都会变）
+xlang/license.txt
+xlang/license_tampered.txt
+xlang/license_tampered_sig.txt
+xlang/pubkey.txt
+
+# 夹具产物（每次跑都重建）。⚠ xlang/build/src/ 里放的是**从真实工程拷进来的副本**，
+# 按 skill 约束 82「副本绝不能当真身」，因此一律不入库，免得日后有人拿它当源码改。
+xlang/out/
+xlang/build/
+
+# 运行时杂项
+*.log
+node_modules/
+.DS_Store

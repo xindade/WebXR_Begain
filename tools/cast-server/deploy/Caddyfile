@@ -1,0 +1,42 @@
+# Caddy 配置 —— webvr123.site 反向代理到本机 8787
+#
+# 安装：把本文件放到 /etc/caddy/Caddyfile（或 include 进主配置），然后
+#   sudo systemctl reload caddy
+#
+# Caddy 会自动向 Let's Encrypt 申请并续期证书，
+# 前提：webvr123.site 的 A 记录已指向本机公网 IP，且 80/443 端口放行。
+
+webvr123.site {
+	encode gzip
+
+	# 请求体上限（与 server.js 的 maxBody 对齐，防大包打内存）
+	request_body {
+		max_size 128KB
+	}
+
+	# 反代到授权服务器；保留真实 IP 供限流使用
+	reverse_proxy 127.0.0.1:8787 {
+		header_up X-Real-IP {remote_host}
+	}
+
+	# 访问日志（排障用；含 IP 与路径，注意留存策略）
+	log {
+		output file /var/log/caddy/webvr123-access.log {
+			roll_size 10MB
+			roll_keep 5
+		}
+	}
+
+	# 安全响应头
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+
+# 若暂时还没有证书、只想先用 IP 或 http 调试，可临时用这段取代上面：
+# :8787 {
+# 	reverse_proxy 127.0.0.1:8787
+# }

@@ -1,0 +1,14 @@
+# 本地 SDK 路径 / 构建产物
+local.properties
+*.iml
+.gradle
+/.idea
+/build
+/app/build
+
+# 游戏资源由 sync-assets.ps1 生成，不入库（体积大且随游戏更新变化）
+/app/src/main/assets/game/
+
+# 签名相关
+*.jks
+*.keystore

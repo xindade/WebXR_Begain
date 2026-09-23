@@ -1,0 +1,22 @@
+pluginManagement {
+    repositories {
+        // 阿里云镜像（dl.google.com 不通时走这里，否则走官方）
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+dependencyResolutionManagement {
+    // PREFER_SETTINGS：以本文件仓库为准，忽略 project 级 repositories（避免与根 build.gradle 冲突）
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        google()
+        mavenCentral()
+    }
+}
+include ':app'

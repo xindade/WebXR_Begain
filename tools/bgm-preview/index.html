@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="pKc2OeMxsqoANb6U7SFHya">
+<head data-page-node-id="QxlAdU5D5FxKekn07IQ8B4">
+<meta charset="utf-8" data-page-node-id="qalnMUNxwOTVe0qFIxqzdy">
+<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="FxlHDpoCPiZgpI7SBZojtY">
+<title>WebXR 打气球 · BGM 试听台</title>
+<style>
+  :root{
+    --bg:#f4f5f7; --card:#ffffff; --ink:#1e2430; --ink2:#5b6472; --ink3:#8a93a3;
+    --line:#e3e5ea; --brand:#4f46e5; --brand-soft:#eef0ff;
+    --laser:#0e8f8f; --laser-soft:#e6f6f6;
+    --boss:#c0392b; --boss-soft:#fdeeec;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 20px 48px}
+  h1{font-size:22px;margin:0 0 6px}
+  .sub{margin:0;color:var(--ink2);font-size:13px;line-height:1.7}
+  .sub code{background:var(--brand-soft);color:var(--brand);padding:1px 5px;border-radius:4px;font-size:12px}
+  .gen{margin:8px 0 0;color:var(--ink3);font-size:12px}
+
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;
+         padding:16px 18px;margin-top:20px;display:flex;align-items:center;
+         gap:22px;flex-wrap:wrap}
+  .now{display:flex;align-items:center;gap:8px;min-width:190px;font-size:13px;font-weight:600}
+  .dot{width:10px;height:10px;border-radius:50%;background:#c9ccd4;flex:none}
+  .dot.on{background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.16)}
+  .lights{display:flex;gap:4px}
+  .cell{width:18px;height:20px;border-radius:4px;background:#e9ebef;border:1px solid var(--line)}
+  .cell.on{background:var(--brand);border-color:var(--brand)}
+  .cell.beat{background:#d8dbe2}
+  .cell.beat.on{background:var(--brand)}
+  .bars{display:flex;gap:5px}
+  .bar{font-size:11px;color:var(--ink3);border:1px solid var(--line);border-radius:20px;
+       padding:2px 9px;background:#fafbfc}
+  .bar.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .spacer{flex:1}
+  .vol{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2)}
+  .vol input{width:120px}
+  button{font-family:inherit;cursor:pointer}
+  .ghost{background:#fff;border:1px solid var(--line);color:var(--ink2);
+         border-radius:8px;padding:7px 14px;font-size:13px}
+  .ghost:hover{border-color:#c3c7d0;color:var(--ink)}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-top:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;
+        display:flex;flex-direction:column;gap:12px;border-top:3px solid var(--brand)}
+  .card.laser{border-top-color:var(--laser)}
+  .card.boss{border-top-color:var(--boss)}
+  .ctop{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+  .ctitle{font-size:16px;font-weight:700;margin:0}
+  .cbpm{font-size:11px;color:var(--ink3);border:1px solid var(--line);border-radius:20px;
+        padding:2px 8px;white-space:nowrap;background:#fafbfc}
+  .lv{font-size:12px;color:var(--ink2);margin:0}
+  .lv b{color:var(--ink);font-weight:600}
+  .desc{font-size:12.5px;color:var(--ink2);line-height:1.75;margin:0}
+  .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .lbl{font-size:12px;color:var(--ink3);min-width:52px}
+  .chip{border:1px solid var(--line);background:#fff;color:var(--ink2);
+        border-radius:20px;padding:5px 12px;font-size:12px}
+  .chip.active{background:var(--brand);border-color:var(--brand);color:#fff}
+  .card.laser .chip.active{background:var(--laser);border-color:var(--laser)}
+  .card.boss .chip.active{background:var(--boss);border-color:var(--boss)}
+  .play{background:var(--brand);color:#fff;border:none;border-radius:9px;
+        padding:10px 20px;font-size:14px;font-weight:600;width:100%}
+  .card.laser .play{background:var(--laser)}
+  .card.boss .play{background:var(--boss)}
+  .play.playing{background:#fff;color:var(--ink);border:1px solid var(--line)}
+  .slider{width:100%}
+  .hint{font-size:11.5px;color:var(--ink3);margin:0}
+  .foot{margin-top:22px;font-size:12px;color:var(--ink3);line-height:1.8}
+  .foot code{background:#eef0f3;padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body data-page-node-id="mloATTqIa4zdpGMucxsfTX">
+<div class="wrap" data-page-node-id="WLpVLAFeHixGeBvRZaFo5f">
+  <h1 data-page-node-id="i49oEreZLCMTXNGsEr4M7k">🎈 WebXR 打气球 · BGM 试听台</h1>
+  <p class="sub" data-page-node-id="C9UF7SoA6ZTH0tjlX3ECBU">三套背景音乐全部由 <code data-page-node-id="4KlydU2ricr9zhO2KW8KyM">src/vr/audio.js</code> <b data-page-node-id="tNJnmLmvaj5zgglDXfe5wm">程序化生成</b>（Web Audio API，零音频文件）。
+     本页内嵌的是<b data-page-node-id="bP3AmH0hqDnSzO8UgBTA7r">同一份引擎代码</b>，因此这里的听感 = 游戏里的实际听感。</p>
+  <p class="gen" data-page-node-id="Br5ECgLWqgqlgOhwB11x4x">生成时间 2026/9/7 20:57:20 · 音源 src/vr/audio.js · 重新同步：node sync.js</p>
+
+  <section class="panel" data-page-node-id="fWHAJHPBiGhMKVM0D6xlSV">
+    <div class="now" data-page-node-id="bQ1O43hGppmXIGRlysgk9P"><span class="dot" id="dot" data-page-node-id="dc3R5wWOkAe5zB9Arrrr9N"></span><span id="stateText" data-page-node-id="X7HXgVtvXuFloEN44tXT9y">未播放</span></div>
+    <div class="lights" id="lights" data-page-node-id="j1lWHOkNYbV6hCXcOi0skx"></div>
+    <div class="bars" id="bars" data-page-node-id="VnV5iZeAXE1WPiZIjC1gdh"></div>
+    <span class="spacer" data-page-node-id="mHci0DDBA5NNuBeqjz6O4D"></span>
+    <label class="vol" data-page-node-id="zGj6igMOH1lGsVuDDOtDem">主音量
+      <input type="range" id="vol" min="0" max="1" step="0.01" value="0.5" data-page-node-id="5BTKpHhzu84Ew6GCHTNPwm">
+      <span id="volVal" data-page-node-id="AYzwVDrvBOIWe9iQr99zOF">0.50</span>
+    </label>
+    <button class="ghost" id="stopAll" data-page-node-id="Yz278YMj5cO4ETTpSLOB41">停止</button>
+  </section>
+
+  <div class="grid" id="grid" data-page-node-id="thTIjOYekJYEP8mImQPfw8"></div>
+
+  <p class="foot" data-page-node-id="qYIu7kDIOLpdXs9yQGjNWK">
+    · <b data-page-node-id="tuOTFTqmGQ0CSr9BxHf0Hw">切轨</b>在游戏里于小节边界生效并做 0.2s 音量 duck，此处直接点另一张卡的「播放」即可听到同样的过渡。<br data-page-node-id="KBERA1CizQUuR7c9LuqrdV">
+    · <b data-page-node-id="jmh7q5imadfXeG2ztAvDp3">强度</b>对应游戏内的阶段推进：机制关生成期 0.2 → 驱赶期 0.5 → 第九关走格子 1.0（第十五关解谜期回落 0.35）；Boss 关由 <code data-page-node-id="aZ63Zve8ivWH51R5vn3YTx">game.js</code> 按「Boss 血量损失 / 战斗时长」自动升压，起步 0.45 → 终期 1.0（0.6 加密太鼓与十六分镲、0.8 加不协和尖刺、0.85 末尾太鼓滚奏）。<br data-page-node-id="jFEOc247z7ZebCRK8bOLy0">
+    · 想调音色/速度/调性，改 <code data-page-node-id="g0S7useWJM50CNG4BBmhC2">src/vr/audio.js</code> 后跑 <code data-page-node-id="fVbKUssbr7mdaJdZHOBRRL">node sync.js</code> 重新生成本页即可。
+  </p>
+</div>
+
+<script>
+/* ===== 以下为 src/vr/audio.js 原样内嵌（仅去掉 export）===== */
+// 程序化音效 + BGM（Web Audio API，全部代码生成，无需音频文件）
+// 知识库要求：射击/爆炸/BGM 均程序生成。
+//
+// ── BGM 三套，按关卡类型切换（game.js _loadLevel 调用 setTrack）──────────────
+//   normal  普通/危机关：轻快街机风。木琴琶音 + 弹跳鼓点 + 拨弦贝斯，
+//           长时间循环不疲劳。含 dusk(黄昏) / night(黑夜) 两种氛围变体。
+//   laser   机制关(3/9/15 激光·玻璃走格子·九宫格)：低音 drone + 时钟脉冲 +
+//           锯齿琶音。强调节奏与时机，不强调战斗，随关卡阶段升压。
+//   boss    Boss 关(6/12/18 脸谱/龙)：i–i–bII–V（Dm–Dm–E♭–A）那不勒斯转暗 +
+//           十六分固定音型 ostinato + 心跳 sub + 太鼓 + 铜管半音摩擦 stab +
+//           高速颤音弦。压迫感来自「低音推进 + 不协和 + 留白」；
+//           进场有 Gong 铜锣 + 升调 riser。强度随 Boss 血量与战斗时长升压。
+//
+// ── 调度 ──────────────────────────────────────────────────────────────────
+// lookahead 调度器：25ms 定时器 + 0.2s 预排，循环无缝、不受主线程卡顿影响。
+// （旧实现只排 16 步一次性播放 → 约 4 秒后音乐停，这里已修正为无限循环。）
+//
+// 性能：Boss 全强度时约 8~10 个节点/16分音符（140BPM≈9.3步/秒），
+// PICO 上仍远低于预算；如需更省可把 setIntensity 调低关闭 16 分层。
+
+class AudioManager {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this.bgmBus = null;      // BGM 总线（切歌时做短暂音量 duck）
+    this.bgmTimer = null;    // lookahead 定时器
+    this._unlocked = false;
+    this._playing = false;
+
+    // 当前 / 待切换（切换在下一小节边界生效，保证听感连贯）
+    this.track = 'normal';
+    this.variant = 'dusk';
+    this.pendingTrack = null;
+    this.pendingVariant = null;
+
+    this.intensity = 0;      // 0~1，激光关阶段 / Boss 阶段升压用
+
+    this.step = 0;           // 0..63（4 小节 × 16 分音符）
+    this.bar = 0;
+    this.nextStepTime = 0;
+  }
+
+  unlock() {
+    if (this._unlocked) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = 0.5;
+    this.master.connect(this.ctx.destination);
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+    this._unlocked = true;
+  }
+
+  // ── 工具 ────────────────────────────────────────────────────────────────
+  _midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+
+  _noiseBuffer(dur) {
+    const len = Math.floor(this.ctx.sampleRate * dur);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    return buf;
+  }
+
+  // ── 音效（保持不变）──────────────────────────────────────────────────────
+  playShoot() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this._noiseBuffer(0.12);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 3000;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.25, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+    src.connect(lp).connect(g).connect(this.master);
+    src.start(t); src.stop(t + 0.12);
+  }
+
+  playPop() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(200, t);
+    osc.frequency.exponentialRampToValueAtTime(800, t + 0.12);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.3, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    osc.connect(g).connect(this.master);
+    osc.start(t); osc.stop(t + 0.15);
+  }
+
+  // ── 音色（全部挂在 bgmBus 上）──────────────────────────────────────────
+  _kick(t, gain = 0.6) {
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(48, t + 0.1);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    o.connect(g).connect(this.bgmBus);
+    o.start(t); o.stop(t + 0.18);
+  }
+
+  _snare(t, gain = 0.32) {
+    const s = this.ctx.createBufferSource();
+    s.buffer = this._noiseBuffer(0.2);
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 1300;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+    s.connect(hp).connect(g).connect(this.bgmBus);
+    s.start(t); s.stop(t + 0.2);
+  }
+
+  _hat(t, gain = 0.1, dur = 0.045, hpFreq = 7000) {
+    const s = this.ctx.createBufferSource();
+    s.buffer = this._noiseBuffer(dur + 0.02);
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = hpFreq;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    s.connect(hp).connect(g).connect(this.bgmBus);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  // 木琴 / 马林巴式拨奏（普通关主旋律）
+  _pluck(t, freq, gain = 0.16, dur = 0.26, type = 'triangle') {
+    const o = this.ctx.createOscillator();
+    o.type = type;
+    o.frequency.value = freq;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g).connect(this.bgmBus);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+
+  // 拨弦贝斯
+  _bassPluck(t, freq, gain = 0.2, dur = 0.2) {
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.value = freq;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 520; lp.Q.value = 6;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(lp).connect(g).connect(this.bgmBus);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+
+  // 持续低音 / 弦垫（两个失谐锯齿 + 低通）
+  _pad(t, freq, dur, gain = 0.06, cutoff = 400) {
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + dur * 0.25);
+    g.gain.linearRampToValueAtTime(0.0001, t + dur);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = cutoff;
+    for (const det of [-6, 6]) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.value = freq;
+      o.detune.value = det;
+      o.connect(lp);
+      o.start(t); o.stop(t + dur + 0.05);
+    }
+    lp.connect(g).connect(this.bgmBus);
+  }
+
+  // 机械脉冲（机制关时钟感）
+  _blip(t, freq = 2400, gain = 0.05) {
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.035);
+    o.connect(g).connect(this.bgmBus);
+    o.start(t); o.stop(t + 0.05);
+  }
+
+  // 金属撞击（机制关重音）
+  _clank(t, gain = 0.16) {
+    const s = this.ctx.createBufferSource();
+    s.buffer = this._noiseBuffer(0.12);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 2800; bp.Q.value = 3;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.11);
+    s.connect(bp).connect(g).connect(this.bgmBus);
+    s.start(t); s.stop(t + 0.13);
+
+    const o = this.ctx.createOscillator();
+    o.type = 'square';
+    o.frequency.value = 180;
+    const og = this.ctx.createGain();
+    og.gain.setValueAtTime(gain * 0.5, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+    o.connect(og).connect(this.bgmBus);
+    o.start(t); o.stop(t + 0.08);
+  }
+
+  // 锯齿琶音（机制关机械感，带谐振低通）
+  _arp(t, freq, cutoff, gain = 0.05, dur = 0.12) {
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.value = freq;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = cutoff; lp.Q.value = 8;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(lp).connect(g).connect(this.bgmBus);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+
+  // 太鼓（Boss 关）
+  _taiko(t, gain = 0.5) {
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(95, t);
+    o.frequency.exponentialRampToValueAtTime(45, t + 0.18);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+    o.connect(g).connect(this.bgmBus);
+    o.start(t); o.stop(t + 0.26);
+
+    const s = this.ctx.createBufferSource();
+    s.buffer = this._noiseBuffer(0.05);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 900;
+    const sg = this.ctx.createGain();
+    sg.gain.setValueAtTime(gain * 0.45, t);
+    sg.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+    s.connect(bp).connect(sg).connect(this.bgmBus);
+    s.start(t); s.stop(t + 0.06);
+  }
+
+  // 铜管齐奏（Boss 关，三个失谐锯齿叠加）
+  _brass(t, freq, dur = 0.2, gain = 0.11) {
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 2400;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + 0.02);
+    g.gain.setValueAtTime(gain, t + dur * 0.6);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    for (const det of [-10, 0, 10]) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.value = freq;
+      o.detune.value = det;
+      o.connect(lp);
+      o.start(t); o.stop(t + dur + 0.03);
+    }
+    lp.connect(g).connect(this.bgmBus);
+  }
+
+  // 颤音弦垫（Boss 关紧张底噪，LFO 调幅）
+  _tremoloPad(t, freq, dur, gain = 0.05) {
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 700;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + dur * 0.2);
+    g.gain.linearRampToValueAtTime(0.0001, t + dur);
+
+    const lfo = this.ctx.createOscillator();
+    lfo.type = 'sine'; lfo.frequency.value = 6;      // 6Hz 颤音
+    const lfoGain = this.ctx.createGain();
+    lfoGain.gain.value = gain * 0.6;
+    lfo.connect(lfoGain).connect(g.gain);            // 叠加到包络上
+    lfo.start(t); lfo.stop(t + dur);
+
+    for (const f of [freq, freq * 1.5]) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth'; o.frequency.value = f;
+      o.connect(lp); o.start(t); o.stop(t + dur + 0.05);
+    }
+    lp.connect(g).connect(this.bgmBus);
+  }
+
+  // 镲 / 钹
+  _cymbal(t, gain = 0.12, dur = 0.45) {
+    const s = this.ctx.createBufferSource();
+    s.buffer = this._noiseBuffer(dur);
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 5000;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    s.connect(hp).connect(g).connect(this.bgmBus);
+    s.start(t); s.stop(t + dur);
+  }
+
+  // 极低频 sub：心跳 / 落雷（Boss 关压迫感核心，f0→f1 下滑）
+  // 注意：头显/手机扬声器对 50Hz 以下几乎无响应，故叠一层二次谐波（缺失基频技巧），
+  // 小喇叭上也能清楚听到「咚」的实体感，耳机/外接音响则能感受到真正的低频。
+  _sub(t, f0, f1, dur = 0.32, gain = 0.45) {
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(f0, t);
+    o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g).connect(this.bgmBus);
+    o.start(t); o.stop(t + dur + 0.02);
+
+    const h = this.ctx.createOscillator();
+    h.type = 'sine';
+    h.frequency.setValueAtTime(f0 * 2, t);
+    h.frequency.exponentialRampToValueAtTime(f1 * 2, t + dur);
+    const hg = this.ctx.createGain();
+    hg.gain.setValueAtTime(0.0001, t);
+    hg.gain.linearRampToValueAtTime(gain * 0.4, t + 0.012);
+    hg.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    h.connect(hg).connect(this.bgmBus);
+    h.start(t); h.stop(t + dur + 0.02);
+  }
+
+  // 十六分固定音型（推进感核心）：短促锯齿 + 谐振低通
+  _ost(t, freq, cutoff, gain = 0.08, dur = 0.08) {
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.value = freq;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = cutoff; lp.Q.value = 5;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(lp).connect(g).connect(this.bgmBus);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+
+  // 铜管短促 stab（dissonant=true 时叠小二度，制造不协和摩擦）
+  _stab(t, freq, dur = 0.18, gain = 0.12, dissonant = false) {
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 2600;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + 0.012);
+    g.gain.setValueAtTime(gain, t + dur * 0.35);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    for (const f of (dissonant ? [freq, freq * 1.0595] : [freq])) {
+      for (const det of [-11, 0, 11]) {
+        const o = this.ctx.createOscillator();
+        o.type = 'sawtooth';
+        o.frequency.value = f;
+        o.detune.value = det;
+        o.connect(lp);
+        o.start(t); o.stop(t + dur + 0.03);
+      }
+    }
+    lp.connect(g).connect(this.bgmBus);
+  }
+
+  // 高速颤音弦乐（Psycho 式紧张弦）；dissonant 时加小二度与五度叠置
+  _tremString(t, freq, dur, gain = 0.05, rate = 13, dissonant = false) {
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 1100;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + dur * 0.18);
+    g.gain.linearRampToValueAtTime(0.0001, t + dur);
+    const lfo = this.ctx.createOscillator();
+    lfo.type = 'sine'; lfo.frequency.value = rate;   // 12~18Hz 神经质颤音
+    const lg = this.ctx.createGain();
+    lg.gain.value = gain * 0.75;
+    lfo.connect(lg).connect(g.gain);
+    lfo.start(t); lfo.stop(t + dur);
+    for (const f of (dissonant ? [freq, freq * 1.0595, freq * 1.4983] : [freq, freq * 1.005])) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth'; o.frequency.value = f;
+      o.connect(lp); o.start(t); o.stop(t + dur + 0.05);
+    }
+    lp.connect(g).connect(this.bgmBus);
+  }
+
+  // 低频坠落：每 2 小节一次「又要来了」的下沉预感（同样叠二次谐波，保证小喇叭可闻）
+  _subDrop(t) {
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(95, t);
+    o.frequency.exponentialRampToValueAtTime(26, t + 0.7);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.42, t + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.75);
+    o.connect(g).connect(this.bgmBus);
+    o.start(t); o.stop(t + 0.78);
+
+    const h = this.ctx.createOscillator();
+    h.type = 'triangle';
+    h.frequency.setValueAtTime(190, t);
+    h.frequency.exponentialRampToValueAtTime(52, t + 0.7);
+    const hg = this.ctx.createGain();
+    hg.gain.setValueAtTime(0.0001, t);
+    hg.gain.linearRampToValueAtTime(0.1, t + 0.03);
+    hg.gain.exponentialRampToValueAtTime(0.001, t + 0.75);
+    h.connect(hg).connect(this.bgmBus);
+    h.start(t); h.stop(t + 0.78);
+  }
+
+  // 不协和高频尖刺（高压时的神经质音色，小二度）
+  _screech(t, gain = 0.05) {
+    for (const f of [1864, 1976]) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sine'; o.frequency.value = f;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(gain, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      o.connect(g).connect(this.bgmBus);
+      o.start(t); o.stop(t + 0.18);
+    }
+  }
+
+  // 铜锣（Boss 进场）
+  _gong(t) {
+    for (const f of [92, 138, 205, 311]) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(f, t);
+      o.frequency.exponentialRampToValueAtTime(f * 0.82, t + 1.6);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(0.16 / (f / 92), t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 1.8);
+      o.connect(g).connect(this.bgmBus || this.master);
+      o.start(t); o.stop(t + 1.9);
+    }
+    const s = this.ctx.createBufferSource();
+    s.buffer = this._noiseBuffer(1.2);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 2200; bp.Q.value = 1.2;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.1, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
+    s.connect(bp).connect(g).connect(this.bgmBus || this.master);
+    s.start(t); s.stop(t + 1.25);
+  }
+
+  // 升调 riser（Boss 进场铺垫）
+  _riser(t, dur = 1.1) {
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(110, t);
+    o.frequency.exponentialRampToValueAtTime(880, t + dur);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(400, t);
+    lp.frequency.exponentialRampToValueAtTime(6000, t + dur);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.12, t + dur * 0.85);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(lp).connect(g).connect(this.bgmBus || this.master);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  /** Boss 进场：铜锣 + 升调 + 三连太鼓（进 Boss 关时调用一次） */
+  playBossSting() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this._riser(t, 1.0);
+    this._gong(t + 1.0);
+    for (let i = 0; i < 3; i++) this._taiko(t + 1.0 + i * 0.18, 0.45);
+  }
+
+  // ── BGM 控制 ────────────────────────────────────────────────────────────
+  /** 当前 BPM（普通关昼夜两套速度） */
+  _bpm() {
+    if (this.track === 'laser') return 104;
+    if (this.track === 'boss') return 140;
+    return this.variant === 'night' ? 116 : 124;
+  }
+
+  _stepDur() { return 60 / this._bpm() / 4; }   // 16 分音符时长
+
+  startBGM() {
+    if (!this.ctx || this._playing) return;
+    this.bgmBus = this.ctx.createGain();
+    this.bgmBus.gain.value = 0.0001;
+    this.bgmBus.gain.linearRampToValueAtTime(0.18, this.ctx.currentTime + 0.8);
+    this.bgmBus.connect(this.master);
+
+    this.step = 0;
+    this.bar = 0;
+    this.nextStepTime = this.ctx.currentTime + 0.1;
+    this._playing = true;
+    this.bgmTimer = setInterval(() => this._schedule(), 25);
+  }
+
+  stopBGM() {
+    if (this.bgmTimer) { clearInterval(this.bgmTimer); this.bgmTimer = null; }
+    this._playing = false;
+    if (this.bgmBus) {
+      const t = this.ctx ? this.ctx.currentTime : 0;
+      try {
+        this.bgmBus.gain.cancelScheduledValues(t);
+        this.bgmBus.gain.setValueAtTime(this.bgmBus.gain.value, t);
+        this.bgmBus.gain.linearRampToValueAtTime(0.0001, t + 0.25);
+      } catch (e) { /* 已断开 */ }
+      const bus = this.bgmBus;
+      setTimeout(() => { try { bus.disconnect(); } catch (e) { /* 已断开 */ } }, 400);
+      this.bgmBus = null;
+    }
+  }
+
+  /**
+   * 切换 BGM。
+   * @param {'normal'|'laser'|'boss'} kind
+   * @param {'dusk'|'night'} variant 仅 normal 有效（黄昏/黑夜氛围）
+   */
+  setTrack(kind, variant) {
+    const k = (kind === 'laser' || kind === 'boss') ? kind : 'normal';
+    const v = variant === 'night' ? 'night' : 'dusk';
+    if (!this._playing) { this.track = k; this.variant = v; return; }
+    if (k === this.track && v === this.variant) return;
+    this.pendingTrack = k;
+    this.pendingVariant = v;
+    this._duck();
+  }
+
+  /** 强度 0~1：激光关阶段推进 / Boss 多阶段时提升层数与滤波亮度 */
+  setIntensity(v) { this.intensity = Math.max(0, Math.min(1, v || 0)); }
+
+  // 切歌过渡：短暂压低音量，掩盖小节边界的换轨
+  _duck() {
+    if (!this.bgmBus) return;
+    const t = this.ctx.currentTime;
+    try {
+      this.bgmBus.gain.cancelScheduledValues(t);
+      this.bgmBus.gain.setValueAtTime(this.bgmBus.gain.value, t);
+      this.bgmBus.gain.linearRampToValueAtTime(0.02, t + 0.18);
+      this.bgmBus.gain.linearRampToValueAtTime(0.18, t + 0.55);
+    } catch (e) { /* 已断开 */ }
+  }
+
+  _schedule() {
+    if (!this._playing || !this.ctx) return;
+    // 后台/头显休眠恢复后避免补排大量音符：落后太多就直接重新对齐
+    if (this.nextStepTime < this.ctx.currentTime) this.nextStepTime = this.ctx.currentTime + 0.05;
+    while (this.nextStepTime < this.ctx.currentTime + 0.2) {
+      this._playStep(this.step, this.nextStepTime);
+      this.nextStepTime += this._stepDur();
+      this.step++;
+      if (this.step >= 64) { this.step = 0; this.bar++; this._onBar(); }
+    }
+  }
+
+  // 小节边界：应用待切换的曲目
+  _onBar() {
+    if (this.pendingTrack) {
+      this.track = this.pendingTrack;
+      this.variant = this.pendingVariant || 'dusk';
+      this.pendingTrack = null;
+      this.pendingVariant = null;
+    }
+  }
+
+  // ── 各曲目编排（step: 0..63，s: 小节内 0..15，b: 小节 0..3）────────────
+  _playStep(step, t) {
+    const s = step % 16;
+    const b = Math.floor(step / 16);
+    if (this.track === 'laser') this._stepLaser(s, b, t);
+    else if (this.track === 'boss') this._stepBoss(s, b, t);
+    else this._stepNormal(s, b, t);
+  }
+
+  /** 普通关：C-Am-F-G（黄昏）/ Am-F-Dm-E（黑夜），木琴琶音 + 弹跳鼓点 */
+  _stepNormal(s, b, t) {
+    const night = this.variant === 'night';
+    // 和弦三音（MIDI）
+    const CHORDS = night
+      ? [[57, 60, 64], [53, 57, 60], [50, 53, 57], [52, 56, 59]]  // Am F Dm E
+      : [[60, 64, 67], [57, 60, 64], [53, 57, 60], [55, 59, 62]]; // C  Am F  G
+    const BASS = night ? [45, 41, 38, 40] : [48, 45, 41, 43];
+    const chord = CHORDS[b];
+
+    // 底鼓：四踩 + 第 10 步一个弹跳鬼音（黄昏才加，黑夜更沉稳）
+    if (s === 0 || s === 4 || s === 8 || s === 12) this._kick(t, night ? 0.5 : 0.6);
+    if (!night && s === 10) this._kick(t, 0.3);
+    // 军鼓
+    if (s === 4 || s === 12) this._snare(t, night ? 0.26 : 0.32);
+    // 踩镲：反拍八分
+    if (s % 4 === 2) this._hat(t, night ? 0.07 : 0.1, 0.045, night ? 6000 : 7000);
+
+    // 贝斯：切分拨弦
+    if (s === 0 || s === 3 || s === 6 || s === 8 || s === 11 || s === 14) {
+      this._bassPluck(t, this._midi(BASS[b]), night ? 0.18 : 0.2, 0.2);
+    }
+
+    // 木琴琶音：八分音符上行下行，后半小节升八度增加闪亮感
+    if (s % 2 === 0) {
+      const shape = [0, 1, 2, 1];
+      const k = (s / 2) % 8;
+      const n = chord[shape[k % 4]] + (k >= 4 ? 12 : 0);
+      this._pluck(t, this._midi(n), night ? 0.12 : 0.16, night ? 0.3 : 0.26);
+    }
+
+    // 黑夜变体：每小节加一层低音弦垫，营造夜战压迫感
+    if (night && s === 0) {
+      const barLen = this._stepDur() * 16;
+      this._pad(t, this._midi(BASS[b] - 12), barLen, 0.055, 320);
+    }
+  }
+
+  /** 机制关：A 小调 drone + 时钟脉冲 + 锯齿琶音（无军鼓，突出机械与时机） */
+  _stepLaser(s, b, t) {
+    const barLen = this._stepDur() * 16;
+    const inten = this.intensity;
+
+    // 低音 drone（每小节重启，A1）
+    if (s === 0) this._pad(t, this._midi(33), barLen, 0.07, 300 + inten * 260);
+
+    // 时钟脉冲：四分音符
+    if (s === 0 || s === 4 || s === 8 || s === 12) this._blip(t, 2400, 0.05);
+    // 升压后加入八分副脉冲，节奏更紧迫
+    if (inten >= 0.5 && s % 4 === 2) this._blip(t, 1800, 0.028);
+
+    // 机械琶音：16 分锯齿，A 小调七和弦来回
+    const SEQ = [57, 60, 64, 67, 64, 60];
+    const arpNote = SEQ[s % SEQ.length];
+    this._arp(t, this._midi(arpNote), 380 + inten * 1500, 0.045 + inten * 0.02, 0.12);
+    // 高压时叠一层高八度，密度翻倍
+    if (inten >= 0.7) {
+      this._arp(t, this._midi(arpNote + 12), 700 + inten * 1800, 0.03, 0.1);
+    }
+
+    // 低频脉冲（半小节一次）
+    if (s === 0 || s === 8) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.value = this._midi(33);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.22, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+      o.connect(g).connect(this.bgmBus);
+      o.start(t); o.stop(t + 0.34);
+    }
+
+    // 金属撞击重音
+    if (s === 8) this._clank(t, 0.16);
+
+    // 升压后加踩镲
+    if (inten >= 0.5 && s % 4 === 2) this._hat(t, 0.07, 0.04, 8000);
+  }
+
+  /**
+   * Boss 关：i–i–bII–V（Dm–Dm–E♭–A）——那不勒斯 E♭ 转暗，属和弦 A 制造永不解决的循环压迫。
+   * 十六分固定音型 ostinato（马达式推进）+ 心跳 sub + 太鼓 + 铜管 stab + 高速颤音弦。
+   * 强度分层：起步即有 ostinato 与心跳；≥0.6 加密太鼓、踩镲升十六分；
+   * ≥0.7 弦乐叠小二度；≥0.75 铜管叠小二度；≥0.8 加不协和尖刺；≥0.85 第 4 小节末尾太鼓滚奏。
+   */
+  _stepBoss(s, b, t) {
+    const inten = this.intensity;
+    const barLen = this._stepDur() * 16;
+
+    const BASS = [38, 38, 39, 33];   // D2 / D2 / E♭2(那不勒斯) / A1(属)
+    // 十六分固定音型：根音-五度-八度循环，持续推进的机械感
+    const OST = [0, 0, 7, 0, 12, 0, 7, 0, 0, 12, 7, 0, 0, 7, 12, 7];
+    const br = BASS[b];
+    // 循环末两拍留白：只剩弦乐，制造「下一波砸下来」的张力
+    // 终期（≥0.85）取消留白——不再有喘息，十六分滚奏一路砸到循环末尾
+    const breather = (b === 3 && s >= 14 && inten < 0.85);
+
+    // 1. 十六分 ostinato：推进感核心
+    if (!breather) {
+      this._ost(t, this._midi(br + OST[s]), 240 + inten * 280, 0.07 + inten * 0.035, 0.075);
+    }
+
+    // 2. 心跳 sub：每半小节一组「咚-咚」（生理层面的压迫感）
+    if (!breather && (s === 0 || s === 3 || s === 8 || s === 11)) {
+      const strong = (s === 0 || s === 8);
+      this._sub(t, strong ? 47 : 41, strong ? 29 : 27, strong ? 0.34 : 0.24, strong ? 0.5 : 0.3);
+    }
+
+    // 3. 太鼓：进行曲节奏，高压加密
+    if (!breather) {
+      if (s === 0 || s === 6 || s === 8 || s === 14) this._taiko(t, 0.52);
+      if (inten >= 0.6 && (s === 3 || s === 11)) this._taiko(t, 0.32);
+      // 终期：第 4 小节末尾十六分滚奏（只补 12/13/15，14 由上面的重音提供，避免同点叠加爆音）
+      if (inten >= 0.85 && b === 3 && (s === 12 || s === 13 || s === 15)) this._taiko(t, 0.3);
+    }
+
+    // 4. 高速颤音弦（每小节）：高压时叠小二度变神经质
+    if (s === 0) {
+      this._tremString(t, this._midi(br + 12), barLen, 0.045 + inten * 0.03, 12 + inten * 6, inten >= 0.7);
+    }
+
+    // 5. 铜管：D–E♭ 半音摩擦 stab；第 4 小节换属音 A 长音，卡住不解决
+    if (!breather) {
+      if (b === 3) {
+        if (s === 0) this._brass(t, this._midi(69), barLen * 0.9, 0.1 + inten * 0.03);
+      } else if (s === 0 || s === 6 || s === 10) {
+        this._stab(t, this._midi(s === 10 ? 63 : 62), 0.18, 0.11 + inten * 0.03, inten >= 0.75);
+      }
+    }
+
+    // 6. 踩镲：随强度由八分加密到十六分
+    if (!breather) {
+      if (inten >= 0.55) { if (s % 2 === 0) this._hat(t, 0.055, 0.032, 9000); }
+      else if (s % 4 === 2) this._hat(t, 0.06, 0.04, 8000);
+    }
+
+    // 7. 低频坠落 + 钹：每两小节一次「又要来了」的预感
+    if (b % 2 === 0 && s === 0) { this._subDrop(t); this._cymbal(t, 0.11, 0.4); }
+
+    // 8. 高压：不协和高频尖刺
+    if (inten >= 0.8 && s === 13) this._screech(t, 0.05);
+
+    // 9. 留白段：只剩渐强低吼；高压时补一记蓄力下坠，接上下一小节的砸击
+    if (breather && s === 14) this._pad(t, this._midi(br), barLen, 0.07, 180);
+    if (breather && s === 15 && inten >= 0.7) this._sub(t, 62, 30, 0.45, 0.4);
+  }
+}
+
+/* ===== 内嵌结束 ===== */
+</script>
+
+<script>
+(function(){
+  var am = new AudioManager();
+  var cur = null;              // {id, variant}
+  var state = {};              // 每轨的 UI 状态
+
+  var TRACKS = [
+    {
+      id:'normal', cls:'', title:'普通关 · 危机关', bpm:'124 / 116',
+      levels:'黄昏 <b>1·4·7·10·13·16</b>　｜　黑夜 <b>2·5·8·11·14·17</b>',
+      desc:'木琴琶音 + 弹跳鼓点 + 切分拨弦贝斯，轻快街机风、长时间循环不疲劳。和声 C–Am–F–G（黄昏）/ Am–F–Dm–E（黑夜）；黑夜额外叠一层低音弦垫做夜战压迫感，速度也降为 116。',
+      variants:[['dusk','黄昏'],['night','黑夜']],
+      presets:null, intensityNote:'普通关不随强度变化（该滑块对它无效）'
+    },
+    {
+      id:'laser', cls:'laser', title:'机制关 · 激光 / 走格子 / 九宫格', bpm:'104',
+      levels:'第 <b>3</b> · <b>9</b> · <b>15</b> 关',
+      desc:'A 小调 drone（A1）+ 四分时钟脉冲 + 16 分锯齿琶音走 A 小七和弦（谐振低通 = 机械感核心），半小节低频脉冲、第 8 步金属 clank。<b>故意去掉军鼓</b>——强调时机而非战斗。',
+      variants:null,
+      presets:[['0.2','生成期 0.2'],['0.5','驱赶期 0.5'],['0.35','解谜期 0.35 (L15)'],['1.0','走格子 1.0 (L9)']]
+    },
+    {
+      id:'boss', cls:'boss', title:'Boss 关 · 脸谱 / 龙', bpm:'140',
+      levels:'第 <b>6</b> · <b>12</b> · <b>18</b> 关',
+      desc:'和声 <b>i–i–bII–V（Dm–Dm–E♭–A）</b>：那不勒斯 E♭ 转暗 + 属和弦卡住不解决。压迫感三件套——<b>十六分固定音型 ostinato</b>（马达式推进）、<b>心跳 sub</b>（每半小节「咚-咚」）、<b>铜管 D–E♭ 半音摩擦 stab</b>；配 12~18Hz 高速颤音弦、每两小节低频坠落、循环末两拍留白。',
+      variants:null, sting:true,
+      presets:[['0.45','进关起步 0.45'],['0.6','加密太鼓+十六分镲 0.6'],['0.8','不协和尖刺 0.8'],['1.0','终期滚奏 1.0']]
+    }
+  ];
+
+  function el(tag, cls, html){
+    var e = document.createElement(tag);
+    if(cls) e.className = cls;
+    if(html != null) e.innerHTML = html;
+    return e;
+  }
+
+  var grid = document.getElementById('grid');
+
+  TRACKS.forEach(function(t){
+    state[t.id] = { variant:(t.variants ? t.variants[0][0] : 'dusk'), intensity:0.5 };
+    var card = el('div','card ' + t.cls);
+
+    var top = el('div','ctop');
+    var left = el('div');
+    left.appendChild(el('h2','ctitle', t.title));
+    top.appendChild(left);
+    top.appendChild(el('span','cbpm','BPM ' + t.bpm));
+    card.appendChild(top);
+
+    card.appendChild(el('p','lv', t.levels));
+    card.appendChild(el('p','desc', t.desc));
+
+    // 变体切换（仅普通关有 黄昏/黑夜）
+    if(t.variants){
+      var vr = el('div','row');
+      vr.appendChild(el('span','lbl','氛围'));
+      var chips = [];
+      t.variants.forEach(function(v){
+        var c = el('button','chip' + (v[0]===state[t.id].variant ? ' active' : ''), v[1]);
+        c.onclick = function(){
+          state[t.id].variant = v[0];
+          chips.forEach(function(x,i){ x.className = 'chip' + (t.variants[i][0]===v[0] ? ' active' : ''); });
+          if(cur && cur.id === t.id && am._playing){
+            am.setTrack(t.id, v[0]); cur.variant = v[0];
+          }
+        };
+        chips.push(c); vr.appendChild(c);
+      });
+      card.appendChild(vr);
+    }
+
+    // 强度滑块
+    var ir = el('div','row');
+    ir.appendChild(el('span','lbl','强度'));
+    var sl = document.createElement('input');
+    sl.type='range'; sl.min=0; sl.max=1; sl.step=0.05; sl.value=0.5; sl.className='slider';
+    var sv = el('span','', '0.50'); sv.style.fontSize='12px'; sv.style.color='#8a93a3';
+    sl.oninput = function(){
+      sv.textContent = Number(sl.value).toFixed(2);
+      state[t.id].intensity = Number(sl.value);
+      if(cur && cur.id === t.id) am.setIntensity(Number(sl.value));
+    };
+    var box = el('div'); box.style.flex='1'; box.appendChild(sl);
+    ir.appendChild(box); ir.appendChild(sv);
+    card.appendChild(ir);
+
+    if(t.intensityNote) card.appendChild(el('p','hint', t.intensityNote));
+
+    // 阶段预设
+    if(t.presets){
+      var pr = el('div','row');
+      pr.appendChild(el('span','lbl','阶段'));
+      t.presets.forEach(function(p){
+        var b = el('button','chip', p[1]);
+        b.onclick = function(){
+          sl.value = p[0]; sv.textContent = Number(p[0]).toFixed(2);
+          state[t.id].intensity = Number(p[0]);
+          if(cur && cur.id === t.id) am.setIntensity(Number(p[0]));
+        };
+        pr.appendChild(b);
+      });
+      card.appendChild(pr);
+    }
+
+    // Boss 进场 sting
+    if(t.sting){
+      var sr = el('div','row');
+      sr.appendChild(el('span','lbl','进场'));
+      var sb = el('button','chip','▶ 播放 Boss 进场铜锣 (playBossSting)');
+      sb.onclick = function(){
+        am.unlock();
+        if(am.ctx && am.ctx.state === 'suspended') am.ctx.resume();
+        applyVol();
+        am.playBossSting();
+      };
+      sr.appendChild(sb);
+      card.appendChild(sr);
+    }
+
+    // 播放 / 停止
+    var play = el('button','play','▶ 播放');
+    play.onclick = function(){
+      if(cur && cur.id === t.id && am._playing){ stop(); return; }
+      am.unlock();
+      if(!am.ctx){ alert('当前浏览器不支持 Web Audio'); return; }
+      if(am.ctx.state === 'suspended') am.ctx.resume();
+      applyVol();
+      am.setIntensity(state[t.id].intensity);
+      if(am._playing){
+        am.setTrack(t.id, state[t.id].variant);
+      }else{
+        am.track = t.id; am.variant = state[t.id].variant;
+        am.startBGM();
+      }
+      cur = { id:t.id, variant:state[t.id].variant };
+      syncButtons();
+    };
+    card.appendChild(play);
+    t._playBtn = play;
+
+    grid.appendChild(card);
+  });
+
+  function stop(){
+    am.stopBGM(); cur = null; syncButtons();
+  }
+
+  function syncButtons(){
+    TRACKS.forEach(function(t){
+      var on = cur && cur.id === t.id && am._playing;
+      t._playBtn.textContent = on ? '■ 停止' : '▶ 播放';
+      t._playBtn.className = 'play' + (on ? ' playing' : '');
+    });
+  }
+
+  function applyVol(){
+    if(am.master) am.master.gain.value = Number(document.getElementById('vol').value);
+  }
+
+  document.getElementById('stopAll').onclick = stop;
+  var vol = document.getElementById('vol');
+  vol.oninput = function(){
+    document.getElementById('volVal').textContent = Number(vol.value).toFixed(2);
+    applyVol();
+  };
+
+  // 16 分步进灯 + 4 小节指示
+  var lights = document.getElementById('lights');
+  var cells = [];
+  for(var i=0;i<16;i++){
+    var c = el('div','cell' + (i%4===0 ? ' beat' : ''));
+    lights.appendChild(c); cells.push(c);
+  }
+  var bars = document.getElementById('bars');
+  var barEls = [];
+  for(var b=0;b<4;b++){
+    var be = el('span','bar', String(b+1));
+    bars.appendChild(be); barEls.push(be);
+  }
+
+  var LABEL = { normal:'普通关', laser:'机制关', boss:'Boss 关' };
+  function tick(){
+    var on = !!am._playing;
+    document.getElementById('dot').className = 'dot' + (on ? ' on' : '');
+    var txt = '未播放';
+    if(on && cur){
+      txt = '播放中：' + LABEL[cur.id] +
+            (cur.id === 'normal' ? '（' + (cur.variant === 'night' ? '黑夜' : '黄昏') + '）' : '') +
+            ' · BPM ' + am._bpm() + ' · 强度 ' + am.intensity.toFixed(2);
+    }
+    document.getElementById('stateText').textContent = txt;
+    var s = on ? (am.step % 16) : -1;
+    for(var i=0;i<16;i++) cells[i].className = 'cell' + (i%4===0 ? ' beat' : '') + (i===s ? ' on' : '');
+    var bb = on ? Math.floor(am.step/16) : -1;
+    for(var j=0;j<4;j++) barEls[j].className = 'bar' + (j===bb ? ' on' : '');
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

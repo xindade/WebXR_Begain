@@ -362,6 +362,18 @@ export const CARD = {
   STREAM_SPREAD: 0.6,       // 50 粒错峰出发的总铺开时长(s)，形成数据流而非齐射
 };
 
+// 等待房间参数（src/game/waitingRoom.js 引用）—— 进入第 1 关前的开场影片房间
+export const WAITING_ROOM = {
+  ENABLED: true,                        // 总开关：false 时点「开始游戏」直接进第 1 关，不进等待房间
+  VIDEO_URL: 'assets/intro/intro.mp4',  // 左墙播放的视频（复用开场视频；换视频只改此行）
+  HEIGHT: 3,                            // 房间净高（米）：与玩家区域 X±2/Z±4 围成封闭盒体
+  WALL_COLOR: 0x141420,                 // 墙面/天花板颜色（深色，突出视频画面）
+  VIDEO_MAX_W: 7.2,                     // 视频画面在 8m 宽左墙内的最大适配宽度（米，留边）
+  VIDEO_MAX_H: 2.7,                     // 视频画面最大适配高度（米，墙高 3 留边）
+  VIDEO_CENTER_Y: 1.5,                  // 视频画面中心离地高度（米，≈视线高度）
+  WATCHDOG_MS: 120000,                  // 看门狗兜底（毫秒）：视频异常时超时也放行进第 1 关，防软锁
+};
+
 // 第三关「激光气球」参数（供 laser.js 引用，便于平衡）
 export const LASER = {
   SPAWN_DELAY: 10,   // 生成期总时长(s)：气球前7s一对对出现 + 激光后3s一对对淡入（NPC交待窗口）
@@ -1061,6 +1073,98 @@ export const INTRO_VIDEO = {
   HANDOFF_DELAY_S:   0.08,                    // 播完后先让画面静止多久再加载关卡（秒）：0.08≈6帧@72Hz，静止画面的卡顿不可感知
   DISPOSE_DELAY_S:   2.0,                     // 画面摘除后，解码器真正回收再延迟多久（秒）：藏进穿云里，避免与关卡加载挤同一帧
 };
+// 直播推流（?cast=1 才启用；不带该参数时完全零开销）
+//   做法：另建「观众相机」+ 独立离屏 canvas 渲染一路画面，再推给 PC 端接收程序。
+//   为什么不直接抓主 canvas：
+//     1) WebXR 沉浸式下 three.js 渲染进 XR framebuffer（vendor/three.module.js:29740），
+//        canvas 默认帧缓冲根本没内容，captureStream 抓出来是黑的；
+//     2) captureStream() 依赖 WebGL 的 preserveDrawingBuffer:true，而主 renderer
+//        （world.js:33）未开启，改开会拖累 VR 每帧带宽。
+//   离屏 renderer 自己开 preserveDrawingBuffer（640×360，代价可忽略），
+//   且其 xr.enabled 保持默认 false → 完全不触碰 XR 渲染状态，直播崩了游戏照跑。
+// ============================================================
+export const CAST = {
+  W: 960, H: 540,            // 观众画面分辨率（第二个 renderer 的 canvas 尺寸）。
+                             // 1280×720 在 PICO 上离屏重渲染过重（用户实测后选 960×540 折中）；
+                             // 854×480 最省（完全验证过可流畅出画）。用 ?w= / ?h= 实时调。
+  FPS: 24,                   // 推流帧率（XR 72/90Hz 下按时间间隔自动跳帧）
+  FOV: 70,                   // 观众相机 fov（与主相机一致）
+  TRANSPORT: 'webrtc',       // 传输方式：'webrtc' | 'jpeg'
+                             // 默认 webrtc：走硬件 H.264 编码，PICO 上实时流畅（2026-09-09 实测确认）。
+                             // 切记不要改回 jpeg —— JPEG 走 canvas.toBlob **软编码**，PICO 单帧长达 5~6 秒，
+                             // 且分辩率/质量/异步化怎么调都救不回来（瓶颈是编码方式本身，不是参数）。
+                             // jpeg 仅作为 WebRTC 6 秒连不上时的自动兜底（?mode=jpeg 可手动指定）。
+  JPEG_QUALITY: 0.6,         // JPEG 兜底模式编码质量 0~1（PICO 软编码瓶颈下取 0.6：比 0.8 编码更快、单帧更小。嫌糊用 ?q=0.8 实时调高）
+  MAX_BITRATE: 3000000,      // WebRTC 最大码率 bps（局域网带宽充足，不是瓶颈）。
+                             // 1.2Mbps 是 480p 时期的配置：提到 720p 后码率不足 → 大块马赛克/糊，
+                             // 故给到 3Mbps。仍糊可 ?bitrate=5000000 继续加。
+  DEGRADE: 'balanced',       // 编码器压力策略（写进 degradationPreference，见 push-webrtc.js:83）：
+                             // 'balanced'（默认，推荐）= 浏览器默认策略，清晰度与帧率兼顾，**实测稳定出帧**；
+                             // 'maintain-resolution' = 保清晰度、宁可掉帧：
+                             //     ⚠ PICO 上曾导致编码器**一帧都不出** → PC 端全程黑屏（2026-09-09 实测），勿用；
+                             // 'maintain-framerate'  = 保帧率、编码器自动降分辨率 → 画面变糊（早期硬编码值，能出画）。
+                             // 糊的正确解法是加码率/分辨率，不是动这个策略。可用 ?degrade= 覆盖。
+  // 【2026-09-09 最终结论：默认 'hide'，别再改回 mirror】
+  // 用户实测：① mirror 下头显里「有声音没画面」（drawImage 在 PICO 上取不到帧/取到黑帧，
+  //   加过 2.5s 自愈回退也救不回来）；② 「影片播放结束后正式游玩**不闪**」——
+  //   说明闪烁**只发生在影片阶段**，根因是视频纹理跨 GL 上下文，而不是离屏渲染太重。
+  // 所以最干净的解法不是"让两边共用一张贴图"，而是**让直播画面干脆不画影片**：
+  //   <video> 于是只剩主视角一个消费者 → 头显内影片正常，PC 端也不闪。
+  VIDEO_MODE: 'hide',        // 开场影片（等待房间）的处理方式，详见 src/game/waitingRoom.js：
+                             // 'hide'（默认）= 主视角用 VideoTexture（头显内影片正常），
+                             //   直播画面在影片期间把视频屏换成纯黑 → 单消费者，两端都不闪。
+                             //   代价：这几秒 PC 大屏看不到影片（仍能看到渐变天空）。
+                             // 'raw'    = 直播画面也画 VideoTexture → 两个 GL 上下文争用 → **会闪**，仅作对照。
+                             // 'mirror' = 主视角与直播共用一张中转 canvas 的 CanvasTexture。
+                             //   理论最优，但 PICO 实测取不到帧（黑屏），暂不启用；保留代码以便换设备再试。
+  MIRROR_W: 640,             // 'mirror' 模式中转 canvas 的宽度（高度按视频宽高比算）。
+                             // 主视角也用这张 canvas，故不能太小：640 宽基本够用，觉得影片糊就
+                             // 用 ?mw=1280 调大（代价：每次 drawImage 更贵）。
+  // 【2026-09-09 再修正：头显里影片仍闪 → 真因是「解码 × 编码」争用媒体引擎】
+  // 实测三条件：① 开直播 + 影片阶段 = 闪；② 开直播 + 游玩阶段（无解码）= 不闪；
+  //   ③ 不开直播（?cast=1 去掉）+ 影片阶段 = 不闪。
+  //   → 只有「视频硬件解码」与「H.264 硬件编码」同时跑时才闪，二者争用同一媒体硬件块（VPU）。
+  //   降分辨率 / 降帧率 / 关 preserveDrawingBuffer 全部无效 —— 那些动的是 GPU 侧开销。
+  // 【2026-09-09 第三轮修正：暂停了也不行 → 连第二个 GL 上下文都别建】
+  // 实测（22:15）：预览界面头显 1 秒闪 2 次、影片期间约 5 秒黑屏一次、进第 1 关完全正常。
+  //   而此时推流**已暂停**（PC 端画面静止可证）→ 干扰不只来自「编码」，
+  //   「第二个 WebGL 上下文存在」本身也在干扰头显画面。
+  // 故：预览与影片阶段**不创建离屏 canvas / renderer / captureStream**（延迟到进关卡才建）；
+  //   若已建过（中途退回菜单）则用 track.enabled=false 停帧（Chrome 发黑帧保活，连接不断）。
+  PAUSE_BEFORE_PLAY: true,   // 游玩前（menu / waiting）不推流。?earlycast=1 可关闭做对照（会继续闪）。
+  PAUSE_STATES: ['menu', 'waiting', 'intro'], // 预览菜单 / 等待房间 / 开场影片阶段不推流
+                             // 需要暂停推流的 game.state 取值（见 game.js：'menu' 预览菜单 /
+                             // 'waiting' 等待房间·开场影片 / 'playing' 游玩 / 'card' 抽卡 / 'over' 结束）。
+                             // 抽卡与结束画面仍要直播给大屏看，故不列入。
+  // 【2026-09-09 第四轮：不推流 ≠ PC 端要黑着 —— 用「2D 占位画面」预热链路】
+  // 上面延迟创建的代价是：PC 端在预览/影片期间完全黑屏、连"是否已连接"都无从判断。
+  // 解法：这两个阶段先建一条 **2D canvas 的占位流**（黑底 + "等待开始游戏"文字）。
+  //   2D canvas 不产生第二个 WebGL 上下文 → 头显依然不闪；
+  //   链路 / ICE / 编码器提前就绪 → PC 端一开机就出画，且进关卡时用 RTCRtpSender.replaceTrack
+  //   原地换轨道（尺寸同为 W×H，编码器不重协商），无缝切到真实游戏画面，无需重新连接。
+  // 实现见 cast.js `_startWarmup` / `_swapToOffscreen`；?warmup=0 可关闭（退回纯黑等待）。
+  WARMUP: true,              // 游玩前是否用 2D 占位画面预热链路（推荐开。关了 PC 端会黑屏等待）
+  WARMUP_FPS: 1,             // 占位画面帧率。1fps 只为维持出画与编码器存活，几乎不占 VPU/GPU。
+                             // ⚠ 别调高：影片期间视频解码与 H.264 编码争用媒体引擎（见 VIDEO_MODE 注释），
+                             //   占位帧率越高，争用风险越大。
+  SHOW_AMBIENT: true,        // 直播画面是否临时把 **天空球（world.sky）挂到 scene 根** 渲染一帧。
+                             // 等待房间期间 world.ambient 被 setAmbientVisible(false) 整体隐藏 →
+                             // 头显里背景纯黑以突出影片；但 three.js **父组不可见时子节点一律不渲染**，
+                             // 直播侧若不处理，画面就只剩纯底色（=「电脑端黑屏」）。
+                             // 实现见 cast.js：只把 sky 临时 reparent（渲染后挂回），
+                             // **不是** ambient.visible = true —— 那样会把几百个标注 Sprite
+                             // 拖进第二个 GL 上下文，把 GPU 吃光导致头显闪烁（2026-09-09 实测）。
+                             // 头显内观感不受影响（渲染后立即还原）。设为 false 可恢复纯黑氛围。
+  HIDE_PANO: true,           // 观众渲染不画全景穹顶：6K/8K 纹理进第二个 GL 上下文要上百 MB 显存
+  SIGNAL: '/api',            // 信令前缀（同源；APK 自带本地服务时用 ?pc= 覆盖成 https://<PC>:8443/api）
+  SLOW_MS: 7,                // 离屏渲染单帧均耗时上限（ms）。XR 72Hz 单帧预算约 13.9ms，
+                             // 离屏渲染和主渲染挤在同一帧里 → 超过这个值就会周期性超时 → 头显闪烁。
+                             // 连续两轮超标就自动把离屏分辨率降到 0.75 倍（最多 2 档），见 cast.js `_autoScale`；
+                             // ?noscale=1 可关闭自适应，改用 ?w=&h= 手调。
+  THUMB: false,              // 页面右下角显示 240×135 缩略图（调试用：可快速判断采集是否正常）。
+                             // ⚠ 默认关：可见 canvas 每帧要多一次页面合成，白给 PICO 加负担。
+                             // 需要时用 ?thumb=1 打开（直播页同样生效）。
+};
 
 // ============================================================
 // 玩家参数覆盖（userConfig.js）—— 改动后刷新页面即生效
@@ -1121,6 +1225,7 @@ const _OVERRIDES = [
   ['BASIC_VOICE', BASIC_VOICE, USER_CONFIG.BASIC_VOICE],
   ['MAGICIAN_BOSS', MAGICIAN_BOSS, USER_CONFIG.MAGICIAN_BOSS],
   ['INTRO_VIDEO', INTRO_VIDEO, USER_CONFIG.INTRO_VIDEO],
+  ['CAST', CAST, USER_CONFIG.CAST],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

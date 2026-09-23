@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# gecko 风味的 Gradle 改动片段（照 ACTIVATE.md 接入）
+# 作用：新增 webview / gecko 两个风味；gecko 风味依赖本地自编译的 GeckoView AAR。
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ===== 1) app/build.gradle：在 android { } 内加入风味维度与风味 =====
+android {
+    // ... 已有配置 ...
+    flavorDimensions "engine"
+    productFlavors {
+        webview { dimension "engine" }   // 当前可用版本（系统 WebView + 自动跳 PICO 浏览器）
+        gecko  { dimension "engine" }    // 方案A：应用内 GeckoView 跑 WebXR
+    }
+}
+
+# ===== 2) app/build.gradle：dependencies 改为按风味区分 =====
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
+
+    // 只有 webview 风味需要 Chrome Custom Tabs（兜底跳 PICO 浏览器）
+    webviewImplementation 'androidx.browser:browser:1.8.0'
+
+    // gecko 风味依赖本地自编译的 GeckoView AAR（文件名须与 BUILD_GECKOVIEW.md 第4步产物一致）
+    geckoImplementation(name: 'geckoview-official-withGeckoBinaries-noMinApi-release', ext: 'aar')
+}
+
+# ===== 3) settings.gradle：在 dependencyResolutionManagement.repositories 内追加 flatDir =====
+# （当前 settings.gradle 用的是 RepositoriesMode.PREFER_SETTINGS，project 级 repositories 会被忽略，
+#   所以必须把本地 AAR 仓库加在这里）
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        // ... 已有仓库 ...
+        flatDir { dirs 'app/libs' }   // ← 新增：让 geckoImplementation 能找到本地 AAR
+    }
+}

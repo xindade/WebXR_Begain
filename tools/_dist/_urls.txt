@@ -1,0 +1,2 @@
+tgz=https://h.uguu.se/BumMDoLu.tgz
+boot=https://h.uguu.se/kWNVcQkw.sh

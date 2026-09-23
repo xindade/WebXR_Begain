@@ -1,0 +1,15 @@
+{
+  "name": "cast-license-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebXR 直播端授权服务器（license 签发 / 续期 / 吊销）",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "keys": "node gen-keys.js",
+    "start": "node server.js",
+    "selftest": "node selftest.js"
+  }
+}

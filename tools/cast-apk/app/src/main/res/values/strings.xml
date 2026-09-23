@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">DeepmindHacker</string>
+    <string name="hint_pc">PC 接收端地址（IP:端口）</string>
+    <string name="btn_start">启动游戏并推流</string>
+    <string name="status">输入 PC 接收端地址（EXE 启动时控制台会打印，形如 192.168.31.228:8443）。点击启动后会在头显浏览器打开游戏，进入 VR 即开始向 PC 推流。游戏资源由本 App 本地托管，断网也能跑。</string>
+</resources>

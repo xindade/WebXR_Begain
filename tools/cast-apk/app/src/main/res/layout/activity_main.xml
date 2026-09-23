@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#101014">
+
+    <!-- 原有配置界面（自动发现/手动输入），开场视频结束后才可见 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="28dp"
+        android:gravity="center_horizontal">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textSize="22sp"
+            android:textColor="#ffffff"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/status"
+            android:textColor="#b0b0b8"
+            android:textSize="14sp"
+            android:layout_marginBottom="20dp" />
+
+        <!-- 「游戏页死亡留痕」尾部：上次运行到底是谁把游戏页弄没了，打开本页即可看到，
+             不需要 adb / 不需要连线（详见 PageForensics.java）。绿色等宽小字，与状态行区分。 -->
+        <TextView
+            android:id="@+id/tvForensics"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#7fd18a"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:maxLines="12"
+            android:text=""
+            android:layout_marginBottom="12dp" />
+
+        <!-- 本局结束后的「退出策略」（2026-09-19 第十修 / 第十一修）：
+             平台关掉游戏后平台客户端会退到后台（浏览器抢着前台），操作员下一个「开始」就点不动；
+             这里决定本局结束时是否把它顶回前台、以及是否顺手关掉浏览器释放内存。
+             ⚠ 第十一修把「关闭浏览器」默认改为**不勾**：留痕实测关掉后浏览器会被系统自己拉起并
+             还原标签、加载到 80% 就冻住（幽灵页）→ 下一局「启动一直没反应」；而且当时客户端
+             并没真被顶到前台，所以那一杀其实是杀了个寂寞。要空出内存再手动勾它做对比。 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="本局结束后："
+            android:textColor="#8a8a94"
+            android:textSize="12sp" />
+
+        <CheckBox
+            android:id="@+id/cbRestoreClient"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="true"
+            android:text="唤醒平台客户端（顶回前台）"
+            android:textColor="#dfe4ea"
+            android:textSize="13sp" />
+
+        <CheckBox
+            android:id="@+id/cbKillBrowser"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="false"
+            android:text="关闭浏览器（⚠ 实测会留下幽灵页，默认关；仅释放内存时手动开）"
+            android:textColor="#dfe4ea"
+            android:textSize="13sp" />
+
+        <!-- ★ 第十三修：「进入 VR」按钮门禁的现场开关（唯一紧急出口）。
+             不勾（默认）：按钮只在**平台下发「开始游戏」指令**后才出现（留痕 vr-gate 可对账）。
+             勾上：网址带 ?vrbtn=1 → 页面**完全旁路门禁**，按钮常显（等同旧行为）。
+             ⚠ 若留痕里 vr-gate 的 why 出现「门禁兜底：30 秒内没有收到平台开局信号」，
+               说明平台不下发开局指令 —— 勾上它即可让玩家正常进场，**不用重打包**。 -->
+        <CheckBox
+            android:id="@+id/cbVrBtnAlways"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="false"
+            android:text="直接显示「进入 VR」按钮（不等平台；勾上=旁路门禁）"
+            android:textColor="#dfe4ea"
+            android:textSize="13sp" />
+
+        <!-- ★ 第十五修 LaunchGuard：与电脑端 EXE 约定的共享密钥。
+             ★ 第十七修：已改为**两端固定的常量**（webxr-cast），本框只读展示、无需填写 ——
+             它原来是可填的，但只能靠人工从 EXE 窗口抄过来，而本配置页在门禁**之内**
+             （得先进得来才改得动）⇒ 抄不到 / 抄错 = 两端不一致 = 一律拒绝且现场无法自救
+             （实测 2026-09-20 15:08 就卡死在这里）。安全性改由 PC 侧白名单 + 局域网隔离承担。 -->
+        <EditText
+            android:id="@+id/etSecret"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="启动授权密钥（两端固定，无需填写）"
+            android:inputType="none"
+            android:enabled="false"
+            android:textColor="#8a8a94"
+            android:textColorHint="#8a8a94"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tvDeviceId"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="本机设备号：…"
+            android:textColor="#8a8a94"
+            android:textSize="12sp" />
+
+        <!-- ★ 第十五修 LaunchGuard 的应急开关（硬闸门的单点故障出口）。
+             不勾（默认）：每次首次启动都要向直播端 EXE 要放行条，拿不到就一秒画面都不出。
+             勾上：跳过 EXE 校验，只要求「平台客户端拉起」（现场排障 / EXE 故障时用）。 -->
+        <CheckBox
+            android:id="@+id/cbSkipExe"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="false"
+            android:text="应急：跳过直播端校验（只要求平台客户端拉起）"
+            android:textColor="#dfe4ea"
+            android:textSize="13sp" />
+
+        <!-- ★ 第十一修：把平台客户端「从后台顶到前台」属于后台启动 Activity，Android 10+ 默认
+             静默丢弃；持有 SYSTEM_ALERT_WINDOW 是被明文豁免的。此按钮跳系统设置授予一次即可。 -->
+        <Button
+            android:id="@+id/btnOverlay"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="授予悬浮窗权限（顶客户端用）"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tvOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#8a8a94"
+            android:textSize="11sp"
+            android:text="悬浮窗权限：检测中…" />
+
+        <TextView
+            android:id="@+id/tvClientPkg"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#8ab4d8"
+            android:textSize="11sp"
+            android:layout_marginBottom="16dp"
+            android:text="平台客户端：（自动识别）" />
+
+        <!-- 手动输入区：默认隐藏，自动发现超时后才显示 -->
+        <LinearLayout
+            android:id="@+id/manualPanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <EditText
+                android:id="@+id/etPc"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hint_pc"
+                android:inputType="textUri"
+                android:textColor="#ffffff"
+                android:textColorHint="#707080"
+                android:backgroundTint="#3a3a44" />
+
+            <Button
+                android:id="@+id/btnStart"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/btn_start"
+                android:layout_marginTop="20dp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 应用内游戏（PICO WebView，基于 Chromium 原生支持 WebXR）；默认隐藏，应用启动后直接显示 -->
+    <WebView
+        android:id="@+id/gameWebView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+</FrameLayout>

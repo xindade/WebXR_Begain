@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>WebXR 授权管理后台</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --line:#e3e6ea; --txt:#1c1f24; --dim:#6b7280; --pri:#2563eb; --ok:#16a34a; --bad:#dc2626; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px; background:var(--bg); color:var(--txt);
+         font:14px/1.6 "Microsoft YaHei","Segoe UI",system-ui,sans-serif; }
+  h1 { font-size:19px; margin:0 0 4px; }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
+  .card h2 .n { display:inline-flex; width:22px; height:22px; border-radius:6px; background:var(--pri); color:#fff;
+                font-size:12px; align-items:center; justify-content:center; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:12px; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--dim); }
+  input { padding:7px 9px; border:1px solid var(--line); border-radius:6px; font-size:13px; min-width:150px; }
+  button { padding:8px 14px; border:0; border-radius:6px; background:var(--pri); color:#fff; font-size:13px; cursor:pointer; }
+  button:hover { filter:brightness(1.08); }
+  button.ghost { background:#eef1f5; color:var(--txt); }
+  button.danger { background:var(--bad); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th,td { text-align:left; padding:7px 9px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--dim); font-weight:600; background:#fafbfc; }
+  code { background:#f0f2f5; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .pill { display:inline-block; padding:1px 7px; border-radius:20px; font-size:11px; }
+  .pill.ok { background:#e7f6ec; color:var(--ok); }
+  .pill.bad { background:#fdeaea; color:var(--bad); }
+  .pill.dim { background:#eef1f5; color:var(--dim); }
+  .out { background:#0f172a; color:#a5f3fc; padding:10px; border-radius:8px; font:12px/1.5 Consolas,monospace;
+         white-space:pre-wrap; word-break:break-all; max-height:200px; overflow:auto; display:none; }
+  .bar { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--dim); }
+  .bar b { color:var(--txt); }
+</style>
+</head>
+<body>
+<h1>WebXR 授权管理后台</h1>
+<div class="sub">webvr123.site · license 签发 / 续期 / 吊销</div>
+
+<div class="card">
+  <div class="bar" id="health">加载中…</div>
+</div>
+
+<div class="card">
+  <h2><span class="n">1</span>生成激活码</h2>
+  <div class="row">
+    <label>客户 / 门店标识<input id="aCust" placeholder="AcmeArcade-SH-01" /></label>
+    <label>可用次数<input id="aUses" type="number" value="1" min="1" /></label>
+    <label>激活码有效期（天，0=不限）<input id="aDays" type="number" value="0" min="0" /></label>
+    <label>备注<input id="aNote" placeholder="上海某店" /></label>
+    <button id="aGen">生成</button>
+  </div>
+  <div class="out" id="aOut"></div>
+  <table id="aTable"><thead><tr><th>激活码</th><th>客户</th><th>已用/上限</th><th>备注</th><th>操作</th></tr></thead><tbody></tbody></table>
+</div>
+
+<div class="card">
+  <h2><span class="n">2</span>License 列表</h2>
+  <div class="row"><button class="ghost" id="lReload">刷新</button></div>
+  <table id="lTable"><thead><tr><th>编号</th><th>客户</th><th>机器指纹</th><th>到期</th><th>剩余</th><th>续期次数</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+</div>
+
+<div class="card">
+  <h2><span class="n">3</span>手工签发（不走激活码，直接给一套 dev/ke）</h2>
+  <div class="row">
+    <label>客户<input id="iCust" /></label>
+    <label>机器指纹 dev<input id="iDev" /></label>
+    <label>实例公钥 ke<input id="iKe" /></label>
+    <label>天数<input id="iDays" type="number" value="15" min="1" /></label>
+    <button id="iGo">签发</button>
+  </div>
+  <div class="out" id="iOut"></div>
+</div>
+
+<script>
+const auth = { credentials: 'same-origin' };
+
+function show(id, txt) {
+  const el = document.getElementById(id);
+  el.style.display = 'block';
+  el.textContent = typeof txt === 'string' ? txt : JSON.stringify(txt, null, 2);
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
+  let body;
+  try { body = await r.json(); } catch (e) { body = { ok: false, detail: await r.text() }; }
+  if (!r.ok && !body.reason) body.reason = 'HTTP ' + r.status;
+  return body;
+}
+
+async function pollHealth() {
+  const h = await api('/api/health');
+  document.getElementById('health').innerHTML =
+    '状态 <b>' + (h.ok ? '正常' : '异常') + '</b>' +
+    ' · 存储 <b>' + h.store + '</b>' +
+    ' · 已签发 <b>' + h.licenses + '</b>' +
+    ' · 已吊销 <b>' + h.revoked + '</b>' +
+    ' · 有效期 <b>' + h.ttlDays + ' 天</b>' +
+    ' · Node <b>' + h.node + '</b>' +
+    ' · 运行 <b>' + h.uptime + 's</b>';
+}
+
+async function loadActivations() {
+  const d = await api('/api/admin/activations');
+  const tb = document.querySelector('#aTable tbody');
+  tb.innerHTML = '';
+  (d.activations || []).forEach(function (a) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td><code>' + a.code + '</code></td><td>' + (a.cust || '-') + '</td>' +
+      '<td>' + a.used + ' / ' + a.max_uses + '</td><td>' + (a.note || '-') + '</td>' +
+      '<td><button class="ghost" data-copy="' + a.code + '">复制</button></td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('[data-copy]').forEach(function (b) {
+    b.onclick = function () { navigator.clipboard.writeText(b.dataset.copy); b.textContent = '已复制'; setTimeout(function(){b.textContent='复制';}, 1200); };
+  });
+}
+
+async function loadLicenses() {
+  const d = await api('/api/admin/licenses');
+  const tb = document.querySelector('#lTable tbody');
+  tb.innerHTML = '';
+  (d.licenses || []).forEach(function (r) {
+    const state = r.revoked ? '<span class="pill bad">已吊销</span>'
+      : (r.expired ? '<span class="pill dim">已过期</span>' : '<span class="pill ok">有效</span>');
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td><code>' + r.lic + '</code></td><td>' + (r.cust || '-') + '</td>' +
+      '<td><code>' + String(r.dev || '').slice(0, 12) + '</code></td>' +
+      '<td>' + new Date(Number(r.exp)).toLocaleString('zh-CN') + '</td>' +
+      '<td>' + r.daysLeft + ' 天</td><td>' + (r.renew_count || 0) + '</td><td>' + state + '</td>' +
+      '<td><button class="' + (r.revoked ? 'ghost' : 'danger') + '" data-lic="' + r.lic + '" data-undo="' + (r.revoked ? 1 : 0) + '">' +
+      (r.revoked ? '恢复' : '吊销') + '</button></td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('[data-lic]').forEach(function (b) {
+    b.onclick = async function () {
+      const undo = b.dataset.undo === '1';
+      if (!undo && !confirm('确认吊销 ' + b.dataset.lic + ' ？该门店下次启动将被拒绝。')) return;
+      await api('/api/license/revoke', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ lic: b.dataset.lic, undo: undo, reason: undo ? '' : '后台手工吊销' })
+      });
+      loadLicenses(); pollHealth();
+    };
+  });
+}
+
+document.getElementById('aGen').onclick = async function () {
+  const d = await api('/api/admin/activation', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      cust: document.getElementById('aCust').value.trim(),
+      maxUses: Number(document.getElementById('aUses').value || 1),
+      days: Number(document.getElementById('aDays').value || 0),
+      note: document.getElementById('aNote').value.trim()
+    })
+  });
+  show('aOut', d.ok ? '激活码：' + d.code + '（请交给运营商，在直播端填入）' : d);
+  loadActivations();
+};
+
+document.getElementById('iGo').onclick = async function () {
+  const d = await api('/api/license/issue', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      cust: document.getElementById('iCust').value.trim(),
+      dev: document.getElementById('iDev').value.trim(),
+      ke: document.getElementById('iKe').value.trim(),
+      days: Number(document.getElementById('iDays').value || 15)
+    })
+  });
+  show('iOut', d);
+  loadLicenses(); pollHealth();
+};
+
+document.getElementById('lReload').onclick = function () { loadLicenses(); pollHealth(); };
+
+pollHealth(); loadActivations(); loadLicenses();
+setInterval(pollHealth, 15000);
+</script>
+</body>
+</html>

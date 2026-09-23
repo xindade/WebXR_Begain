@@ -1,0 +1,6 @@
+# 生产环境签发公钥 Ks_pub —— 来源 https://webvr123.site/api/pubkey
+# 算法 ECDSA P-256 / SHA-256 (SPKI DER, base64 标准变体非 url)
+# fingerprint (sha256 of PEM 前 24 位) = 4156b73a8b5d5e6aa7cda445
+# derSha256                           = f3909f306ffc3dab8676042b841ff03b6029e3deaff50651f9b73bdd586f41e0
+# ⚠ 部署脚本口径: sha256sum secrets/license-pub.pem | cut -c1-24  -> 应等于上面的 fingerprint
+keyB64 = MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEo6rcLRUG15wFPgi/uhimaEGB1geL+jf+pa5Ae2fOdunHRSjEq5ewOO0XvPasoF0QtrkEKrP3PkJoYQG4ycRlLg==

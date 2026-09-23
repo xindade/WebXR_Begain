@@ -40,6 +40,11 @@ export class World {
 
     this.scene = new THREE.Scene();
 
+    // 环境氛围组：天空/星空/边界/坐标网格等「世界背景」统一挂此组，
+    // 等待房间期间整体隐藏 → 背景纯黑、仅留视频屏幕（见 waitingRoom）。
+    this.ambient = new THREE.Group();
+    this.scene.add(this.ambient);
+
     // 相机放在 playerRig 下，由输入层控制移动
     this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 200);
 
@@ -85,7 +90,7 @@ export class World {
       depthWrite: false,
     });
     this.sky = new THREE.Mesh(geo, mat);
-    this.scene.add(this.sky);
+    this.ambient.add(this.sky);
   }
 
   // 知识库：三预设（日/夜/黄昏）指数缓动过渡
@@ -359,7 +364,7 @@ export class World {
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       const mat = new THREE.PointsMaterial({ color: 0xffffff, size, sizeAttenuation: true, transparent: true, opacity: 0.9 });
       const pts = new THREE.Points(geo, mat);
-      this.scene.add(pts);
+      this.ambient.add(pts);
       this._starLayers.push(pts);
       return pts;
     };

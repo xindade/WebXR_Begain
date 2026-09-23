@@ -1,6 +1,11 @@
 # WebXR 肉鸽打气球
 
 纯前端 ES Module + 本地 Three.js r168，无需构建。支持桌面键鼠及 WebXR，包含 18 关、抽卡强化、激光机制和 Boss；已有 GLB 模型、天空图、视频及语音资源。
+> 一个基于 ima 知识库「WebXR 肉鸽打气球」设计文档，从零搭建的**多平台 WebXR** 打气球肉鸽游戏原型。
+> 纯前端 ES Module + Three.js r168（**本地 vendored，无 CDN 依赖**），桌面浏览器可直接跑，标准 WebXR 头显（PICO / Quest 等）进 VR 即玩。
+>
+> 📺 **双端直播（头显画面 → PC 大屏）**：唯一可用的架构形态、从零复现步骤、踩坑史与排查表见
+> [`docs/cast-architecture.md`](docs/cast-architecture.md)。**动手改推流前务必先读**，可避免重复已验证无效的调参。
 
 ## 本地运行
 

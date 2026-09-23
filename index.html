@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<html lang="zh-CN" data-page-node-id="9q0bPBdgAG8VXv6UpBuHXb">
+<head data-page-node-id="osng3BRrHnBNHbvDgUUceR">
+  <meta charset="UTF-8" data-page-node-id="Gt5swwXvPnvmZmbQwz7H5n" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" data-page-node-id="tWUY438zAXxPz5BhQLDbMJ" />
   <title>WebXR 肉鸽打气球</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -123,14 +123,18 @@
   }
   </script>
 </head>
-<body>
-  <canvas id="app"></canvas>
-  <button id="gun-mode-btn">🔫 枪支：初始（1弹道 / 2发每秒）</button>
-  <div id="status-msg"></div>
-  <button id="enter-vr-btn">🎈 进入 VR</button>
+<body data-page-node-id="nBQ0CAb10JTEzvHleoJaAh">
+  <canvas id="app" data-page-node-id="0WtrY2FglRztfkNbd3N0Ai"></canvas>
+  <button id="gun-mode-btn" data-page-node-id="y2jCienA97YBGfpL4xm6FD">🔫 枪支：初始（1弹道 / 2发每秒）</button>
+  <div id="status-msg" data-page-node-id="Xjhq4O5484crQLL14Upb4x"></div>
+  <div id="loading-overlay" data-page-node-id="6hKsHhHEVHd7cdV6HEXhAK">
+    <div id="loading-text" data-page-node-id="qBaNSEBLoLijzHHqrm2E1C">正在加载天空资源…</div>
+    <div id="loading-bar" data-page-node-id="KZfIkJHDdvfacXgYZeH8di"><div id="loading-bar-fill" data-page-node-id="b639S2ZfkLPUE5bmM31fGP"></div></div>
+  </div>
+  <button id="enter-vr-btn" data-page-node-id="cdkBDFO7uUJG1azzAteMAK">🎈 进入 VR</button>
   <!-- 特殊关居中按钮已移除；全关卡入口见右侧 #level-panel -->
-  <div id="level-panel"><h4>关卡快捷</h4></div>
-  <div id="hint">桌面：WASD 移动 · 鼠标看 · 左键射击 · F 技能 · P/Esc 暂停 | 头显：右摇杆移动 · 惯用手扳机射击 · 握柄技能 · 右手 A/B 暂停</div>
+  <div id="level-panel" data-page-node-id="y7DMG7DQ7kgodBA9EhdqDn"><h4 data-page-node-id="9szUhKY8ALy09J58yoMTI0">关卡快捷</h4></div>
+  <div id="hint" data-page-node-id="g4kGwiKzgMP51OoPeKeWgL">桌面：WASD 移动 · 鼠标看 · 左键射击 · F 技能 · P/Esc 暂停 | 头显：右摇杆移动 · 惯用手扳机射击 · 握柄技能 · 右手 A/B 暂停</div>
   <!-- 最高优先级页面日志：经典脚本优先加载，不依赖 three，可捕获黑屏类致命错误 -->
   <script src="./src/ui/pagelog.js"></script>
   <script type="module" src="./src/main.js"></script>

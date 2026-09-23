@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 访问 PC 接收端做信令/WebRTC 协商 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 局域网发现（监听 PC 端 UDP 组播信标） -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- 常驻前台服务：保住 APK 进程（= 保住 localhost:8080 资源服务与 VR+ 桥接），
+         同时让本进程处于前台态 → 允许 startActivity 拉起浏览器（否则被后台启动限制静默拦截）。
+         FOREGROUND_SERVICE + *_DATA_SYNC 供 Android 14(API34) 声明服务类型用；旧系统自动忽略未知权限。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Android 13+ 展示前台服务通知需要；未授予也不影响服务运行（通知不显示而已） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- ★ 2026-09-19 第十修「本局结束 → 退出策略」需要：
+         · KILL_BACKGROUND_PROCESSES：本局结束后关掉浏览器进程（只对**后台**进程有效，
+           所以我们先把平台客户端顶到前台，再杀 —— 顺序见 MainActivity.restoreClientAndCloseBrowser）。
+         · QUERY_ALL_PACKAGES：要按包名把「平台客户端」和「浏览器」顶到前台，就必须先能"看见"它们
+           （Android 11+ 包可见性限制，否则 getLaunchIntentForPackage 直接返回 null）。
+           本 APK 是场地侧直接安装的商用包，不经过 Google Play 政策审查，故可声明该权限。 -->
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!-- ★ 2026-09-19 第十一修：**后台启动 Activity 的官方豁免项**。
+         「本局结束后把平台客户端顶回前台」= 从后台 startActivity；Android 10+ 默认**静默丢弃**
+         后台应用的 activity 启动请求（留痕实测：三次 startActivity 后浏览器页照旧打点 = 客户端
+         根本没起来）。持有 SYSTEM_ALERT_WINDOW（"显示在其他应用上层"）的应用是被明文豁免的
+         （见 Android 文档 "Restrictions on starting activities from the background"）。
+         ⚠ 这是特殊权限，需用户在系统设置里手动授予一次 —— 配置页有「授予悬浮窗权限」按钮，
+           未授予时退出策略行为与本版之前完全一致（顶不动就如实写留痕，不再假报成功）。 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!--
+      ★ 包可见性（Android 11 / API 30+ 强制）：targetSdk=34 时，未在此声明的第三方应用对本应用
+      「不可见」——后果是 Intent.setPackage("com.pico.browser") + startActivity 直接抛
+      ActivityNotFoundException（日志表现：No Activity found to handle Intent {... pkg=com.pico.browser}），
+      queryIntentActivities 也会返回空列表。实测 2026-09-16 正是这个原因导致 PICO 浏览器拉不起来、
+      只能落到 CustomTabs 兜底（非 WebXR 浏览器 → 游戏页 new World() 建不出 WebGL → 永久卡在
+      index.html 的初始文案「正在加载天空资源…」）。故必须声明 <queries>。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+        <!-- PICO 浏览器（PUI4/5 国内 + 海外版），显式拉起用 -->
+        <package android:name="com.pico.browser" />
+        <package android:name="com.pico.browser.overseas" />
+        <package android:name="com.pico.browser.pui" />
+        <!-- ★ 2026-09-16 实测：本机唯一能打开 http 的浏览器就是它（castlog3.txt 行 6） -->
+        <package android:name="com.oculus.browser" />
+        <!-- 常见兜底浏览器 -->
+        <package android:name="com.android.chrome" />
+        <package android:name="com.android.browser" />
+        <!-- ★ 2026-09-19 第十修：平台客户端（每次平台拉起我们时的 referrer 来源）。
+             本局结束后要把它顶回前台 —— 先在这里把它标成可见，双保险（另有 QUERY_ALL_PACKAGES）。 -->
+        <package android:name="com.GoodNet.LauncherClient" />
+    </queries>
+
+    <application
+        android:name=".CastApp"
+        android:allowBackup="true"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.WebXRCast"
+        android:usesCleartextTraffic="true">
+
+        <!-- 常驻前台服务：保活 APK 进程 + 允许后台拉起浏览器（PICO 兼容关键，见 CastService） -->
+        <service
+            android:name=".CastService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:hardwareAccelerated="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

@@ -1,0 +1,40 @@
+== 项目目录: E:\AI_Work\WebXR_Begain\tools\cast-apk
+== JAVA_HOME = C:\Program Files\Java\jdk-17
+== javac: javac 17.0.10
+== ANDROID_HOME = C:/Users/x/AppData/Local/Android/Sdk
+== GRADLE = C:\Users\x\.gradle\wrapper\dists\gradle-8.14.3-all\xyzabc\gradle-8.14.3\bin\gradle.bat
+== 已同步 src -> assets/game/src（39 个文件，源: E:\AI_Work\WebXR_Begain\src）
+> Task :app:compressDebugAssets
+> Task :app:dexBuilderDebug
+> Task :app:mergeDebugGlobalSynthetics UP-TO-DATE
+> Task :app:processDebugJavaRes NO-SOURCE
+> Task :app:mergeDebugJavaResource UP-TO-DATE
+> Task :app:checkDebugDuplicateClasses UP-TO-DATE
+> Task :app:mergeDebugStartupProfile UP-TO-DATE
+> Task :app:mergeExtDexDebug UP-TO-DATE
+> Task :app:mergeLibDexDebug UP-TO-DATE
+> Task :app:mergeDebugJniLibFolders UP-TO-DATE
+> Task :app:mergeDebugNativeLibs NO-SOURCE
+> Task :app:stripDebugDebugSymbols NO-SOURCE
+> Task :app:validateSigningDebug UP-TO-DATE
+> Task :app:writeDebugAppMetadata UP-TO-DATE
+> Task :app:writeDebugSigningConfigVersions UP-TO-DATE
+> Task :app:mergeProjectDexDebug
+> Task :app:packageDebug
+> Task :app:createDebugApkListingFileRedirect UP-TO-DATE
+> Task :app:assembleDebug
+
+[Incubating] Problems report is available at: file:///E:/AI_Work/WebXR_Begain/tools/cast-apk/build/reports/problems/problems-report.html
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.14.3/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD SUCCESSFUL in 15s
+33 actionable tasks: 6 executed, 27 up-to-date
+
+? 构建成功
+   APK: E:\AI_Work\WebXR_Begain\tools\cast-apk/app/build/outputs/apk/debug/app-debug.apk
+   大小: 49.13 MB

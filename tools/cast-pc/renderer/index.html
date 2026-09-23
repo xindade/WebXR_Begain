@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>WebXR 直播接收端</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; background: #101014; color: #e6e6e6;
+                 font-family: "Microsoft YaHei", sans-serif; overflow: hidden; }
+    #wrap { display: flex; flex-direction: column; height: 100%; }
+
+    #bar { flex: 0 0 auto; padding: 10px 14px; background: #191922;
+           border-bottom: 1px solid #2c2c3a; font-size: 13px; line-height: 1.9; }
+    #bar b { color: #fff; }
+    .ok  { color: #51cf66; font-weight: 700; }
+    .bad { color: #ff6b6b; font-weight: 700; }
+    .dim { color: #888; }
+    code { background: #23232e; padding: 2px 6px; border-radius: 4px;
+           color: #ffd43b; user-select: all; font-size: 12px; }
+    button { background: #6c5ce7; color: #fff; border: none; border-radius: 6px;
+             padding: 4px 12px; cursor: pointer; font-size: 12px; margin-left: 8px; }
+    button:hover { filter: brightness(1.12); }
+    button.sec { background: #3a3a44; }
+
+    #cfgbox { flex: 0 0 auto; padding: 8px 14px; background: #15151c;
+              border-bottom: 1px solid #2c2c3a; font-size: 12px; line-height: 1.7;
+              display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #cfgbox input { background: #23232e; color: #e6e6e6; border: 1px solid #2c2c3a;
+                    border-radius: 4px; padding: 4px 8px; font-size: 12px;
+                    font-family: Consolas, "Courier New", monospace; min-width: 280px; }
+    #cfgbox .gs { color: #51cf66; }
+
+    /* 启动授权（LaunchGuard）：头显**只能**通过平台客户端 + 本机放行才能启动游戏。
+       这里管理 secret 与设备白名单；授权请求实时打在下方日志区。 */
+    #guardbox { flex: 0 0 auto; padding: 8px 14px; background: #15151c;
+                border-bottom: 1px solid #2c2c3a; font-size: 12px; line-height: 1.9;
+                display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #guardbox .dev { background: #23232e; border-radius: 4px; padding: 1px 6px;
+                     font-family: Consolas, monospace; color: #ffd43b; }
+    #guardbox .dev i { color: #ff6b6b; cursor: pointer; font-style: normal; margin-left: 6px; }
+    #guardbox label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+    #guardbox .secret { max-width: 240px; overflow: hidden; text-overflow: ellipsis;
+                        white-space: nowrap; display: inline-block; vertical-align: bottom; }
+    #cfgbox .gb { color: #ff6b6b; }
+
+    /* 授权（License）：本机是「直播端」，它自己必须先被授权。
+       ★ 兜底 0 天 ⇒ 这里一旦不是「有效」，头显一律启动不了。所以这一栏要一眼能看明白，
+         并且把「剩余天数」「一键续期」「填激活码」都放在最显眼处。 */
+    #licbox { flex: 0 0 auto; padding: 8px 14px; background: #14121c;
+              border-bottom: 1px solid #2c2c3a; font-size: 12px; line-height: 1.9;
+              display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #licbox .lic-ok   { color: #51cf66; font-weight: 700; }
+    #licbox .lic-warn { color: #ffa94d; font-weight: 700; }
+    #licbox .lic-bad  { color: #ff6b6b; font-weight: 700; }
+    #licbox input { background: #23232e; color: #e6e6e6; border: 1px solid #2c2c3a;
+                    border-radius: 4px; padding: 4px 8px; font-size: 12px;
+                    font-family: Consolas, "Courier New", monospace; text-transform: uppercase; width: 190px; }
+    #licbox #licDays { font-weight: 700; }
+    #licbox .hint { color: #888; }
+
+    #stage { flex: 1 1 auto; position: relative; background: #000;
+             display: flex; align-items: center; justify-content: center; min-height: 0; overflow: hidden; }
+    /* 铺满舞台：cover 保留画面比例并裁掉溢出部分，杜绝黑边；JPEG 兜底图同样处理 */
+    #video, #img { width: 100%; height: 100%; object-fit: cover; display: none; }
+    #video.on, #img.on { display: block; }
+    /* 开场影片：头显播片时它不能编码（解码×编码争 VPU），PC 端改播**本地同一段影片**。
+       在最上层，播完或收到头显的结束通知后隐藏，露出下面的推流画面。 */
+    #intro { position: absolute; inset: 0; width: 100%; height: 100%;
+             object-fit: cover; background: #000; display: none; z-index: 5; }
+    #intro.on { display: block; }
+    #hint { position: absolute; color: #888; font-size: 14px; text-align: center;
+            line-height: 1.8; padding: 0 24px; }
+
+    /* —— 纯净模式：只保留游戏画面 ——
+       按 H 切换（状态存 localStorage，下次启动保持）；按 F 切换全屏。
+       启动时加 --pure 参数可直接进入（EXE 快捷方式里可加）。 */
+    body.pure #bar, body.pure #cfgbox, body.pure #guardbox, body.pure #licbox, body.pure #logbox { display: none !important; }
+    body.pure #hint { font-size: 13px; }
+
+    #toast { position: fixed; left: 50%; top: 22px; transform: translateX(-50%);
+             background: rgba(0,0,0,.72); color: #fff; padding: 8px 16px; border-radius: 8px;
+             font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .25s;
+             z-index: 9999; white-space: nowrap; }
+    #toast.on { opacity: 1; }
+
+    /* 诊断日志区：打包成 EXE 后看不到控制台，靠这里定位「卡在哪一步」 */
+    #logbox { flex: 0 0 140px; overflow-y: auto; background: #0c0c12;
+              border-top: 1px solid #2c2c3a; padding: 6px 12px;
+              font-family: Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.55; }
+    #logbox div { white-space: pre-wrap; word-break: break-all; }
+    .l-time { color: #5c5c6e; }
+    .l-ok   { color: #51cf66; }
+    .l-bad  { color: #ff6b6b; }
+    .l-warn { color: #ffa94d; }
+    .l-dim  { color: #7a7a8c; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="bar">
+      <div>
+        本机地址：<b id="ips" class="dim">获取中…</b>
+        <span class="dim">（头显需与电脑同一局域网）</span>
+      </div>
+      <div>
+        推流端（头显/游戏）：<b id="pub" class="bad">离线</b>
+        &nbsp;·&nbsp; 接收端（本窗口）：<b id="vw" class="bad">离线</b>
+        &nbsp;·&nbsp; WebRTC：<b id="rtc" class="dim">-</b>
+      </div>
+      <div>
+        头显请打开：<code id="url">…</code><button id="copy">复制</button>
+        <span class="dim">&nbsp;&nbsp;路径①（推荐）：头显点 APK 自动发现；路径②（旁路）：头显浏览器直接打开上面地址</span>
+        <span class="dim">&nbsp;&nbsp;·&nbsp; 快捷键：<b>H</b> 仅画面（纯净模式）/ <b>F</b> 全屏 / <b>M</b> 开场影片静音开关</span>
+      </div>
+    </div>
+    <div id="cfgbox">
+      <span>游戏目录（PC 端托管路径②；可绕过 APK 直接 serve 游戏）：</span>
+      <input id="cfgRoot" type="text" placeholder="例如 E:\AI_Work\WebXR_Begain（需含 index.html）" />
+      <button id="cfgApply" class="sec">应用</button>
+      <span id="cfgStatus" class="dim">（未配置）</span>
+    </div>
+    <div id="licbox">
+      <span>授权（本机直播端）：</span>
+      <b id="licState" class="lic-bad">读取中…</b>
+      <span class="hint">剩余</span><b id="licDays">–</b><span class="hint">天</span>
+      <span id="licWho" class="hint">…</span>
+      <input id="licCode" type="text" placeholder="激活码（管理后台生成）" />
+      <button id="licActivate">激活</button>
+      <button id="licRenew" class="sec">立即续期</button>
+      <button id="licReload" class="sec">重载文件</button>
+      <span id="licDev" class="dim">设备指纹 …</span>
+    </div>
+    <div id="guardbox">
+      <span>启动授权（头显只能在「平台客户端拉起 + 本机放行」时启动）：</span>
+      <span class="dim">密钥</span><code id="guardSecret" class="secret">…</code>
+      <span class="dim">（两端固定，无需抄写）</span>
+      <button id="guardReset" class="sec">重新配对</button>
+      <label><input type="checkbox" id="guardAuto" /> 新设备自动登记</label>
+      <span id="guardSession" class="dim">局号 …</span>
+      <span id="guardList" class="dim">白名单读取中…</span>
+    </div>
+    <div id="stage">
+      <video id="video" autoplay muted playsinline></video>
+      <img id="img" alt="JPEG 兜底画面" />
+      <video id="intro" preload="auto" playsinline></video>
+      <div id="hint">等待推流端连接…<br /><span class="dim">若长时间无响应，查看下方日志区，常见原因已在日志中标注。</span></div>
+    </div>
+    <div id="logbox"></div>
+  </div>
+  <div id="toast"></div>
+  <script src="./renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+# systemd 单元 —— 授权服务器常驻
+#
+# 安装：
+#   推荐用 deploy/install.sh（会自动改写 ExecStart 的 node 路径并预建 data/）
+#   手动安装：
+#     sudo cp webvr123.service /etc/systemd/system/
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now webvr123
+#     systemctl status webvr123
+#
+# 注意：
+#   1) ExecStart 里的 node 路径按实际改（command -v node）。install.sh 会自动替换。
+#      建议用 Node 22+（内置 node:sqlite）；18/20 自动降级为 JSON 存储，同样能跑。
+#   2) 下方 ProtectSystem=strict 会让 /opt/webvr123 对服务【只读】。因此：
+#        · data/ 目录必须先存在（否则 systemd 拒绝启动）
+#        · secrets/admin.json 必须【预先】生成（否则服务首次启动写盘失败）
+#      这两件事 install.sh 都会做；手动部署见 README §3.4。
+
+[Unit]
+Description=WebXR License Server (webvr123.site)
+Documentation=file:/opt/webvr123/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=webvr123
+Group=webvr123
+WorkingDirectory=/opt/webvr123
+
+ExecStart=/usr/bin/node server.js
+
+Environment=NODE_ENV=production
+Environment=PORT=8787
+Environment=HOST=127.0.0.1
+# 管理员凭证：默认从 secrets/admin.json 读（install.sh 已预生成，含随机密码）。
+# 想改用环境变量覆盖它，取消下面两行的注释（优先级：env > admin.json）：
+# Environment=ADMIN_USER=admin
+# Environment=ADMIN_PASS=换成强密码
+
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+
+# ---- 安全加固 ----
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# 唯一需要可写的目录
+ReadWritePaths=/opt/webvr123/data
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

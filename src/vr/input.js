@@ -321,7 +321,19 @@ export class InputManager {
         }
         if (ctrl) ctrl.userData.prevTrigger = trigger;
 
-        // A/B 在 pollMenu 中统一处理；普通游戏中不会单键误退出。
+        // A/B（边缘）→ 退出 VR
+        const ab = btnA || btnB;
+        if (ctrl) {
+          if (ab && !ctrl.userData.prevAB) {
+            // ★ 「玩家主动退出」标记（2026-09-19 六修）：main.js 的 sessionend 据此区分
+            //   · 玩家自己按 A/B → 回菜单清场（原行为）；
+            //   · 被别的应用抢前台、PICO 结束会话 → **保留本局**，只给一个「继续游戏」按钮。
+            //   XRSession 是普通对象，挂个私有标记即可（不依赖任何浏览器扩展）。
+            session._endedByPlayer = true;
+            session.end?.();
+          }
+          ctrl.userData.prevAB = ab;
+        }
       } else if (hand === 'left') {
         // 左手扳机：记录扳机边缘状态
         if (ctrl) ctrl.userData.prevTrigger = trigger;

@@ -58,6 +58,9 @@ export class AudioManager {
     this._unlocked = true;
   }
 
+  // ── 工具 ────────────────────────────────────────────────────────────────
+  _midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+
   _noiseBuffer(dur) {
     const len = Math.floor(this.ctx.sampleRate * dur);
     const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
