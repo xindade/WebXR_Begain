@@ -6,3 +6,6 @@
 Thumbs.db
 node_modules/
 npm-debug.log*
+
+# 构建产物（APK / 安装包体积过大，改为本地或网盘分发）
+release/
