@@ -37,12 +37,12 @@ const NOOP_CAST = {
  * @param {World}  opt.world  World 实例（取 scene / camera / _skydome / sky）
  * @returns 启用的 Cast 实例，或 NOOP_CAST
  */
-export function createCast({ world, game }) {
+export function createCast({ world, game, audio }) {
   if (!world) return NOOP_CAST;
   const q = new URLSearchParams(location.search);
   if (q.get('cast') !== '1') return NOOP_CAST;
   try {
-    return new Cast({ world, game, q });
+    return new Cast({ world, game, audio, q });
   } catch (e) {
     console.error('[cast] 初始化失败，已停用推流:', e);
     return NOOP_CAST;
@@ -50,9 +50,11 @@ export function createCast({ world, game }) {
 }
 
 class Cast {
-  constructor({ world, game, q }) {
+  constructor({ world, game, audio, q }) {
     this.world = world;
     this.game = game || null;      // 用于判断「是否真的开始游玩」（见 _shouldPause）
+    this.audio = audio || null;    // AudioManager：音频推流从这里取「总线轨道」
+    this.audioTrack = null;        // 媒体流里的音频轨：与视频同生共死，靠 enabled 开关，不重协商
     this.enabled = true;
 
     // —— 可调参数（URL 覆盖 CAST 默认）——
@@ -204,7 +206,7 @@ class Cast {
     this._drawPlaceholder();
 
     const fps = Math.max(1, CAST.WARMUP_FPS || 1);
-    const stream = c.captureStream(fps);
+    const stream = this._attachAudio(c.captureStream(fps));   // 音频轨必须赶在 createOffer 之前挂上
     const track = stream.getVideoTracks()[0] || null;
     if (!track) { this._clearWarmup(); return; }
     this._warm.track = track;
@@ -312,6 +314,28 @@ class Cast {
     const st = this.game?.state;
     if (!st) return false;                     // 拿不到状态 → 不暂停（宁可推流，别把直播搞没了）
     return CAST.PAUSE_STATES.indexOf(st) >= 0;
+  }
+
+  /**
+   * 把音频总线轨道挂到「用于推流的 MediaStream」上（幂等）。
+   * 时机关键：**必须在 new WebRtcPush/createOffer 之前**挂上去 —— 这样 offer 里天然带一条音频 m-line，
+   * 之后换视频轨（replaceTrack）不影响音频；静音/取消静音只切 track.enabled，全程不重协商。
+   * 开场影片期间与视频一起静音（见 update()）：那时 PC 端本地播同一段影片自带音轨，叠加会双声。
+   */
+  _attachAudio(stream) {
+    if (!stream || !this.audio?.ensureCastAudioTrack) return stream;
+    try {
+      if (!this.audioTrack) {
+        this.audioTrack = this.audio.ensureCastAudioTrack();
+        if (this.audioTrack) log('已接入音频推流（BGM / 音效 / 语音走同一条 WebRTC 连接）');
+      }
+      if (!this.audioTrack) return stream;
+      if (!stream.getAudioTracks().includes(this.audioTrack)) stream.addTrack(this.audioTrack);
+      this.audioTrack.enabled = !this._shouldPause();   // 影片/预览阶段先静音
+    } catch (e) {
+      log(`音频轨接入失败（本次只推视频）：${e.message}`);
+    }
+    return stream;
   }
 
   _startPush() {
@@ -444,6 +468,8 @@ class Cast {
         log('预览/影片阶段 → 暂停推流（不渲染、不编码）');
       }
       if (this.track && this.track.enabled) this.track.enabled = false;
+      // 影片阶段同样不推音频：PC 端本地影片自带声音，叠加会双声/回声
+      if (this.audioTrack && this.audioTrack.enabled) this.audioTrack.enabled = false;
       return;
     }
     if (this._paused !== false) {
@@ -453,6 +479,7 @@ class Cast {
       if (this._warm) this._swapToOffscreen();
       else if (this._pendingStart) this._startPush();
       if (this.track && !this.track.enabled) this.track.enabled = true;
+      if (this.audioTrack) this.audioTrack.enabled = true;   // 开玩 → 音频轨恢复出声
     }
 
     if (!this.push) return;                                  // 没有接收端 → 完全不渲染，零开销

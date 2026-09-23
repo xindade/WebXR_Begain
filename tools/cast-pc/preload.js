@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('castCfg', {
   onGuardLog: (cb) => { if (typeof cb === 'function') ipcRenderer.on('guard:log', (_e, entry) => cb(entry)); },
   // 授权（License）：状态快照 / 激活（激活码）/ 手动续期 / 热载 license.json。
   // ⚠ 渲染进程只能「读状态 + 触发动作」，判定逻辑全在 main.js —— 界面改不了门禁结果。
+  // 平台参数（文档第 4 条）：界面顶部显示平台带了什么参数（房间号 / 平台 IP / 游戏名）
+  platformGet: () => ipcRenderer.invoke('platform:get'),
   licenseGet: () => ipcRenderer.invoke('license:get'),
   licenseSet: (patch) => ipcRenderer.invoke('license:set', patch || {}),
 });

@@ -8,13 +8,16 @@
 //   POST /api/frame          JPEG 兜底：游戏端推二进制帧
 //   GET  /api/frame          JPEG 兜底：接收端取最新一帧
 //   POST /api/launch/request 启动授权：头显 APK 首次拉起时来要放行条（HMAC，见「启动授权」段）
+//   POST /api/master/allow   门禁「允许运行」：APK 与游戏页面共用（与上一行同一套判据，见 masterAllow）
 //   GET  /api/config/dump    配置下发：把「轻量配置」（关卡/刷怪/数值等）整包交给已授权的头显
 //                            （见「启动授权」段的 CONFIG_MANIFEST；本局局号 SESSION_ID 随包下发）
 //   GET  /api/license/current 出示本机 license + proof（**无鉴权**，见「授权（License）」段）
 //   GET  /api/info           返回端口 / 本机 IP / 对端在线状态（含 guard/ver：是否已支持启动授权）
 //   GET  /__cast/...         接收端自己的界面（避免 file:// 导致相对路径失效）
 //
-// 用法：npm start [-- --port=8443 --root=<游戏目录> --no-serve --cert=<pem> --key=<pem>]
+// 用法：npm start [-- --port=8443 --root=<游戏目录> --no-serve --cert=<pem> --key=<pem>
+//                        --game-root=<游戏目录> --room=<房间号> --platform=<IP:端口> --game=<游戏名>]
+//      平台拉起时还会带一个位置参数 "<exe 相对路径>$<进程名>$<平台本机 IP>"（见「平台参数」段）。
 
 const { app, BrowserWindow, ipcMain } = require('electron');
 const http = require('http');
@@ -31,13 +34,54 @@ const https = require('https');
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'default');
 
+// —— 音频：头显推上来的音轨要能在 PC 大屏上直接出声 ——
+// Chromium 默认策略是「没有用户手势 → 带声播放被拦」，表现就是「画面有、声音没有」。
+// 本窗口是现场大屏播放器，不会有人去点它，因此对这个进程整体放开自动播放。
+// 注意：这是**本进程**的开关，不改系统 / Chrome 的全局策略。
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
 // ————————————————————————— 参数 —————————————————————————
-const argv = process.argv.slice(2);
+// ⚠ 打包后 process.argv = [<exe>, ...平台参数]，开发时 = [<electron>, <脚本>, ...参数]。
+//   原实现写死 slice(2)：开发期没问题，但**打包后会吃掉 argv[1]** —— 而平台恰恰就是用
+//   那一个位置参数把「平台本机 IP」告诉游戏的（见下面「平台参数」段）。因此按是否打包区分。
+const argv = process.argv.slice(app.isPackaged ? 1 : 2);
 const argValue = (name, def) => {
   const hit = argv.find((s) => s.startsWith(`--${name}=`));
   return hit ? hit.slice(name.length + 3) : def;
 };
 const hasFlag = (name) => argv.includes(`--${name}`);
+
+// —————— 平台参数（《打包和平台对接》第 4 条：EXE 由平台登记并拉起）——————
+// 平台侧实测格式（见 平台指令/VRPlatform-流量取证/指令速查.md）：
+//   argv[1] = "<exe 相对路径>$<进程名不含 .exe>$<平台本机 IP>"
+//   例：DeadHospital2-8.0.5\DeadHospital2.exe$DeadHospital2$192.168.31.228
+// 另外预留三个具名参数（命名待平台侧最终定案）：
+//   --room=<房间号>   --platform=<平台本机IP:端口>   --game=<游戏名>
+// 原则：**全部可选**。一个都不给 ⇒ 行为与现在完全一致（自动发现 + 手动配置游戏目录 + 端口 fallback）。
+const PLATFORM_ARGV_RAW = argv.find((s) => !s.startsWith('--')) || null;
+const platformPositional = (() => {
+  if (!PLATFORM_ARGV_RAW) return null;
+  const parts = PLATFORM_ARGV_RAW.split('$');
+  if (parts.length < 3) return null;                     // 不是平台格式 → 当普通参数忽略
+  return { exeRel: parts[0], procName: parts[1], host: parts[2] };
+})();
+const PLATFORM_ARGS = {
+  room: argValue('room', null),
+  platform: argValue('platform', platformPositional ? platformPositional.host : null),
+  game: argValue('game', platformPositional ? platformPositional.procName : null),
+  exeRel: platformPositional ? platformPositional.exeRel : null,
+  raw: PLATFORM_ARGV_RAW,
+};
+/** 把平台参数打进日志（打包后看不到控制台，界面顶部也会再显示一份）。 */
+function logPlatformArgs() {
+  if (!PLATFORM_ARGS.room && !PLATFORM_ARGS.platform && !PLATFORM_ARGS.game) {
+    console.log('[cast-pc] 平台参数：未提供（按默认方式运行：自动发现 + 手动配置游戏目录）');
+    return;
+  }
+  console.log('[cast-pc] 平台参数：'
+    + `room=${PLATFORM_ARGS.room || '-'} platform=${PLATFORM_ARGS.platform || '-'} game=${PLATFORM_ARGS.game || '-'}`
+    + (PLATFORM_ARGS.exeRel ? ` exeRel=${PLATFORM_ARGS.exeRel}` : ''));
+}
 
 let PORT = Number(argValue('port', 8443));   // 实际启动端口由 tryListen 决定（fallback）
 // 打包后（asar 内）__dirname 指向 resources/app.asar，'../..' 会算到错误的目录；
@@ -79,6 +123,10 @@ function autoDetectGameRoot() {
     argValue('game-root', null),
     process.cwd(),
     path.join(__dirname, '..', '..'),
+    // ★ 主工程：合并后的「新玩法基线 + 推流/平台」目录（平台里登记的那个游戏目录也应是它）。
+    'E:/AI_Work/WebXR_Begain_Platform',
+    'G:/01_Work/AI_Codex/WebXR_Begain',
+    // 历史位置：保留为兜底 —— 老现场机器上可能只有这几个目录，删掉会让自动探测失效。
     'E:/AI_Work/WebXR_Begain',
     'D:/AI_Work/WebXR_Begain',
     'C:/AI_Work/WebXR_Begain',
@@ -412,6 +460,8 @@ app.whenReady().then(() => {
     if (pathname === '/api/frame' && req.method === 'GET') return handleFrameGet(req, res);
     // 启动授权：头显 APK 首次拉起时来要放行条（见文件顶部「启动授权」段）
     if (pathname === '/api/launch/request' && req.method === 'POST') return handleLaunchRequest(req, res);
+    // ★ 门禁（文档第 3 条）：APK 与游戏页面共用的「允许运行」查询 —— 与上一行**同一套判据**。
+    if (pathname === '/api/master/allow' && req.method === 'POST') return handleMasterAllow(req, res);
     // ★ 第十七修：配置下发。头显拿到放行条后立刻来取「轻量配置」，文件齐全才建游戏界面。
     //   只允许 GET（HMAC 参数走 query），且必须排在 handleStatic 兜底之前。
     if (pathname === '/api/config/dump') return handleConfigDump(req, res);
@@ -426,16 +476,16 @@ app.whenReady().then(() => {
         // 启动授权能力标识：头显 APK 用它区分「地址上跑的是旧版接收端（没有
         // /api/launch/request）」与「这个地址根本不是直播接收端」。不带这个字段的
         // 都按旧版处理 —— 现场排障时「整包没换」是最常见的一种失败。
-        guard: true, ver: '1.3.0',
+        guard: true, ver: '1.4.0',
+        // ★ 门禁（文档第 3 条）：本端支持 /api/master/allow —— APK/页面据此区分「旧版接收端」。
+        masterAllow: true,
+        // ★ 平台参数（文档第 4 条）：平台拉起时带的房间号 / 平台 IP / 游戏名；独立运行全为 null。
+        platform: PLATFORM_ARGS,
         // session = 本局局号；configManifest = 会下发哪些路径（排查「文件不齐」时一眼看出）
         session: SESSION_ID, configManifest: CONFIG_MANIFEST,
         // ★ 授权状态摘要（一眼看出「EXE 到底授权没有」；完整凭据走 /api/license/current）
         //   故意不调 licenseState()：那个会去枚举网卡算指纹，不该出现在高频的 /api/info 里。
-        license: {
-          ok: LICENSE.ok, mode: LICENSE.mode, why: LICENSE.why,
-          daysLeft: (LICENSE.payload && LICENSE.payload.exp)
-            ? Math.floor((LICENSE.payload.exp - Date.now()) / 86400000) : 0,
-        },
+        license: licenseSummary(),
       }));
       return;
     }
@@ -469,6 +519,7 @@ app.whenReady().then(() => {
     console.log(`[cast-pc] 静态根目录：${NO_SERVE ? '（已关闭）' : ROOT}`);
     console.log(`[cast-pc] 游戏托管：${SERVE_GAME ? GAME_ROOT : '（未配置）'}`);
     console.log('[cast-pc] 头显请打开：' + (ips[0] ? `http://${ips[0]}:${usedPort}/?cast=1` : '(未取到局域网 IP)'));
+    logPlatformArgs();
     console.log('==================================================');
 
     loadGuard();
@@ -538,6 +589,9 @@ app.whenReady().then(() => {
 
     // ——— IPC：授权（License）—— 读状态 / 激活 / 手动续期 ———
     // 界面只做「显示 + 触发」，全部判断都在主进程 —— 渲染进程改不了门禁结果。
+    // ——— IPC：平台参数（文档第 4 条）—— 界面顶部原样显示平台带了什么，便于现场核对 ———
+    ipcMain.handle('platform:get', () => ({ ...PLATFORM_ARGS, argv, packaged: !!app.isPackaged }));
+
     ipcMain.handle('license:get', () => licenseState());
     ipcMain.handle('license:set', async (_e, patch) => {
       if (!patch || typeof patch !== 'object') return { ok: false, why: '无有效 patch' };
@@ -591,7 +645,14 @@ app.on('window-all-closed', () => {
 //   EXE  → {"allow":true,"voucher":"<hex>","ttl":60,"why":"白名单命中","server":<毫秒>}
 //   sig = HMAC-SHA256(secret, dev + "|" + ts)，时间窗 ±30 秒（防重放）。
 // 白名单：autoAllow=true 时首次请求即自动登记并放行；否则必须手动加入（UI 可增删）。
-// voucher = HMAC-SHA256(secret, dev + "|" + exp)，留给页面信令鉴权用（当前仅签发，未强制）。
+// voucher = HMAC-SHA256(secret, dev + "|" + exp)。★ 2026-09-23 起**已强制**：游戏页面拿
+//   dev+exp+voucher 调 /api/master/allow 复验（浏览器算不出 HMAC，放行条是它唯一的凭据）。
+//
+// ★ 2026-09-23（平台对接）：新增门禁端点，APK 与游戏页面**共用同一条判据**（文档第 3 条）：
+//   APK/页面 → POST /api/master/allow {"device":"…","ts":…,"sig":…}（或 {"device":…,"exp":…,"voucher":…}）
+//   EXE      → {"allow":bool,"reason":"…","voucher":"…","ttl":…,"license":{…}}
+//   判定都在 masterAllow() 里 —— **不要再各写一套**：「APK 放行了、页面却拒绝」这种现场事故
+//   的根因就是两处判据各自演化。
 
 // ── ★ 第十七修：三处定案（2026-09-20，需求方逐项拍板） ──
 // ① secret 改为**两端固定的共享串**，不再随机。为什么必须固定：随机 secret 只能靠人工从本窗口
@@ -989,6 +1050,30 @@ function guardVoucher(dev, exp) {
   return crypto.createHmac('sha256', GUARD.secret).update(`${dev}|${exp}`).digest('hex');
 }
 
+/** 放行条有效期（毫秒）。头显拿它换「允许运行」结论，游戏页面也用它做第二道校验。 */
+const GUARD_VOUCHER_TTL_MS = 60000;
+
+/**
+ * 校验「放行条」。为什么需要它：游戏页面跑在**头显浏览器**里，没有 secret、算不出 HMAC 签名，
+ * 但它在启动时能从 APK/EXE 那里拿到一张 voucher ⇒ 用它代替 dev|ts|sig 走**同一套白名单判定**，
+ * 页面不必知道 secret。这样「页面侧第二道门禁」才可能与 APK 同源，而不是各判各的。
+ * @return {{at:number,ip:string,dev:string,allow:boolean,why:string}}
+ */
+function guardVerifyVoucher(ip, dev, exp, voucher) {
+  const entry = { at: Date.now(), ip, dev, allow: false, why: '' };
+  if (!dev || !exp || !voucher) {
+    entry.why = '放行条参数缺失（dev/exp/voucher 必填）';
+  } else if (!Number.isFinite(Number(exp)) || Number(exp) < Date.now()) {
+    entry.why = '放行条已过期（在平台里重新点一次「启动」）';
+  } else if (guardVoucher(dev, Number(exp)) !== voucher) {
+    entry.why = '放行条校验失败（secret 不一致？）';
+  } else {
+    entry.allow = true;
+    entry.why = '放行条命中';
+  }
+  return entry;
+}
+
 function guardPush(entry) {
   GUARD.log.unshift(entry);
   GUARD.log = GUARD.log.slice(0, 50);
@@ -998,28 +1083,49 @@ function guardPush(entry) {
 function handleLaunchRequest(req, res) {
   const ip = clientIp(req);
   readJsonBody(req, 4096, (body) => {
-    // ★ 门禁总闸（兜底 0 天）：EXE 自己授权不合法 → 直接拒，连 HMAC 都不用看。
-    const gate = licenseGate();
-    if (gate) {
-      const e = { at: Date.now(), ip, dev: String((body && body.dev) || ''), allow: false, why: gate };
-      guardPush(e);
-      console.log(`[cast-pc] 启动授权 DENY dev=${e.dev || '(空)'} ip=${ip} why=${gate}`);
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ allow: false, session: SESSION_ID, server: Date.now(), why: gate }));
-    }
-    const entry = guardVerify(ip, body);
-    let voucher = null;
-    if (entry.allow) {
-      entry.exp = Date.now() + 60000;
-      voucher = guardVoucher(entry.dev, entry.exp);
-    }
-    guardPush(entry);
-    console.log(`[cast-pc] 启动授权 ${entry.allow ? 'ALLOW' : 'DENY '} dev=${entry.dev || '(空)'} ip=${ip} why=${entry.why}`);
+    // 判定走**唯一出口** masterAllow（授权总闸 + 凭据 + 白名单都在里面），这里只负责把结论
+    // 翻译成 APK 既有的字段名（why），并签发放行条。**不要再在这里加判据** —— 见 masterAllow 注释。
+    const r = masterAllow(ip, body);
+    guardPush(r.entry);
+    console.log(`[cast-pc] 启动授权 ${r.allow ? 'ALLOW' : 'DENY '} dev=${r.entry.dev || '(空)'} ip=${ip} why=${r.reason}`);
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     // session：本局局号。头显把它存进下发配置里；下次启动若对不上就整包重下（见「局号失效」注释）。
+    // exp 一并回给头显：它拿 dev+exp+voucher 就能在**页面侧**向 /api/master/allow 复验同一张条子。
     res.end(JSON.stringify({
-      allow: entry.allow, voucher, ttl: 60, why: entry.why,
+      allow: r.allow, voucher: r.voucher, ttl: r.ttl, exp: r.entry.exp || null,
+      why: r.reason, reason: r.reason,
       session: SESSION_ID, server: Date.now(),
+    }));
+  });
+}
+
+/**
+ * POST /api/master/allow —— 「允许运行」门禁（《打包和平台对接》第 3 条）。
+ *
+ * <p>APK（UDP 发现到 PC、**拉起浏览器之前**）与游戏页面（**进 VR 之前**）共用这一个端点。
+ * 与 `/api/launch/request` 是**同一套判据**（都走 masterAllow），区别只在调用时机与字段名：
+ * 这里回 `reason` 并附带 `license` 摘要，为后续「授权即门禁」预留。
+ *
+ * <p>请求（二选一）：
+ *   APK ：`{"device":"<dev>","ts":<毫秒>,"sig":"<hex>","room":"<房间号，可选>"}`
+ *   页面：`{"device":"<dev>","exp":<毫秒>,"voucher":"<hex>","room":"…"}`
+ * @return {{allow:boolean, reason:string, session:string, room:string|null, license:object}}
+ */
+function handleMasterAllow(req, res) {
+  const ip = clientIp(req);
+  readJsonBody(req, 4096, (body) => {
+    const r = masterAllow(ip, body);
+    // room 只是留痕维度：单路观众（现场一台 PC 大屏），房间号不参与放行判定。
+    const room = String((body && body.room) || PLATFORM_ARGS.room || '');
+    r.entry.room = room;
+    guardPush(r.entry);
+    console.log(`[cast-pc] 门禁查询 ${r.allow ? 'ALLOW' : 'DENY '} dev=${r.entry.dev || '(空)'}`
+      + ` ip=${ip} room=${room || '-'} why=${r.reason}`);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      allow: r.allow, reason: r.reason, voucher: r.voucher, ttl: r.ttl,
+      session: SESSION_ID, room: room || null, server: Date.now(),
+      license: licenseSummary(),
     }));
   });
 }
@@ -1116,6 +1222,56 @@ function readJsonBody(req, limit, cb) {
     try { body = JSON.parse(raw || '{}'); } catch (e) { /* 走「参数缺失」分支 */ }
     cb(body);
   });
+}
+
+/** 授权状态摘要（廉价版：不枚举网卡算指纹，可高频调用）。 */
+function licenseSummary() {
+  return {
+    ok: LICENSE.ok, mode: LICENSE.mode, why: LICENSE.why,
+    daysLeft: (LICENSE.payload && LICENSE.payload.exp)
+      ? Math.floor((LICENSE.payload.exp - Date.now()) / 86400000) : 0,
+  };
+}
+
+/**
+ * ★ 门禁总判定 —— **唯一出口**（2026-09-23 平台对接新增）。
+ *
+ * <p>`/api/launch/request`（头显 APK）与 `/api/master/allow`（APK + 游戏页面共用）都调它，
+ * 免得两套判据各自演化后出现「一边放行、一边拒绝」的现场事故 —— 本项目历史上真发生过
+ * （见文件头「第十七修」：secret 随机化 + 空白名单 + 自动登记关 = 直接把自己锁死）。
+ *
+ * <p>判据顺序 = 优先级：
+ *   ① 本机授权 licenseGate() —— EXE 自己授权不合法就一律拒，连凭据都不看；
+ *   ② 凭据：dev+ts+sig（HMAC，APK 用）**或** dev+exp+voucher（放行条，页面用）；
+ *   ③ 白名单命中 / 配对窗口自动登记。
+ *
+ * @param {string} ip 客户端 IP（仅留痕）
+ * @param {object} body {device|dev, ts, sig} 或 {device|dev, exp, voucher}，可选 room
+ * @return {{allow:boolean, reason:string, entry:object, voucher:string|null, ttl:number}}
+ */
+function masterAllow(ip, body) {
+  // device 是《打包和平台对接》里的字段名，dev 是本项目历史字段名 —— 两个都认，免得调用方记错。
+  const dev = String((body && (body.device || body.dev)) || '');
+  const gate = licenseGate();
+  if (gate) {
+    const entry = { at: Date.now(), ip, dev, allow: false, why: gate };
+    return { allow: false, reason: gate, entry, voucher: null, ttl: 0 };
+  }
+  if (body && body.voucher && dev) {           // 放行条路径（游戏页面）
+    const entry = guardVerifyVoucher(ip, dev, Number(body.exp || 0), String(body.voucher));
+    return { allow: entry.allow, reason: entry.why, entry, voucher: null, ttl: 0 };
+  }
+  const entry = guardVerify(ip, {             // 签名路径（APK）
+    dev,
+    ts: String((body && body.ts) || ''),
+    sig: String((body && body.sig) || ''),
+  });
+  let voucher = null;
+  if (entry.allow) {
+    entry.exp = Date.now() + GUARD_VOUCHER_TTL_MS;
+    voucher = guardVoucher(entry.dev, entry.exp);
+  }
+  return { allow: entry.allow, reason: entry.why, entry, voucher, ttl: Math.round(GUARD_VOUCHER_TTL_MS / 1000) };
 }
 
 /**

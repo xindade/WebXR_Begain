@@ -40,6 +40,11 @@ export class WebRtcPush {
     for (const track of stream.getVideoTracks()) {
       this.sender = this.pc.addTrack(track, stream);
     }
+    // 音频轨（调用方已挂到 stream 上）：与视频共用一条 PeerConnection，不单独重协商。
+    // ⚠ 必须在 createOffer 之前 addTrack，否则 offer 里没有音频 m-line（事后加要重协商）。
+    for (const track of stream.getAudioTracks()) {
+      this.pc.addTrack(track, stream);
+    }
   }
 
   // 我是 publisher：等 viewer 就绪后主动 createOffer

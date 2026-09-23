@@ -23,7 +23,8 @@ let iceCount = 0;          // 收到的 ICE 候选计数（用于诊断：一个
 let lastPub = null;        // 上次 publisher 状态，用于在变化时打日志
 let lastVw = null;
 let gotFrame = false;      // 是否已收到过任意一帧（决定画面区显示画面还是等待提示）
-let introMuted = true;     // 本地开场影片默认静音（两端声音必然不同步，会互相干扰）
+let introMuted = false;    // ★ 平台对接：默认**不静音** —— 现场观众要听到开场影片的声音。
+                           //   （头显播影片期间不推流也不推音频，故不存在「两端声音打架」。）
 let introVisible = false;  // 本地影片层是否正显示
 let introEnded = false;    // 本地影片是否已播完（头显可能还在播 → 显示等待）
 let introStopTimer = 0;    // 延迟隐藏影片层的定时器
@@ -62,10 +63,10 @@ document.addEventListener('keydown', (e) => {
   const k = (e.key || '').toLowerCase();
   if (k === 'h') setPure(!pure);
   else if (k === 'f') toggleFullscreen();
-  else if (k === 'm') {                    // 开场影片声音开关（默认静音）
+  else if (k === 'm') {                    // 开场影片声音开关（默认**开声**，观众要听得到）
     introMuted = !introMuted;
     intro.muted = introMuted;
-    toast(introMuted ? '开场影片已静音（再按 M 开启）' : '开场影片已开启声音（可能与头显不同步）');
+    toast(introMuted ? '开场影片已静音（再按 M 开启）' : '开场影片已开启声音');
   }
 });
 document.body.classList.toggle('pure', pure);
@@ -85,6 +86,22 @@ function log(msg, cls, force) {
   logBox.scrollTop = logBox.scrollHeight;
 }
 
+// ——————————————— 平台参数显示（文档第 4 条）———————————————
+// 现场排障第一件事就是确认「平台到底给了什么参数」。打包成 EXE 后没有控制台，只能靠界面，
+// 所以直接显示在顶部：房间号 / 平台 IP / 游戏名 / 平台传来的 exe 相对路径。
+function renderPlatformArgs(pf) {
+  const n = el('platargs');
+  if (!n) return;
+  if (!pf || (!pf.room && !pf.platform && !pf.game)) {
+    n.className = 'dim';
+    n.textContent = '未提供（独立运行：自动发现接收端 + 手动配置游戏目录）';
+    return;
+  }
+  n.className = 'ok';
+  n.textContent = `房间 ${pf.room || '-'} · 平台 ${pf.platform || '-'} · 游戏 ${pf.game || '-'}`
+    + (pf.exeRel ? ` · ${pf.exeRel}` : '');
+}
+
 // ——————————————— 状态轮询 ———————————————
 async function pollInfo() {
   try {
@@ -96,6 +113,7 @@ async function pollInfo() {
       ? `http://${info.ips[0]}:${info.port}/?cast=1`
       : `http://<电脑IP>:${info.port}/?cast=1`;
     el('url').textContent = url;
+    renderPlatformArgs(info.platform);
     setOnline(el('pub'), info.publisher);
     setOnline(el('vw'), info.viewer);
     if (lastPub === null || info.publisher !== lastPub) {
@@ -259,6 +277,14 @@ function showVideo(stream) {
   usingVideo = true;
   gotFrame = true;
   video.srcObject = stream;
+  // 音频（★ 平台对接）：头显把 AudioContext 总线接成音轨，跟视频一起推上来。
+  // Chromium 默认拦「无手势自动播放带声」，已在 main.js 用 autoplay-policy 对本进程放开，
+  // 所以这里显式开声即可 —— 现场大屏不会有人去点一下。
+  const audioTracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
+  if (audioTracks.length) {
+    video.muted = false;
+    log(`已接入远端音频轨 ${audioTracks.length} 条 → 大屏出声`, 'l-ok', true);
+  }
   video.play().catch(() => {});
   video.classList.add('on');
   img.classList.remove('on');

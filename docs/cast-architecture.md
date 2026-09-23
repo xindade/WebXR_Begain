@@ -395,3 +395,70 @@ ANDROID_HOME="C:/Users/x/AppData/Local/Android/Sdk" \
 | `tools/cast-pc/renderer/index.html` | `body.pure` 隐藏面板规则；`#video,#img` `object-fit:cover` 铺满 |
 | `tools/cast-apk/.../MainActivity.java` | `:47-63` `USE_INNER_WEBVIEW`（默认 false，只开一个网页）；`:45` `GAME_URL`；`:183` 只跑 `PROBE_HTML`；`:256` `maybeLaunch()`；`:281-287` `getCastUrl()` |
 | `tools/cast-apk/.../Discovery.java` | `:19` `DISCOVERY_PORT = 8444` |
+
+
+---
+
+# 附录 · 2026-09-23 平台对接新增部分
+
+## 新增 HTTP 端点：`POST /api/master/allow`（PC 接收端）
+
+门禁「允许运行」的**唯一查询入口**，APK 与游戏页面共用（与 `/api/launch/request` 同一套判定）。
+
+```
+请求（二选一）：
+  APK ：{"device":"<ANDROID_ID>","ts":<毫秒>,"sig":"<hex>","room":"<房间号，可选>"}
+  页面：{"device":"<ANDROID_ID>","exp":<毫秒>,"voucher":"<hex>","room":"…"}
+
+响应：
+  { "allow": true|false,
+    "reason": "<拒绝/放行的原因，直接可读>",
+    "voucher": "<hex>|null", "ttl": 60,
+    "session": "<本局局号>", "room": "<房间号>|null",
+    "license": { "ok":.., "mode":.., "why":.., "daysLeft":.. } }
+```
+
+判定顺序（`masterAllow()`）：**① 本机授权 `licenseGate()` → ② 凭据（HMAC 或放行条）→ ③ 白名单 / 配对窗口**。
+
+- **放行条** `voucher = HMAC-SHA256(secret, dev + "|" + exp)`，TTL 60s。
+  它存在的理由：游戏页面跑在**头显浏览器**里，没有 secret、算不出 HMAC，
+  但它在启动时能从 APK 拿到这张条子 ⇒ 用同一套白名单判定复验，页面不必知道 secret。
+  （原先 `voucher` 只签发、不强制；**2026-09-23 起已强制**。）
+- **`/api/launch/request` 也改走 `masterAllow()`** —— 判据只有一处，避免漂移。
+- `/api/info` 新增 `masterAllow: true`（能力标识，供 APK 区分旧版接收端）与 `platform: {...}`；`ver` → `1.4.0`。
+
+## 媒体：视频 + **音频**
+
+推流由「仅视频」变为「**视频 + 音频**」：
+
+```
+头显 AudioContext.master ──createMediaStreamDestination()──▶ audioTrack
+                                    │
+                          cast.js _attachAudio(stream)  ← 必须在 new WebRtcPush 之前
+                                    │
+                          push-webrtc.js addTrack(音轨)   ← 必须在 createOffer 之前
+                                    ▼
+                          PC <video id="video">（autoplay-policy 已放开 → 大屏出声）
+```
+
+- 音轨走**干路**（MediaStreamAudioDestinationNode），头显自己的扬声器不受影响。
+- 音轨在段落切换时只切 `enabled`，**不重新协商**（避免 `replaceTrack` 抖动）。
+- 开场影片期间**不推视频也不推音频**（`CAST.PAUSE_STATES` 含 `'intro'`）。
+
+## 门禁与推流/平台的关系（一张图）
+
+```
+平台点「启动」──▶ PC EXE 起来（读启动参数）┐
+                 APK 起来（UDP 224.0.0.100:8444 发现 PC）
+                     │
+                     ├─ POST /api/launch/request  ──┐
+                     │                              ├─ masterAllow() ─┬─ 拒 → 「需要主控端启动」页（+重试）
+                     │                              │                 └─ 行 → 建游戏界面 + 拿配置下发
+                     └─ 拉起浏览器 ?plat=1&gate=1&dev&exp&voucher
+                                    │
+                       页面 gateQueryMaster() ── POST /api/master/allow （经 APK proxyApi → PC）
+                                    │
+                              ┌─ 行 → 显示「进入 VR」┐
+                              └─ 拒 → 遮住按钮 + 重试  ├─▶ 进 VR → 推流（视频+音频）→ PC 大屏
+平台点「结束」──▶ kill 进程 + CMD16 → PC 关；头显页面看门狗 ≈6s 自查收尾并关浏览器
+```

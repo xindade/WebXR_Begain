@@ -215,3 +215,45 @@ powershell -ExecutionPolicy Bypass -File build-apk.ps1     # 出 app-debug.apk
 - [ ] 安装到头显后能启动，localhost 服务起来（浏览器访问 `http://localhost:8080` 有响应）
 - [ ] 不连 PC 时走 APK 内自带资源也能进游戏；连上 PC 后能取到 PC 上的最新代码
 - [ ] 权限/横屏/cleartext 均生效（无崩溃、无白屏）
+
+
+---
+
+# 附录 · 2026-09-23 平台对接相关补充
+
+## PC 端 EXE 的启动参数
+
+平台登记并拉起 EXE 时，实测会传一个**位置参数**（见 `平台指令/VRPlatform-流量取证/指令速查.md`）：
+
+```
+argv[1] = "<exe 相对路径>$<进程名不含 .exe>$<平台本机 IP>"
+例：    DeadHospital2-8.0.5\DeadHospital2.exe$DeadHospital2$192.168.31.228
+```
+
+我方 EXE **已能解析**它，并额外接受三个**可选**具名参数：
+
+| 参数 | 含义 | 缺省 |
+|---|---|---|
+| `--room=<房间号>` | 平台侧房间号（仅留痕对账用） | 无 |
+| `--platform=<IP:端口>` | 平台本机地址 | 取位置参数第 3 段 |
+| `--game=<游戏名>` | 游戏名 | 取位置参数第 2 段（进程名） |
+
+- 与既有参数并存：`--port` / `--root` / `--game-root` / `--no-serve` / `--pure` / `--fullscreen` / `--cert` / `--key`。
+- **一个都不给时的行为与改造前完全一致**（自动发现 + 手动配置游戏目录 + 端口 fallback）。
+- 参数会打进日志，并在接收端界面**顶部**显示（打包后没有控制台，只能靠界面核对）。
+- ⚠ **踩过的坑**：原实现写死 `process.argv.slice(2)`。打包后 `process.argv = [<exe>, ...平台参数]`，
+  会把 `argv[1]`（平台传 IP 用的那一段）**吃掉**。现按 `app.isPackaged` 区分（打包 `slice(1)` / 开发 `slice(2)`）。
+
+## 打包标识与签名（升级相关）
+
+- EXE：`appId = com.local.webxrcast`、`productName = WebXR直播接收端`（`tools/cast-pc/package.json` 的 `build`）。
+- APK：`applicationId` 见 `tools/cast-apk/app/build.gradle`。
+- **约束**：`applicationId` **必须与平台登记一致**；**签名变更会影响升级**
+  （安装时校验不过会拒绝覆盖，现场表现为「装了但版本没变」）。
+- 本轮**不做**代码签名与版本号流程改造，仅在此记录。
+
+## 端口占用提示（现场最常被踩）
+
+PC 接收端 HTTP 默认 **8443**，被占用时**自动 +1 重试至 8453**；
+头显通过 UDP 信标（组播 `224.0.0.100:8444`，每 2s）自动拿到**实际**端口，无需人工改。
+APK 本地游戏服务固定 **8080**。若现场 AP 开了**组播隔离**，信标到不了头显 → 需在 APK 配置页手工填 PC 地址。

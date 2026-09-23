@@ -14,7 +14,7 @@ import { prewarmIntroVideo } from './game/introVideo.js';
 import { LEVELS } from './content/levels.js';
 import { preloadDragonAssets } from './game/dragonLevel.js';
 import { preloadGLB } from './game/glbCache.js';
-import { SKY_PANORAMA } from './core/constants.js';
+import { SKY_PANORAMA, MASTER_GATE } from './core/constants.js';
 import { MODEL_URL as PORTAL_MODEL_URL } from './game/portal.js';
 import { MODEL_URL as OPENING_MODEL_URL } from './game/openingModel.js';
 import { createCast } from './net/cast.js';
@@ -312,6 +312,55 @@ const vrGate = { open: false, why: '', cd: null, platformSeen: false };
 //   现场出口有两个，都不用重打包：APK 配置页勾「跳过直播端校验」，或网址加 `?vrbtn=1`。
 const vrGuard = { known: false, ok: false, why: '' };
 
+// ── ★ 2026-09-23：主控门禁「允许运行」（《打包和平台对接》第 3 条）──────────────────
+// 【需求】正式包里**必须**由 PC 主控端明确回「允许运行」才让进游戏；就算有人绕过 APK
+//   直接在浏览器里打开本页，也进不去（用户原话：「exe 正常运行时会给 apk 发指令，apk 才会
+//   正常运行，否则会提示『需要主控端启动』」）。
+// 【判据来源】PC EXE 的 `POST /api/master/allow` —— 与 APK 的 `/api/launch/request`
+//   **同一套判定**（cast-pc/main.js 的 masterAllow()）。**不另立标准**：两处判据漂移会造出
+//   「APK 放行了、页面却拒绝」的现场事故。
+// 【为什么同源就能问到 PC】头显侧本页由 APK 的 GameServer 托管，它把 `/api/*` 原样代理到 PC
+//   （GameServer.proxyApi）⇒ 页面发 `/api/master/allow` 实际就是问 PC。
+// 【凭据】页面没有 secret、算不出 HMAC，所以用 APK 从 PC 取回的**放行条**
+//   （`dev` + `exp` + `voucher`，由 APK 拼进本页网址）来复验。
+// 【开关】编译时常量 MASTER_GATE（正式包 true / 调试包 false）；网址 ?gate=0 旁路（优先级最高，
+//   现场应急不必重打包）；?gate=1 可强制打开做对照。
+// 【绝不留现场卡死】5 秒超时（与 APK 的发现超时对齐）；失败**只记状态、不软锁**：
+//   已经拿到过 allow 的一次传输抖动不会把已放行的场次踢回来，且界面常驻「重试」按钮。
+const GATE_FORCE = new URLSearchParams(location.search).get('gate');   // '0' | '1' | null
+const MASTER_GATE_ON = GATE_FORCE === '1' || (MASTER_GATE && GATE_FORCE !== '0');
+const GATE_TIMEOUT_MS = 5000;
+const _gateQ = new URLSearchParams(location.search);
+const vrMaster = {
+  known: false,          // 是否拿到过 PC 的**明确**结论
+  ok: false,
+  why: '',
+  exempt: false,         // 桌面（无 VR 设备）等场景豁免：本就没有「平台不知道的一局」
+  dev: _gateQ.get('dev') || '',
+  exp: _gateQ.get('exp') || '',
+  voucher: _gateQ.get('voucher') || '',
+  pc: _gateQ.get('pc') || '',          // APK 已探测到的 PC 地址（提示用）
+};
+/** 本页是否拿到了可用于**独立复验**的放行条（APK 拼进网址的 dev+exp+voucher）。 */
+vrMaster.hasCred = !!(vrMaster.dev && vrMaster.exp && vrMaster.voucher);
+
+/**
+ * 主控门禁的最终判据。
+ *   ① 本页**独立**问过 PC 且拿到 allow → 放行（最强证据）；
+ *   ② 本页没有放行条可复验（APK 尚未拼这组参数）→ 退回 **APK 的结论**（`/api/guard`）。
+ *      这**不是**漏洞：APK 只有在 PC 的 `/api/launch/request` 返回 allow 之后才拉得起浏览器
+ *      （MainActivity.maybeLaunch 的 sGuardPassed 硬前置）⇒ 这正是**同一条判据的传递**。
+ *      「绕过 APK 直接开页面」时 /api/guard 拿不到结论（fail-closed）⇒ 仍然进不去。
+ *   ③ 什么都没有 → 拦。
+ */
+function masterGateAllowed() {
+  if (vrMaster.known && vrMaster.ok) return true;
+  if (!vrMaster.hasCred && vrGuard.known && vrGuard.ok) return true;
+  return false;
+}
+vrGateLog('主控门禁：' + (MASTER_GATE_ON ? '已启用' : '未启用')
+  + (GATE_FORCE ? '（网址 ?gate=' + GATE_FORCE + '）' : '（编译时常量 MASTER_GATE=' + MASTER_GATE + '）'));
+
 // ── ★ 2026-09-22 新增：PCVR 模式（桌面浏览器 + SteamVR / OpenXR 运行时）──────────────
 // 背景：`/api/guard` 是**头显 APK 特有的端点**（`GameServer.java:174`），PC 端 EXE 根本没有它
 //   —— 实测 `GET /api/guard` 打到真 EXE 上是 `404` + 文本 `404 /api/guard`。
@@ -348,14 +397,24 @@ function applyVRGate() {
   const inXR = !!(world && world.renderer && world.renderer.xr && world.renderer.xr.isPresenting);
   // ★ 第十五修：再加一道「直播端是否放行」。`?vrbtn=1` 是总旁路，优先级最高。
   const guardBlocked = vrGuard.known && !vrGuard.ok && VR_GATE_FORCE !== '1';
-  const show = vrGate.open && !inXR && !guardBlocked;
+  // ★ 主控门禁（文档第 3 条）：**独立**于上面两道，任一不放行都不给按钮。
+  //   注意 `vrMaster.known` 为 false 时也算拦 —— 没拿到 PC 的明确允许就不放行（硬闸门口径）。
+  const masterBlocked = MASTER_GATE_ON && !vrMaster.exempt && !masterGateAllowed();
+  const show = vrGate.open && !inXR && !guardBlocked && !masterBlocked;
   if (enterVRBtn) enterVRBtn.style.display = show ? 'block' : 'none';
   // 右侧「关卡快捷」面板点任一关也会进 VR → 与按钮同生死（不留第二个入口）
   if (levelPanelEl) levelPanelEl.style.display = show ? 'flex' : 'none';
+  updateGateRetryBtn();
   if (show) {
     if (statusMsg && !statusMsg.classList.contains('error')) statusMsg.style.display = 'none';
   } else if (guardBlocked) {
     showStatus('⛔ 未连接直播端，无法开始游戏');
+  } else if (masterBlocked) {
+    // 文案与 APK 侧提示页刻意保持一致 —— 现场一眼认出是同一个门禁。
+    showStatus('⛔ 需要主控端启动'
+      + (vrMaster.why ? '（' + vrMaster.why + '）' : '')
+      + '　请确认 PC 端「WebXR 直播接收端」已运行'
+      + (vrMaster.pc ? '（已探测到 ' + vrMaster.pc + '）' : ''), true);
   } else {
     showStatus('⏳ 等待平台开始游戏…');
   }
@@ -433,6 +492,85 @@ async function gateQueryPcvr() {
   applyVRGate();
 }
 
+/**
+ * ★ 主控门禁查询（文档第 3 条）：问 PC 主控端「允许运行吗」。
+ *
+ * <p>与 `gateQueryGuard()`（问 APK）并列，两者都要过 —— 这一道专门防「绕过 APK 直接开页面」：
+ * 绕过去之后 /api/guard 那条路径就失去了可信来源，只有直连 PC 才是硬证据。
+ *
+ * <p>失败语义（**刻意不软锁**）：
+ *   · 传输失败/超时，但此前已拿到过 allow ⇒ **保持放行**（一次抖动不该把现场踢回来）；
+ *   · 从未拿到过 ⇒ 保持 known=false（= 拦），并把原因写进 why，界面给「重试」按钮。
+ */
+async function gateQueryMaster() {
+  if (!MASTER_GATE_ON) {
+    vrMaster.known = true; vrMaster.ok = true;
+    vrMaster.why = '主控门禁未启用（调试包或网址 ?gate=0）';
+    vrGateLog('主控门禁：' + vrMaster.why + ' → 放行');
+    applyVRGate();
+    return;
+  }
+  if (!vrMaster.hasCred) {
+    // APK 还没拼放行条 ⇒ 本页没有可复验的凭据。不发一个注定被拒的请求（那只会把
+    // 现场日志刷满「放行条参数缺失」），改为按 APK 的结论走（见 masterGateAllowed）。
+    vrMaster.known = false; vrMaster.ok = false;
+    vrMaster.why = '未收到主控端放行条（APK 未拼 dev/exp/voucher）→ 以 APK 的授权结论为准';
+    vrGateLog('主控门禁：' + vrMaster.why);
+    applyVRGate();
+    return;
+  }
+  const ac = new AbortController();
+  const timer = setTimeout(() => { try { ac.abort(); } catch (e) { /* 忽略 */ } }, GATE_TIMEOUT_MS);
+  try {
+    const r = await fetch('/api/master/allow', {
+      method: 'POST', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ac.signal,
+      body: JSON.stringify({
+        device: vrMaster.dev, exp: Number(vrMaster.exp) || 0, voucher: vrMaster.voucher,
+      }),
+    });
+    const j = await r.json();
+    vrMaster.known = true;
+    vrMaster.ok = !!j.allow;
+    vrMaster.why = j.reason || j.why || '';
+    vrGateLog('主控端授权：' + (vrMaster.ok ? '已放行' : '未放行') + '（' + (vrMaster.why || '无原因') + '）');
+    try { VRPlus.reportEvent('master-gate', { ok: vrMaster.ok, why: vrMaster.why }); } catch (e) { /* 留痕失败不影响游玩 */ }
+  } catch (e) {
+    const reason = (e && e.name === 'AbortError')
+      ? ('超时 ' + Math.round(GATE_TIMEOUT_MS / 1000) + ' 秒没回应')
+      : ('请求失败：' + (e && e.message ? e.message : e));
+    // 关键：**不改** vrMaster.ok —— 已放行的场次不因一次抖动被踢回门禁外。
+    vrMaster.why = vrMaster.ok ? vrMaster.why : reason;
+    vrGateLog('主控端授权：查询失败（' + reason + '）'
+      + (vrMaster.ok ? ' → 保持上次的放行结论' : ' → 暂不放行，可点「重试」'));
+    try { VRPlus.reportEvent('master-gate', { ok: vrMaster.ok, why: reason, error: true }); } catch (e2) { /* 同上 */ }
+  } finally {
+    clearTimeout(timer);
+  }
+  applyVRGate();
+}
+
+/** 主控门禁的「重试」按钮（懒创建）。失败**绝不软锁** —— 现场点一下就能再问一次 PC。 */
+let gateRetryBtn = null;
+function updateGateRetryBtn() {
+  if (!MASTER_GATE_ON || vrMaster.exempt) return;
+  const need = !masterGateAllowed();
+  if (!need) { if (gateRetryBtn) gateRetryBtn.style.display = 'none'; return; }
+  if (!gateRetryBtn) {
+    if (!document.body) return;
+    gateRetryBtn = document.createElement('button');
+    gateRetryBtn.id = 'gate-retry';
+    gateRetryBtn.textContent = '🔄 重试连接主控端';
+    gateRetryBtn.style.cssText = 'position:fixed;left:50%;bottom:72px;transform:translateX(-50%);'
+      + 'z-index:9998;padding:10px 18px;border:none;border-radius:8px;background:#6c5ce7;color:#fff;'
+      + 'font-size:15px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.4);';
+    gateRetryBtn.onclick = () => { gateQueryMaster(); };
+    document.body.appendChild(gateRetryBtn);
+  }
+  gateRetryBtn.style.display = 'block';
+}
+
 function vrGateLog(msg) {
   try { game.log('[门禁] ' + msg); } catch (e) { /* 日志失败绝不影响游戏 */ }
 }
@@ -496,6 +634,9 @@ setVRGate(VR_GATE_PLAT || VR_GATE_FORCE === '1',
 // ★ 第十五修：再查一次「直播端是否放行」（同源、本地、毫秒级）——
 //   两者都成立才给「进入 VR」按钮：APK 说「本页是平台拉起来的」+ APK 说「直播端放行了」。
 gateQueryGuard();
+// ★ 主控门禁（文档第 3 条）：与上一道**并列**，两者都要过。页面侧独立复验一次，
+//   防的就是「绕过 APK 直接打开本页」。
+gateQueryMaster();
 
 
 async function enterVR() {
@@ -579,12 +720,16 @@ if (navigator.xr && navigator.xr.isSessionSupported) {
       enterVRBtn.disabled = true;
       // 第十二修：桌面（没有 immersive-vr）根本没得「进入 VR」，门禁对它毫无意义
       // —— 直接放行，免得桌面自测时按钮被藏 30 秒。
+      // ★ 2026-09-23：主控门禁同理 —— 桌面预览不会「开出一局平台不知道的游戏」，
+      //   不该被拦，否则本地看个关卡都得先把 PC 端 EXE 打开。
+      vrMaster.exempt = true;
       setVRGate(true, '桌面（无 VR 设备）→ 门禁不适用，直接放行');
     }
   }).catch(() => {});
 } else {
   enterVRBtn.textContent = '桌面模式（需 https/头显）';
   enterVRBtn.disabled = true;
+  vrMaster.exempt = true;      // 连 navigator.xr 都没有 ⇒ 桌面，主控门禁不适用
 }
 
 // 支持晚连接/运行时重启；暂未检测到设备时保留用户手动重试入口。
@@ -617,6 +762,11 @@ async function startLevelAt(idx) {
     // 第十二修：门禁期间不进 VR（面板此时已被 applyVRGate 藏起来，这里再兜一道，
     // 防止有人用键盘/脚本直接触发）
     if (!vrGate.open) { showStatus('⏳ 等待平台开始游戏…'); return; }
+    // ★ 主控门禁（文档第 3 条）：与上面同一道兜底 —— 面板已被 applyVRGate 藏起来，
+    //   这里再拦一次，防止有人用脚本/键盘直接触发。
+    if (MASTER_GATE_ON && !vrMaster.exempt && !masterGateAllowed()) {
+      showStatus('⛔ 需要主控端启动', true); return;
+    }
     enterVR();      // 头显：进 VR 后 sessionstart 触发 startGame(pendingStartIndex, mode, false)
   } else startGame(idx, mode, false);     // 桌面：直接开局预览（不播视频）
 }

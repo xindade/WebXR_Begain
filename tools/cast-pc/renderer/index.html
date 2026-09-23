@@ -107,6 +107,10 @@
         &nbsp;·&nbsp; 接收端（本窗口）：<b id="vw" class="bad">离线</b>
         &nbsp;·&nbsp; WebRTC：<b id="rtc" class="dim">-</b>
       </div>
+      <div id="platline">
+        平台参数：<b id="platargs" class="dim">读取中…</b>
+        <span class="dim">（平台拉起时带：--room / --platform / --game，或位置参数 &lt;exe&gt;$&lt;进程名&gt;$&lt;平台IP&gt;）</span>
+      </div>
       <div>
         头显请打开：<code id="url">…</code><button id="copy">复制</button>
         <span class="dim">&nbsp;&nbsp;路径①（推荐）：头显点 APK 自动发现；路径②（旁路）：头显浏览器直接打开上面地址</span>
@@ -140,7 +144,9 @@
       <span id="guardList" class="dim">白名单读取中…</span>
     </div>
     <div id="stage">
-      <video id="video" autoplay muted playsinline></video>
+      <!-- ★ 平台对接（音频推流）：不再固定 muted —— 头显把 BGM/音效作为音轨一起推上来，
+           现场大屏要出声。Chromium 的「无手势不许自动播放」已由 main.js 的 autoplay-policy 开关放开。 -->
+      <video id="video" autoplay playsinline></video>
       <img id="img" alt="JPEG 兜底画面" />
       <video id="intro" preload="auto" playsinline></video>
       <div id="hint">等待推流端连接…<br /><span class="dim">若长时间无响应，查看下方日志区，常见原因已在日志中标注。</span></div>

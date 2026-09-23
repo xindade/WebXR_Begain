@@ -45,17 +45,42 @@ export class AudioManager {
     this._laserHums = {};     // 激光嗡鸣实例表：key('sword'|'level') → {osc,osc2,g,lfo}；按 key 独立开关
   }
 
-  // ===== 解锁（须在用户手势内调用）=====
-  unlock() {
-    if (this._unlocked) { if (!this.paused) this.ctx?.resume().catch(() => {}); return; }
+  /** 建上下文与总线（幂等）。手势解锁与直播推流共用。
+   *  直播需要**更早**拿到音频轨，而 new AudioContext() 无手势也允许（状态 suspended、不发声）：
+   *  MediaStreamAudioDestinationNode 这时就能提供轨道，等手势到来 unlock()/resume() 后声音自然流出
+   *  —— **不需要重协商 WebRTC**（这是把音频塞进已有连接的关键）。 */
+  _ensureContext() {
+    if (this.ctx && this.master) return true;
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
+    if (!AC) return false;
     this.ctx = new AC();
     this.master = this.ctx.createGain();
     this.master.gain.value = 0.5 * this.volume;
     this.master.connect(this.ctx.destination);
+    return true;
+  }
+
+  // ===== 解锁（须在用户手势内调用）=====
+  unlock() {
+    if (this._unlocked) { if (!this.paused) this.ctx?.resume().catch(() => {}); return; }
+    if (!this._ensureContext()) return;
     if (this.ctx.state === 'suspended' && !this.paused) this.ctx.resume().catch(() => {});
     this._unlocked = true;
+  }
+
+  /**
+   * 直播推流用：把**总线上的一切**（程序化 BGM / 音效 / 语音）导成一条 MediaStreamTrack。
+   * 只在 ?cast=1 时由 cast.js 调一次；失败返回 null（直播照常只推视频）。
+   */
+  ensureCastAudioTrack() {
+    if (this._castTrack) return this._castTrack;
+    if (!this._ensureContext()) return null;
+    try {
+      this._castDest = this.ctx.createMediaStreamDestination();
+      this.master.connect(this._castDest);        // 干路并联：本地扬声器照常出声
+      this._castTrack = this._castDest.stream.getAudioTracks()[0] || null;
+      return this._castTrack;
+    } catch (e) { return null; }
   }
 
   // ── 工具 ────────────────────────────────────────────────────────────────

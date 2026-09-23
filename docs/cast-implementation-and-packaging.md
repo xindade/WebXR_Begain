@@ -478,3 +478,79 @@ APK 工程要点：
 | `tools/cast-apk/.../GameServer.java` | `serve()`、`proxyApi()`（Piped 泵）、`forwardFrameAsync()`、`proxyStatic()`、`readBody()` |
 | `tools/cast-apk/.../Discovery.java` | `DISCOVERY_PORT = 8444`、`GROUP = 224.0.0.100`、`WEBXR-CAST:` 前缀 |
 | `tools/cast-apk/build-apk.ps1` / `sync-assets.ps1` | 一键构建 / 资源同步 |
+
+
+---
+
+# 附录 A · 2026-09-23 平台对接实现记录
+
+> 本轮把《打包和平台对接》的 3/4/5/6/7 条落地，并补上**音频推流**。
+> 代码位置与判据逐条如下（**不要各写一套判据**——本项目历史上「两处判据漂移」
+> 造成过「APK 放行了、页面却拒绝」的现场事故）。
+
+## A.1 主控门禁「允许运行」（文档第 3 条）
+
+**唯一判据出口**：`tools/cast-pc/main.js` 的 `masterAllow(ip, body)`。
+
+| 环节 | 位置 | 说明 |
+|---|---|---|
+| 端点 | PC `POST /api/master/allow` | 入参 `{device|dev, ts, sig}`（APK）或 `{device|dev, exp, voucher}`（页面）；可选 `room` |
+| 返回 | `{allow, reason, voucher, ttl, session, room, license}` | `license` 为摘要，为后续「授权即门禁」预留 |
+| APK 侧 | `MainActivity.probeExeAuthority` → 解析 `voucher/exp` 存静态字段 | 随网址交给游戏页 |
+| APK 提示页 | `MainActivity.guardDenyMasterGate` | 「需要主控端启动」+ 已探测到的 PC 地址 + **重试**按钮（`recreate()`） |
+| 页面侧 | `src/main.js` `gateQueryMaster()` | 同源 `POST /api/master/allow`（APK GameServer 的 `proxyApi` 转发到 PC） |
+
+**判据顺序**（`masterAllow` 内，即优先级）：
+① `licenseGate()`（EXE 自己授权不合法 → 一律拒，连凭据都不看）；
+② 凭据：`dev+ts+sig`（HMAC，APK 用）**或** `dev+exp+voucher`（放行条，页面用）；
+③ 白名单命中 / 配对窗口自动登记。
+
+**页面侧为什么要分两步**（`masterGateAllowed()`）：
+- 本页拿到放行条 → **独立**问 PC 要 allow（最强证据，防「绕过 APK 直接开页面」）；
+- 本页没有放行条（APK 尚未拼这组参数）→ 退回 **APK 的结论** `/api/guard`。
+  这**不是漏洞**：`maybeLaunch` 里 `sGuardPassed` 是硬前置，APK 只有在 PC 回 allow 之后才拉得起浏览器
+  ⇒ 这正是同一条判据的传递。绕过 APK 时 `/api/guard` 拿不到结论（fail-closed）⇒ 仍然进不去。
+
+**开关**：编译时常量 `MASTER_GATE`（`src/core/constants.js`，正式包 `true` / 调试包 `false`）；
+网址 `?gate=0` 旁路（**优先级最高**，现场应急不必重打包）、`?gate=1` 强制打开做对照。
+**超时 5 秒**（`GATE_TIMEOUT_MS`，与 APK 的发现超时对齐）。
+**不软锁**：传输失败**只记状态**——已放行的场次不因一次抖动被踢回来；界面常驻「重试」按钮。
+**桌面豁免**：`vrMaster.exempt`（无 `immersive-vr` / 无 `navigator.xr`）—— 桌面预览不会「开出一局平台不知道的游戏」。
+
+## A.2 EXE 被平台拉起（文档第 4 条）
+
+- **修了一个真 bug**：原实现写死 `process.argv.slice(2)`。打包后 `process.argv = [<exe>, ...平台参数]`，
+  这会把 `argv[1]`（**平台唯一用来传「平台本机 IP」的那个位置参数**）**吃掉**。
+  现按 `app.isPackaged` 区分：打包 `slice(1)` / 开发 `slice(2)`。
+- 解析平台实测格式 `"<exe 相对路径>$<进程名>$<平台本机 IP>"`（按 `$` 切分，少于 3 段当普通参数忽略）。
+- 预留具名参数 `--room` / `--platform` / `--game`，**全部可选**；缺省行为与改造前完全一致。
+- 参数落日志（`logPlatformArgs()`）+ 界面顶部显示（`#platargs`，走 IPC `platform:get`）+ `/api/info.platform`。
+- `autoDetectGameRoot()` 候选目录已指向新主工程（`E:/AI_Work/WebXR_Begain_Platform` 等），
+  历史路径保留为兜底。
+
+## A.3 音频推流
+
+- 头显 `src/vr/audio.js`：把 `unlock()` 拆成幂等的 `_ensureContext()` + `unlock()`，
+  新增 `ensureCastAudioTrack()` —— 用 `ctx.createMediaStreamDestination()` 把 `this.master` 总线
+  接成一条音轨（**干路**，不影响头显自己的扬声器）。
+  先创建 AudioContext（允许在用户手势前创建，状态 `suspended`），
+  等 `unlock()` 跑起来后声音自动流上**同一条**音轨 ⇒ **不需要 WebRTC 重协商**。
+- `src/net/cast.js`：`createCast({world, game, audio})`；新增 `_attachAudio(stream)`（幂等），
+  在 `new WebRtcPush` **之前**把音轨加进 stream；`update()` 里随视频一起开关 `audioTrack.enabled`。
+- `src/net/push-webrtc.js`：构造时 `addTrack` 也加 `stream.getAudioTracks()`
+  —— **必须在 `createOffer` 之前**，否则 offer 里没有 audio m-line。
+- PC 端 `tools/cast-pc`：`app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')`
+  对本进程放开自动播放；`renderer/#video` 去掉 `muted`，`showVideo()` 里检测到音轨即 `muted=false`。
+  开场影片的 `introMuted` 默认由 `true` 改为 `false`（观众要听到影片声音；M 键仍可静音）。
+- **沿用既有约束**：开场影片播放期间**既不推视频也不推音频**
+  （`CAST.PAUSE_STATES = ['menu','waiting','intro']`，避开解码×编码争用 VPU）。
+
+## A.4 开局信号与结束/上报（文档第 5/6/7 条）
+
+- 第 5 条**维持现状**：`?plat=1`（APK/平台拉起本页）为开局信号，保留 30 秒无条件兜底。
+  平台日后补发真「开始游戏」指令时，两条判据**并肩**自动生效。
+- 第 6 条**我方兜底已具备**：`src/game/game.js` 的「平台关闭看门狗」`_onPlatformGone`
+  （连败 4 次 ≈6s → 判死复核 2.5s → 收尾），菜单态也生效（比 `start()` 更早启动）。
+- 第 7 条**本地留痕已具备**：`_endRound()` = `VRPlusGame.terminate()`（cmd 5）+ `_reportGameEnd()`；
+  `_reportGameEnd` 写 `game-end` 事件（`reportEvent` → `/api/page/event` → APK `PageForensics`），
+  带 5 秒去抖。**上行 CMD 6 `GameEnd` 的报文待平台方定义**（见《平台对接需求（对平台方）》）。

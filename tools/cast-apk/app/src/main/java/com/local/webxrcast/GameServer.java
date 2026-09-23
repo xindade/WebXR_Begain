@@ -244,6 +244,12 @@ public class GameServer extends NanoHTTPD {
                 // ★ 第十七修：把「下发了几个配置文件」也带上 —— 现场排障时这比任何推断都直接
                 //   （0 = 配置没下来，游戏必然跑不起来；见 GameServer 覆盖层逻辑）
                 + ",\"overlay\":" + MainActivity.guardOverlayCount()
+                // ★ 2026-09-23（平台对接第 3 条）：把 EXE 签发的**放行条**也带上 ——
+                //   游戏页拿它 POST /api/master/allow（经本服务代理到 PC）做独立复验。
+                //   空串 = 这次没拿到放行条，页面会退回「以本结论为准」（见 src/main.js）。
+                + ",\"dev\":\"" + jstr(MainActivity.guardDev0()) + "\""
+                + ",\"exp\":\"" + jstr(MainActivity.guardExp0()) + "\""
+                + ",\"voucher\":\"" + jstr(MainActivity.guardVoucher0()) + "\""
                 + ",\"why\":\"" + MainActivity.guardWhy() + "\"}";
         return cors(newFixedLengthResponse(Response.Status.OK, "application/json", json));
     }
@@ -446,6 +452,12 @@ public class GameServer extends NanoHTTPD {
     public static volatile Runnable sOnGameEnd = null;
 
     /** 最小 HTML 转义（只用于把留痕文本塞进 &lt;pre&gt;，防页面结构被日志内容破坏） */
+    /** 极简 JSON 字符串转义（放行条是纯 hex，实际不会被转义；这里只为不破坏 JSON 结构）。 */
+    private static String jstr(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
     private static String htmlEscape(String s) {
         if (s == null) return "";
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");

@@ -298,6 +298,13 @@ public class MainActivity extends AppCompatActivity {
     //   「上次留存的地址」顺利完成放行，而信标整段窗口一个都没到 ⇒ currentPc 恒为 null ⇒
     //   拉起地址退化成 /?plat=1（无 cast=1、无 pc=）⇒ 游戏能玩、直播端一片空白。
     private static volatile String sGuardVerifiedPc = null;
+    // ★ 2026-09-23（平台对接第 3 条）：EXE 在 /api/launch/request 里回传的**放行条**
+    //   （voucher = HMAC(secret, dev|exp)）。它随游戏页网址交给页面，让页面能向 PC 的
+    //   /api/master/allow **独立复验**一次 —— 页面跑在浏览器里，没有 secret，只能用这张条子。
+    //   没有它页面会退回「以 APK 的门禁结论为准」（见 src/main.js masterGateAllowed）。
+    private static volatile String sGuardDev = null;
+    private static volatile String sGuardExp = null;
+    private static volatile String sGuardVoucher = null;
     private static boolean sGuardPassed = false;             // 本进程本次启动是否已通过门禁（maybeLaunch 的硬前置）
     private static final long GUARD_CACHE_MS = 10000L;       // 授权结论缓存（ms）：重拉 / 页面查询复用
     private static final int EXE_PROBE_TIMEOUT_MS = 1200;    // **单轮**探测 EXE 的连接/读取超时（ms）
@@ -963,8 +970,14 @@ public class MainActivity extends AppCompatActivity {
                         final boolean exeSideProblem = why.contains("直播端");
                         runOnUiThread(() -> {
                             if (seq != sGuardWaitSeq) return;
-                            guardDeny(exeSideProblem ? "直播端授权异常" : "本机未获授权",
-                                    "直播端拒绝：" + why, 4000L);
+                            if (exeSideProblem) {
+                                // 是**授权**问题（EXE 自己没激活 / 已到期）—— 引到头显这条路上毫无意义，
+                                // 保持原来的短提示，别让操作员以为「再点一次重试」就能好。
+                                guardDeny("直播端授权异常", "直播端拒绝：" + why, 4000L);
+                            } else {
+                                // ★ 平台对接第 3 条：EXE 在、但没放行本机 ⇒ 原地停住提示 + 重试。
+                                guardDenyMasterGate("直播端拒绝：" + why);
+                            }
                         });
                         return;
                     }
@@ -1042,8 +1055,9 @@ public class MainActivity extends AppCompatActivity {
         guardStore(false, "等待 " + (GUARD_WAIT_TOTAL_MS / 1000) + "s 超时：按硬闸门拒绝（" + why + "）");
         runOnUiThread(() -> {
             if (seq != sGuardWaitSeq) return;
-            guardDeny("未连接直播端，无法启动",
-                    "等了 " + (GUARD_WAIT_TOTAL_MS / 1000) + " 秒仍没等到电脑上的直播接收端\n" + why, 1200L);
+            // ★ 平台对接第 3 条：等不到主控端 = 「需要主控端启动」的典型场景 →
+            //   停在提示页（附 PC 地址 + 重试），而不是 1.2 秒后一闪而过。
+            guardDenyMasterGate("等了 " + (GUARD_WAIT_TOTAL_MS / 1000) + " 秒仍没等到电脑上的直播接收端\n" + why);
         });
     }
 
@@ -1110,6 +1124,39 @@ public class MainActivity extends AppCompatActivity {
      * `POST http://&lt;直播端&gt;/api/launch/request`，body `{"dev":..,"ts":..,"sig":..}`。
      * **永不返回 null**（连不上 → code = -1）。
      */
+    /** 从 JSON 文本里取字符串字段（不引 JSON 库：只认本项目 EXE 自己回的那几个字段）。 */
+    private static String jsonStrField(String json, String key) {
+        if (json == null) return null;
+        int i = json.indexOf("\"" + key + "\"");
+        if (i < 0) return null;
+        int c = json.indexOf(':', i);
+        if (c < 0) return null;
+        int q1 = json.indexOf('"', c + 1);
+        if (q1 < 0) return null;
+        int q2 = json.indexOf('"', q1 + 1);
+        if (q2 < 0) return null;
+        return json.substring(q1 + 1, q2);
+    }
+
+    /** 从 JSON 文本里取数字字段（读到非数字字符为止）。 */
+    private static String jsonNumField(String json, String key) {
+        if (json == null) return null;
+        int i = json.indexOf("\"" + key + "\"");
+        if (i < 0) return null;
+        int c = json.indexOf(':', i);
+        if (c < 0) return null;
+        int b = c + 1;
+        while (b < json.length() && (json.charAt(b) == ' ' || json.charAt(b) == '\t')) b++;
+        int e = b;
+        while (e < json.length() && "-+.eE0123456789".indexOf(json.charAt(e)) >= 0) e++;
+        return (e > b) ? json.substring(b, e) : null;
+    }
+
+    /** 放行条三件套（供 GameServer 的 /api/guard 与游戏页网址使用；缺一即视为没有）。 */
+    public static String guardDev0() { return (sGuardDev == null) ? "" : sGuardDev; }
+    public static String guardExp0() { return (sGuardExp == null) ? "" : sGuardExp; }
+    public static String guardVoucher0() { return (sGuardVoucher == null) ? "" : sGuardVoucher; }
+
     private GuardProbe probeExeAuthority(final String base) {
         final String dev = guardDeviceId();
         final String ts = String.valueOf(System.currentTimeMillis());
@@ -1141,6 +1188,21 @@ public class MainActivity extends AppCompatActivity {
                     in.close();
                 }
                 String text = new String(bo.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+                // ★ 2026-09-23（平台对接第 3 条）：记下 EXE 签发的放行条（voucher + exp）。
+                //   解析失败**不影响**门禁本身 —— 只是页面少了一次独立复验。
+                if (code == 200) {
+                    String v = jsonStrField(text, "voucher");
+                    String ex = jsonNumField(text, "exp");
+                    if (v != null && !v.isEmpty()) {
+                        sGuardDev = dev;
+                        sGuardExp = ex;
+                        sGuardVoucher = v;
+                    } else {
+                        sGuardDev = null;
+                        sGuardExp = null;
+                        sGuardVoucher = null;
+                    }
+                }
                 // 404 时对端可能回一整个 HTML 页面：留痕只打前 160 字符，别把留痕撑爆
                 String preview = (text.length() > 160) ? (text.substring(0, 160) + "…") : text;
                 out[0] = new GuardProbe(code, (text.length() > 400) ? text.substring(0, 400) : text);
@@ -1554,6 +1616,57 @@ public class MainActivity extends AppCompatActivity {
         sGuardAt = System.currentTimeMillis();
         sGuardWhy = why;
         PageForensics.line("APK", "guard-result{ok:" + ok + ", why:\"" + why + "\"}");
+    }
+
+    /**
+     * ★ 2026-09-23（平台对接第 3 条）：主控门禁拒绝 —— **停在提示页**（不自动退出），
+     * 附「已探测到的 PC 地址」与「重试」按钮。
+     *
+     * <p>为什么不照旧 `guardDeny(..., 4000L)`：需求原话是「否则会提示『需要主控端启动』」，
+     * 而 4 秒后自动 finish() 现场只看到一闪而过的黑屏，等于没提示。
+     * 重试走 `recreate()` —— 重跑 onCreate ⇒ 重新走一遍 guardPass()（含 20 秒等待窗口），
+     * 不必让人去平台上重开一次。
+     */
+    private void guardDenyMasterGate(String why) {
+        final String pc = (sGuardVerifiedPc != null && !sGuardVerifiedPc.isEmpty()) ? sGuardVerifiedPc
+                : ((sPcSeen != null && !sPcSeen.isEmpty()) ? sPcSeen
+                : ((currentPc != null && !currentPc.isEmpty()) ? currentPc : null));
+        final String hint = "本机由平台拉起，但电脑上的「WebXR 直播接收端」还没放行本机。"
+                + "\n请在 PC 上启动接收端 EXE（首次需在其界面确认放行）后点下面的「重试」。"
+                + "\n已探测到的 PC：" + ((pc != null) ? pc : "（未发现 —— 检查头显与电脑是否同一局域网）")
+                + "\n原因：" + why;
+        PageForensics.line("APK", "guard-deny-master-gate{" + (pc == null ? "no-pc" : pc) + "} why=" + why);
+        runOnUiThread(() -> {
+            try {
+                android.widget.LinearLayout box = new android.widget.LinearLayout(this);
+                box.setOrientation(android.widget.LinearLayout.VERTICAL);
+                box.setBackgroundColor(0xFF000000);
+                box.setGravity(android.view.Gravity.CENTER);
+                TextView t1 = new TextView(this);
+                t1.setText("需要主控端启动");
+                t1.setTextColor(0xFFFFFFFF);
+                t1.setTextSize(22f);
+                t1.setGravity(android.view.Gravity.CENTER);
+                box.addView(t1);
+                TextView t2 = new TextView(this);
+                t2.setText(hint);
+                t2.setTextColor(0xFF8A8A94);
+                t2.setTextSize(14f);
+                t2.setGravity(android.view.Gravity.CENTER);
+                t2.setPadding(0, 24, 0, 24);
+                box.addView(t2);
+                android.widget.Button retry = new android.widget.Button(this);
+                retry.setText("重试");
+                retry.setOnClickListener(v -> {
+                    try { recreate(); } catch (Throwable e2) { finish(); }
+                });
+                box.addView(retry);
+                setContentView(box);
+            } catch (Throwable e) {
+                PageForensics.line("APK", "主控门禁提示页构建失败（" + e.getClass().getSimpleName() + "）→ 直接退出");
+                finish();
+            }
+        });
     }
 
     /** 被拒：黑底提示页 + autoCloseMs 后退出（不拉浏览器） */
@@ -2859,10 +2972,18 @@ public class MainActivity extends AppCompatActivity {
         // ★ 2026-09-20 修：信标只是「发现手段」之一，不是判据本身。门禁**核实过**的地址同样算数 ——
         //   否则信标一旦不到（现场实测），本行就退化成纯本地地址，游戏照跑但直播端全黑。
         final String castPc = (currentPc != null) ? currentPc : sGuardVerifiedPc;
+        // ★ 2026-09-23（平台对接第 3 条）：把 EXE 签发的**放行条**带给游戏页面 —— 页面据此向 PC 的
+        //   /api/master/allow 独立复验一次（页面没有 secret，放行条是它唯一能持有的凭据）。
+        //   拿不到放行条时这段为空 ⇒ 页面退回「以 APK 的门禁结论为准」（同一条判据的传递）。
+        final String gate = (sGuardVoucher != null && !sGuardVoucher.isEmpty())
+                ? ("&gate=1&dev=" + android.net.Uri.encode(sGuardDev)
+                   + "&exp=" + android.net.Uri.encode(sGuardExp)
+                   + "&voucher=" + android.net.Uri.encode(sGuardVoucher))
+                : "";
         if (castPc != null && !castPc.isEmpty())
-            return GAME_URL + "&pc=" + castPc + "&mode=webrtc" + plat + vrBtn;
+            return GAME_URL + "&pc=" + castPc + "&mode=webrtc" + plat + vrBtn + gate;
         // 平台启动：纯本地直接进游戏，不连直播 PC（注意 LOCAL_GAME_URL 自带收尾 /，首个参数用 ?）
-        return LOCAL_GAME_URL + "?" + plat.substring(1) + vrBtn;
+        return LOCAL_GAME_URL + "?" + plat.substring(1) + vrBtn + gate;
     }
 
     /**
