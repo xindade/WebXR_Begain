@@ -89,6 +89,13 @@ public class VRPlusLink {
     private static final byte FRAME_REGISTER   = 0x01;   // 设备 → 平台：注册（平台记 cmd = 1）
     private static final byte FRAME_CLOSE_ACK  = 0x02;   // 设备 → 平台：closeGame 确认
     private static final byte FRAME_CLOSE_GAME = 0x10;   // 平台 → 设备：closeGame
+    /**
+     * 平台 → 设备：**开始游戏**（`\x05` + JSON GameStart）。
+     * 抓包实测（pcap-game_channel 20:49:56）：操作员点「开始游戏」在设备侧**只有这一个形态**
+     * （字符串通道那条 `start` 只是「启动游戏」= 拉起进程）。旧实现把它当「无 cmd 字段的 JSON」
+     * 丢掉 ⇒ 头显永远等不到开局信号。
+     */
+    private static final byte FRAME_GAME_START  = 0x05;
     /** 0xFF 是早期猜测的「在线应答」。实测平台**从不发 1 字节下行**，仅识别并打日志，不据此判在线。 */
     private static final byte FRAME_ONLINE_ACK = (byte) 0xFF;
 
@@ -311,6 +318,15 @@ public class VRPlusLink {
                     continue;
                 }
 
+                // ★ 第二十修：平台「开始游戏」= 游戏通道 `0x05` + JSON GameStart。
+                //   用户第五次现场实测：「第二步是平台点开始游戏，这个时候头显里才会显示进入VR」
+                //   —— 这一步就是本帧。转成 inbox 的 cmd=21（页面侧 game.js 认这一条开「进入 VR」），
+                //   并按真实游戏的做法回一帧同格式确认（否则平台可能判定「游戏没起来」）。
+                if (b0 == (FRAME_GAME_START & 0xFF)) {
+                    handleGameStart(b, len, from);
+                    continue;
+                }
+
                 // 关游戏帧：0x10 + "closeGame"（平台日志里的 SendCloseGameToGame）
                 if (b0 == (FRAME_CLOSE_GAME & 0xFF) && containsAscii(b, len, "closeGame")) {
                     handleCloseGame();
@@ -422,6 +438,12 @@ public class VRPlusLink {
         // 留痕：这是「游戏页为什么会退出」的第一号**合法**原因。日后读时间线时，
         // 只要这一行存在且时间与页面消失吻合，就说明是平台真的要求关闭，不是我们误判。
         PageForensics.line("APK", "收到平台关闭指令 0x10 closeGame（已入队 cmd=16 + 回 0x02）");
+        // ★ 第二十修：平台**明说**关游戏 = 本局结束。直播模式（?cast=1）下必须让「退出策略」
+        //   照常执行 —— 旧逻辑在直播模式且「本轮未标记结束」时整条跳过，于是平台客户端
+        //   永远不会被顶回前台（用户实测：「头显里浏览器是blank，且客户端还在后台没有调起」）。
+        if (MainActivity.castConfigured()) {
+            GameServer.sCastRoundOver = true;
+        }
         try {
             downlink.add(stamp(new JSONObject().put("cmd", 16).put("type", "closeGame")));
         } catch (Throwable ignore) { /* JSONObject.put 不会失败，保险 */ }
@@ -436,6 +458,66 @@ public class VRPlusLink {
             } catch (Throwable e) {
                 Log.w(TAG, "关游戏回调投递失败: " + e);
             }
+        }
+    }
+
+    /**
+     * 平台「开始游戏」（游戏通道 `0x05` + JSON GameStart）——**本局真正的开局信号**。
+     *
+     * <p>载荷字段与游戏 SDK `VRPlatformLib.GameStartProtocol.StartInfo` 一致：
+     * difficulty / gameIntensity / video / guide / posSum / gameId / levelInfo / recordTime。
+     * 抓包实录：`20:49:56 .237:58734 -> .237:51124  \x05{"difficulty":0,...,"gameId":128,...}`。
+     *
+     * <p>处置两条：
+     *   ① 解析 JSON → 作为 inbox `cmd = 21` 交给游戏页（页面据此放开「进入 VR」门禁，
+     *      并把结论回报 PC 主控端，见 src/main.js 的 reportPlatformStartToMaster）；
+     *   ② 回一帧 `0x05` + 确认 JSON（`flag=1`）—— 实测真实游戏收到 CMD 5 就会回，
+     *      平台据此判定「游戏已开始」（帧内容见 平台指令/VRPlatform-流量取证/auto_client_v3.py）。
+     */
+    private void handleGameStart(byte[] b, int len, String from) {
+        JSONObject payload = null;
+        int s0 = indexOfByte(b, len, (byte) '{');
+        int s1 = lastIndexOfByte(b, len, (byte) '}');
+        if (s0 >= 0 && s1 > s0) {
+            try {
+                payload = new JSONObject(new String(b, s0, s1 - s0 + 1, StandardCharsets.UTF_8));
+            } catch (Throwable e) {
+                Log.w(TAG, "GameStart 载荷解析失败: " + e.getClass().getSimpleName() + "/" + e.getMessage());
+            }
+        }
+        JSONObject o = stamp(new JSONObject());
+        try {
+            o.put("cmd", 21);
+            o.put("type", "gameStart");
+            o.put("plat", true);                 // 明确标记：平台**本人**说了「开始游戏」
+            if (payload != null) o.put("start", payload);
+        } catch (Throwable ignore) { /* JSONObject.put 不会失败，保险 */ }
+        downlink.add(o);
+        Log.i(TAG, "← 平台「开始游戏」GameStart（CMD 5，来自 " + from + "）→ 已入队 cmd=21：" + payload);
+        Log.i(TAG2, "← 平台「开始游戏」GameStart（CMD 5）→ 头显将出现「进入 VR」");
+        PageForensics.line("APK", "收到平台开局指令 0x05 GameStart（来自 " + from + "）"
+                + " → 已入队 cmd=21 交给游戏页（头显将出现「进入 VR」）");
+        // 回确认帧（与真实游戏逐字节同格式）：0x05 + {"...","flag":1,...}
+        try {
+            JSONObject ack = new JSONObject();
+            ack.put("difficulty", 0);
+            ack.put("gameIntensity", 0);
+            ack.put("video", 0);
+            ack.put("guide", 0);
+            ack.put("posSum", 0);
+            ack.put("gameId", 0);
+            ack.put("flag", 1);
+            ack.put("levelInfo", JSONObject.NULL);
+            ack.put("recordTime", 0);
+            byte[] js = ack.toString().getBytes(StandardCharsets.UTF_8);
+            byte[] frame = new byte[js.length + 1];
+            frame[0] = FRAME_GAME_START;
+            System.arraycopy(js, 0, frame, 1, js.length);
+            final List<String> targets = new ArrayList<>(hosts);
+            tx.execute(() -> sendRaw(frame, "0x05 GameStart 确认", targets));
+            Log.i(TAG, "→ 已回 0x05 GameStart 确认（" + frame.length + " 字节）");
+        } catch (Throwable e) {
+            Log.w(TAG, "回 0x05 确认失败: " + e.getClass().getSimpleName() + "/" + e.getMessage());
         }
     }
 
@@ -562,7 +644,11 @@ public class VRPlusLink {
         StringBuilder sb = new StringBuilder();
         for (JSONObject o : all) {
             int cmd = o.optInt("cmd", -999);
-            if (cmd == 16 || cmd == 5 || cmd == 6) {
+            // ★ 第二十修：把「平台开局」也纳入 —— cmd=21 是 handleGameStart 入的队，
+            //   cmd=3 且带 plat 是 APK 明确转达的平台开局。残留的这两条会被**新页面**当成
+            //   「平台现在要开这一局」⇒ 头显在操作员还没点「开始游戏」时就冒出「进入 VR」。
+            final boolean gameStart = (cmd == 21) || (cmd == 3 && o.optBoolean("plat", false));
+            if (cmd == 16 || cmd == 5 || cmd == 6 || gameStart) {
                 dropped++;
                 sb.append("cmd=").append(cmd)
                   .append("/n").append(o.optInt("n", -1))

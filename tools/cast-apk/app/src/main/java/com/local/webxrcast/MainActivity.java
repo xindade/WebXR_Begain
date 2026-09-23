@@ -2148,7 +2148,11 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         wakeAttempts++;
-        link.enqueueLocal(3, "平台重新启动本局：唤醒待机中的游戏页（零重载，第 " + wakeAttempts + " 次）", true);
+        // ★ 第二十修：这里**不再**带 platformStart 标记 —— 唤醒待机页只做「撤盖回菜单」，
+        //   绝不开「进入 VR」门禁。现场实测平台是两步：第一步「启动游戏」拉起页面时头显不该
+        //   出现「进入 VR」（用户第五次反馈）。开局门禁只由平台的开局帧驱动（游戏通道 CMD 5
+        //   → VRPlusLink.handleGameStart → inbox cmd=21）。
+        link.enqueueLocal(3, "平台重新启动本局：唤醒待机中的游戏页（零重载，第 " + wakeAttempts + " 次）", false);
         PageForensics.line("APK", "已唤醒待机页：本地 cmd3 已入队（第 " + wakeAttempts
                 + " 次；页面 1s 内撤盖回到菜单，等玩家点「进入 VR」）");
         // ── 复核重发（五修）──
@@ -2449,8 +2453,26 @@ public class MainActivity extends AppCompatActivity {
     /** 已配置用户自有直播 PC（= `?cast=1` 直播模式）→ 退出策略一律不动浏览器（它是推流源） */
     private static volatile boolean sPcConfigured = false;
 
+    /**
+     * 是否处于 `?cast=1` 直播模式（第二十修）。
+     * 供 VRPlusLink 判断「平台关游戏」时要不要让退出策略照常执行 —— 那种场合本局已经结束，
+     * 浏览器不再是有效的推流源，必须把平台客户端顶回前台（见 restoreClientAndCloseBrowser）。
+     */
+    static boolean castConfigured() { return sPcConfigured; }
+
     /** 平台关闭指令 → 延迟多久执行退出策略（留给页面退 VR + 回菜单 + 上报） */
     private static final long RESTORE_DELAY_ON_CLOSE = 2500L;
+
+    /**
+     * ★ 第二十修：**平台关游戏**时退出策略的延迟（≈立即执行）。
+     *
+     * <p>为什么不能等 RESTORE_DELAY_ON_CLOSE(2.5s)：平台关游戏是**并发多路**下发 ——
+     * 启动器通道的 `{"cmd":"kill"}` 会让平台客户端执行 `am force-stop <本 APK 包名>`
+     * （本 APK 的 applicationId 就是被平台登记为游戏的那个包），游戏通道的 `0x10 closeGame`
+     * 只是并发的那一路。等 2.5 秒时本进程**早已被 force-stop**，整个退出策略一行都跑不到 ——
+     * 现场表现正是「浏览器停在白页、平台客户端还在后台没被调起」（用户第五次反馈）。
+     */
+    private static final long RESTORE_FAST_MS = 0L;
 
     /** 页面上报「本局结束」（打输 / 通关 / 玩家退出 VR）→ 延迟更久，让结算画面走完 */
     private static final long RESTORE_DELAY_ON_GAME_END = 8000L;
@@ -2523,7 +2545,14 @@ public class MainActivity extends AppCompatActivity {
     static void scheduleClientRestore(Context ctx, String why, long delayMs) {
         final Context app = (ctx != null) ? ctx.getApplicationContext() : CastApp.APP;
         if (app == null) { PageForensics.line("APK", "退出策略跳过：没有可用的 Context"); return; }
-        final long at = System.currentTimeMillis() + delayMs;
+        // ★ 第二十修：**平台关游戏**这一路立刻执行（原因见 RESTORE_FAST_MS 的注释）。
+        //   ⚠ 页面自己上报的 game-end 不受影响 —— 那条要留给结算画面走完（RESTORE_DELAY_ON_GAME_END）。
+        final long delay = (why != null && why.contains("closeGame")) ? RESTORE_FAST_MS : delayMs;
+        if (delay != delayMs) {
+            PageForensics.line("APK", "退出策略提速：" + delayMs + "ms → " + delay
+                    + "ms（平台会立刻 force-stop 本 APK，等 2.5s 就来不及顶客户端了）");
+        }
+        final long at = System.currentTimeMillis() + delay;
         if (sRestoreAt != 0 && sRestoreAt <= at) {
             PageForensics.line("APK", "退出策略已在排队（" + (sRestoreAt - System.currentTimeMillis())
                     + "ms 后执行），本次（" + why + "）不重复安排");
@@ -2533,7 +2562,7 @@ public class MainActivity extends AppCompatActivity {
         final long seq = ++sRestoreSeq;
         sRestoreLaunchMark = sLaunchedAt;
         final String busy = isOn(app, "killBrowser", false) ? " + 关闭浏览器" : "";
-        PageForensics.line("APK", "本局结束（" + why + "）→ " + delayMs + "ms 后执行退出策略（唤醒平台客户端"
+        PageForensics.line("APK", "本局结束（" + why + "）→ " + delay + "ms 后执行退出策略（唤醒平台客户端"
                 + busy + "）");
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
             if (seq != sRestoreSeq) return;                       // 被更早/更新的一次取代
@@ -2544,7 +2573,7 @@ public class MainActivity extends AppCompatActivity {
             }
             sRestoreAt = 0;
             restoreClientAndCloseBrowser(app, why);
-        }, delayMs);
+        }, delay);
     }
 
     /**
@@ -2557,8 +2586,40 @@ public class MainActivity extends AppCompatActivity {
         //   实测关完会留下「还原到 80% 就冻住」的幽灵页（见第十一修注释③）。
         final boolean wantKill = isOn(app, "killBrowser", false);
         final boolean castMode = sPcConfigured;
+        // ★ 第十八修：直播模式下**本轮真的结束**（页面已 replace('about:blank') 收工）时不能再跳过 ——
+        //   否则浏览器里那一页会一直挂着，下一局被拉起时抢不到 PC 的推流端席位（用户第三次实测：
+        //   「游戏结束后只是在浏览器里提示，没有关闭浏览器，导致头显再次调起游戏后无法连接 PC 端直播」）。
+        final boolean castRoundOver = GameServer.sCastRoundOver;
         PageForensics.line("APK", "退出策略执行（" + why + "）：唤醒客户端=" + wantClient
-                + " 关闭浏览器=" + wantKill + " 直播模式=" + castMode);
+                + " 关闭浏览器=" + wantKill + " 直播模式=" + castMode + " 本轮结束=" + castRoundOver);
+        if (castMode && castRoundOver) {
+            GameServer.sCastRoundOver = false;
+            // ★ 第十九修（2026-09-23 晚，用户第四次实测）：「只关浏览器」是**错的** ——
+            //   浏览器关掉/只剩白页、而平台客户端（com.GoodNet.LauncherClient）还留在后台，
+            //   头显上就没有任何可用界面 ⇒ 平台下一次点「开始游戏」拉不起游戏。
+            //   用户原话：「应该把 launcherclient 这个头显客户端从后台调出来，不然第二次就无法
+            //   启动头显里的游戏」。
+            //   正确顺序：**先把平台客户端顶回前台**（头显回到平台自己的界面），
+            //   浏览器是否关闭交给 verifyClientFront 实测到「它确实退到后台了」再决定（第十一修）。
+            //   页面此刻已 about:blank 收工（game.js 的 _onPlatformGone）⇒ 不再打点 ⇒ 复核会通过。
+            PageForensics.line("APK", "退出策略（直播模式·本轮结束）：把平台客户端顶回前台，"
+                    + "并在 1.2s 后尽力关掉浏览器（它已不是推流源；留在前台的白页会让下一局"
+                    + "抢不到 PC 推流端席位）（平台客户端开关=" + wantClient
+                    + "，配置的关浏览器=" + wantKill + "，路由=" + why + "）");
+            sPendingKillBrowser = false;      // 关浏览器不再等 verifyClientFront 的实测（见下）
+            if (wantClient) {
+                bringClientToFront(app, why);
+            } else {
+                PageForensics.line("APK", "退出策略：平台客户端开关被关掉 → 跳过顶客户端（只关浏览器）");
+            }
+            // ★ 第二十修：关浏览器**不再**等 verifyClientFront 的实测结论 —— 平台紧接着会
+            //   force-stop 本 APK，1.4s 后的复核回调**根本跑不到**（这正是旧实现「连日志都只
+            //   停在前半段」的原因）。改成固定 1.2s 后尽力关一次：killBackgroundProcesses
+            //   只对**后台**进程有效 —— 客户端若真被顶到前台，这时浏览器正好在后台、能被关掉；
+            //   若没顶上来，它是前台，这一下是无害的空操作（绝不误杀其它应用）。
+            new Handler(Looper.getMainLooper()).postDelayed(() -> killBrowser(app), 1200);
+            return;
+        }
         if (castMode) {
             PageForensics.line("APK", "退出策略跳过：当前带 ?cast=1 直播（浏览器就是推流源，不能关）");
             return;
@@ -2591,22 +2652,58 @@ public class MainActivity extends AppCompatActivity {
     private static void bringClientToFront(Context app, String why) {
         String pkg = clientPkgForRestore(app);
         if (pkg == null) { PageForensics.line("APK", "顶客户端跳过：包名不可用（见上一行）"); return; }
+        // ★ 第二十修：连顶三次（0 / 600 / 1200ms），flags 逐次加强。
+        //   旧实现只顶一次、1.4s 后才复核 —— 而平台紧接着就会 force-stop 本 APK，
+        //   那个复核回调**根本跑不到**（留痕里只有前半段，后半段的「已生效/未生效」从没出现过）。
+        //   现在把机会全挤进「被杀之前」这段窗口：第一次被系统静默丢弃时，后两次还有机会。
+        PageForensics.line("APK", "顶客户端开始（" + pkg + "，路由=" + why
+                + "）：悬浮窗权限=" + (hasOverlay(app)
+                    ? "已授予"
+                    : "**未授予**（后台 startActivity 会被系统静默丢弃，这就是顶不动客户端的头号原因"
+                      + " → 配置页点「授予悬浮窗权限」）")
+                + " 自身importance=" + myImportance(app) + "（≤100=前台，>100=后台）");
+        attemptClientFront(app, pkg, why, 0);
+        final Context c = app;
+        new Handler(Looper.getMainLooper()).postDelayed(() -> attemptClientFront(c, pkg, why, 1), 600);
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            attemptClientFront(c, pkg, why, 2);
+            verifyClientFront(c, pkg, why);
+        }, 1200);
+    }
+
+    /**
+     * 发一次「顶平台客户端到前台」的 startActivity（第二十修）。
+     *
+     * <p>为什么要重试：平台关游戏时会并发让启动器 force-stop 本 APK，能用的窗口只有百毫秒级；
+     * 而「从后台 startActivity」在 Android 10+ 默认**被静默丢弃**（不抛异常、也不生效）——
+     * 多试几次、并逐次加强 flags，是唯一能提高成功率的做法。
+     *
+     * @param round 第几次尝试：0=基础 flags；1=加 RESET_TASK（有些 Unity 启动器只有 reset 才会把
+     *              自己的主 task 提上来）；2=再加 CLEAR_TOP / SINGLE_TOP。
+     */
+    private static void attemptClientFront(Context app, String pkg, String why, int round) {
         try {
             Intent li = app.getPackageManager().getLaunchIntentForPackage(pkg);
-            if (li == null) { PageForensics.line("APK", "顶客户端失败：拿不到启动器 Intent（" + pkg + "）"); return; }
-            PageForensics.line("APK", "顶客户端：组件=" + li.getComponent() + " 自身importance="
-                    + myImportance(app) + "（≤100=前台，>100=后台；后台态 startActivity 可能被系统静默丢弃）");
+            if (li == null) {
+                // 兜底：有些平台客户端的 activity 不在 launcher intent 里 → MAIN + LAUNCHER + setPackage
+                li = new Intent(Intent.ACTION_MAIN);
+                li.addCategory(Intent.CATEGORY_LAUNCHER);
+                li.setPackage(pkg);
+            }
             li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            if (round >= 1) {
+                li.addFlags(Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED | Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT);
+            }
+            if (round >= 2) {
+                li.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            }
             app.startActivity(li);
-            PageForensics.line("APK", "已发出「顶平台客户端到前台」请求（" + pkg
-                    + "，不带 URL，不会重载任何页面）→ 1.4s 后实测复核");
+            PageForensics.line("APK", "已发出顶客户端请求 #" + (round + 1) + "（" + pkg
+                    + "，组件=" + li.getComponent() + "，flags=0x" + Integer.toHexString(li.getFlags()) + "）");
         } catch (Throwable e) {
-            PageForensics.line("APK", "顶平台客户端失败(" + pkg + ")/" + e.getClass().getSimpleName()
-                    + ": " + e.getMessage());
-            sPendingKillBrowser = false;
-            return;
+            PageForensics.line("APK", "顶客户端 #" + (round + 1) + " 失败(" + pkg + ")/"
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
-        new Handler(Looper.getMainLooper()).postDelayed(() -> verifyClientFront(app, pkg, why), 1400);
     }
 
     /**

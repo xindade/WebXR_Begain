@@ -14,6 +14,8 @@
   var MAX_LINES = 600;
   var paused = false;
   var body, badge;
+  // ★ 2026-09-23 功能裁剪：正式包由 main.js 调 disable() 置 true ⇒ 整块日志不再产生任何 DOM。
+  var disabled = false;
 
   function ensureDom() {
     if (body) return;
@@ -51,6 +53,7 @@
   }
 
   function append(msg, level) {
+    if (disabled) return;                 // 正式包：连 DOM 都不建（见 disable()）
     ensureDom();
     var line = document.createElement('div');
     line.className = 'pagelog-line lvl-' + (level || 'info');
@@ -94,6 +97,17 @@
     resumeScroll: function () { setPaused(false); },
     togglePause: function () { setPaused(!paused); },
     isPaused: function () { return paused; },
+    /**
+     * ★ 2026-09-23 功能裁剪：整块日志**关掉**（不是折叠，而是彻底不出现）。
+     * 由 src/main.js 在 RELEASE 时调用（这里是经典脚本，拿不到 RELEASE_UI 常量）。
+     * 关掉之后：不再建面板 DOM、不再逐条 append、已有面板一并移除。
+     * 与 index.html 的 body.release .pagelog 规则互为兜底。
+     */
+    disable: function () {
+      disabled = true;
+      var root = document.querySelector('.pagelog');
+      if (root && root.parentNode) root.parentNode.removeChild(root);
+    },
   };
 
   // 首条：脚本已注入

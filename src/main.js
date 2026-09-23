@@ -14,13 +14,33 @@ import { prewarmIntroVideo } from './game/introVideo.js';
 import { LEVELS } from './content/levels.js';
 import { preloadDragonAssets } from './game/dragonLevel.js';
 import { preloadGLB } from './game/glbCache.js';
-import { SKY_PANORAMA, MASTER_GATE } from './core/constants.js';
+import { SKY_PANORAMA, MASTER_GATE, RELEASE_UI } from './core/constants.js';
 import { MODEL_URL as PORTAL_MODEL_URL } from './game/portal.js';
 import { MODEL_URL as OPENING_MODEL_URL } from './game/openingModel.js';
 import { createCast } from './net/cast.js';
 import { VRPlus } from './net/vrplus.js';
 import { MirrorManager, isDesktopPage } from './core/mirror.js';
 import { MIRROR, RENDER } from './core/constants.js';
+
+// ── 正式版界面裁剪 + 功能裁剪（2026-09-23 需求）───────────────────────────────
+// 【界面】不创建「暂停 / 继续 / 设置 / 日志 / 导出性能记录」控制条、桌面「开始游戏」按钮，
+//         并隐藏右侧「关卡快捷」选关面板、枪支模式、操作提示。
+// 【功能】用户明确要求「不只是标签去掉，还要把功能去掉」⇒ 正式包里这些能力**整体不存在**：
+//         · 暂停：focusPause 直接返回、失焦/可见性/XR 会话三条监听不注册、主循环的 A/B 菜单键
+//                 分支不走 ⇒ pause.paused 恒为 false（PauseState 对象仍在，但没有任何路径能加原因）；
+//         · 设置：设置对话框只在 devUI 下创建（src/ui/settings.js），正式包无入口；
+//         · 性能：PerformanceMonitor **不构造**，每帧 monitor.record() 不执行（省一份每帧开销）；
+//         · PC 模式（桌面「开始游戏」）：按钮不创建、onStart 不接线；
+//         · 日志：window.__pageLog.disable()（下方）+ index.html 的 body.release .pagelog 兜底；
+//         · 选关：#level-panel 不建（buildLevelPanel 早退）+ CSS 隐藏。
+// 判据：编译时常量 RELEASE_UI（src/core/constants.js；正式包 true）+ 网址 ?devui=1 旁路
+//      （现场排障要把调试入口调回来时用，不必重打包）。
+const RELEASE = RELEASE_UI && !new URLSearchParams(location.search).has('devui');
+// 其余静态元素（枪支模式 / 操作提示 / 选关面板）由 index.html 的 body.release 规则隐藏
+if (RELEASE) document.body.classList.add('release');
+// 正式包关掉「最高优先级页面日志」整块：不只是看不见，还**不再建 DOM、不再逐条 append**。
+//   接口由 src/ui/pagelog.js 提供；那里是经典脚本（拿不到 RELEASE_UI），故由这里按 RELEASE 关。
+if (RELEASE) window.__pageLog?.disable?.();
 
 window.__pageLog?.info('[main] 模块开始执行（imports 已解析）');
 
@@ -155,7 +175,7 @@ const mirror = new MirrorManager(world.renderer, world.scene);  // VR 桌面镜�
   Promise.all([...skyTasks, dragonTask, glbTask]).catch(() => {}); // 触发加载（帧循环独立读取进度）
 })();
 
-const hud = new HUD();
+const hud = new HUD({ devUI: !RELEASE });
 const audio = new AudioManager();
 
 // Game 先创建（内部建立 playerRig 并把相机挂上去）
@@ -181,9 +201,11 @@ const input = new InputManager(world, game.rig);
 const wristUI = new WristUI(); // 手腕面板：右手战斗信息 / 左手日志
 // 页面日志（最高优先，由 index.html 的经典脚本注入；three 失败时仍可用）
 const pageLog = window.__pageLog || null;
-game.setSystems(audio, input, wristUI, pageLog);
+game.setSystems(audio, input, wristUI, pageLog, cast);   // cast：直播模式下本局结束要停推流（见 game.js）
 
-const monitor = new PerformanceMonitor();
+// ★ 正式包不构造性能监视器（2026-09-23 功能裁剪）：不采样、不问 renderer.info，
+//   界面侧本来也没有读数区（GameControls.updateStats 在正式包是空实现）。
+const monitor = RELEASE ? null : new PerformanceMonitor();
 let controls;
 const pause = new PauseState(paused => {
   input.reset(); audio.setPaused(paused);
@@ -205,20 +227,28 @@ function exitGame() {
 controls = new GameControls({ world, game, pause, settings, onSettings: applySettings, onResume: resumeGame, onExit: exitGame, monitor });
 applySettings(settings);
 function focusPause(reason, hidden) {
+  // ★ 正式包：暂停**功能**整体不存在（2026-09-23 需求：不只是藏掉「暂停/继续」按钮）。
+  //   这里是最后一道保险 —— 任何残余调用都不会让正式包停住。
+  if (RELEASE) return;
   if (game.state === 'menu') return;
   if (hidden) { pause.add('manual'); pause.add(reason); }
   else pause.remove(reason); // 恢复焦点仍需玩家明确继续
 }
-input.onUnlock = () => focusPause('manual', true);
-window.addEventListener('blur', () => focusPause('window', true));
-window.addEventListener('focus', () => pause.remove('window'));
-document.addEventListener('visibilitychange', () => focusPause('hidden', document.hidden));
-world.xr.addEventListener('sessionstart', () => {
-  const session = world.xr.getSession();
-  const onVisibility = () => focusPause('xr', session.visibilityState !== 'visible');
-  session.addEventListener('visibilitychange', onVisibility);
-  session.addEventListener('end', () => session.removeEventListener('visibilitychange', onVisibility), { once: true });
-});
+// 下面这些「失焦 / 页面不可见 / XR 会话不可见 → 暂停」的接线**只在调试包注册**：
+//   正式包没有暂停功能，注册了只会白占监听器（而且一暂停就再也回不来）。
+//   ⚠ 桌面自测时「指针锁丢失 = 暂停」也只有调试包才接线（正式包没有可见的「继续」界面）。
+if (!RELEASE) {
+  input.onUnlock = () => focusPause('manual', true);
+  window.addEventListener('blur', () => focusPause('window', true));
+  window.addEventListener('focus', () => pause.remove('window'));
+  document.addEventListener('visibilitychange', () => focusPause('hidden', document.hidden));
+  world.xr.addEventListener('sessionstart', () => {
+    const session = world.xr.getSession();
+    const onVisibility = () => focusPause('xr', session.visibilityState !== 'visible');
+    session.addEventListener('visibilitychange', onVisibility);
+    session.addEventListener('end', () => session.removeEventListener('visibilitychange', onVisibility), { once: true });
+  });
+}
 function startGame(index, mode, intro) {
   pause.clear(); input.reset(); game.start(index, mode, intro);
 }
@@ -254,7 +284,8 @@ world.xr.addEventListener('sessionstart', () => {
   if (game.state === 'menu') startGame(pendingStartIndex, gunMode(), pendingPlayIntro);
 });
 // 桌面：开始按钮（idx 0=第1关，2=第3关激光测试）—— 桌面预览不播开场视频
-hud.onStart((idx = 0) => { audio.unlock(); startGame(idx, gunMode(), false); });
+// 桌面「开始游戏」按钮：正式包不创建（见 src/ui/hud.js 的 devUI），故只在调试包接线
+if (!RELEASE) hud.onStart((idx = 0) => { audio.unlock(); startGame(idx, gunMode(), false); });
 
 // ── 自定义 PICO 兼容 VR 进入按钮（参考 vr-controller-kit skill）──
 // 不使用 three 自带 VRButton：改用 requiredFeatures:['local-floor'] + 无参回退，
@@ -279,41 +310,36 @@ function showStatus(text, isError = false) {
   statusMsg.classList.toggle('error', isError);
 }
 
-// ── 「进入 VR」按钮门禁（2026-09-19 第十二修；**第十四修定型判据**）──────────────────
-// 【需求】按钮**默认隐藏**，直到**平台发送「开始游戏」**才显示 —— 不让人在非平台排期时刻
-//   从 2D 预览界面点进 VR，开出一局平台不知道的游戏。右侧关卡面板点任一关也会进 VR → 与按钮同生死。
+// ── 「进入 VR」按钮门禁（2026-09-19 第十二修 → 2026-09-23 第十八修定型）───────────────
+// 【需求】按钮**默认隐藏**，直到**平台/主控端发「开始游戏」**才显示 —— 不让人在非排期时刻从 2D
+//   预览界面点进 VR，开出一局平台不知道的游戏。右侧关卡面板点任一关也会进 VR → 与按钮同生死。
 //
-// 【第十四修：判据 = `?plat=1`（本页由 APK 拉起）｜为什么不能用「平台的开始指令」】
-//   page-forensics (5).log 实测整局：平台对我们**零「开始」下行** —— 逐帧留痕里只有 8 条机位表
-//   回执 + 1 条 `0x10 closeGame`，**没有** cmd3/4、没有 JSON 命令、没有单字节命令，
-//   而且全程**没有 onNewIntent / 没有第二次 am start**（21:46:38 那一次拉起就是操作员点「开始游戏」）。
-//   ⇒ 操作员点「开始游戏」在设备侧唯一的可见形态就是**平台拉起本页**（kill→copyfile→am start）。
-//   所以第十三修「只认平台下发的 cmd3/4」在本部署永远等不到，玩家只能等 30 秒兜底
-//   = 用户原话「平台点开始游戏好像没有反应，等时间到了才有进入 VR 弹窗」。
-//   现在：**APK 打开本页时在网址带 `?plat=1`**（`MainActivity.getCastUrl`），页面据此直接开门禁；
-//   平台若改版补发真指令（cmd3/4）也照旧开门禁 —— 两条并肩，互不冲突。
+// 【第二十修（2026-09-23 晚）：判据 = **平台点「开始游戏」**（+ PC 主控端实时结论）】
+//   用户第五次现场实测：平台操作员是**两步** ——
+//     ① 「启动游戏」= 启动器通道 `{"cmd":"start"}` → 拉起 PC 端 EXE + 头显里的游戏（本页）；
+//     ② 「开始游戏」= **游戏通道 CMD 5 GameStart**（UDP 51124）→ **这时头显才该出现「进入 VR」**。
+//   第十九修把 ①（EXE 被平台拉起）当成了开局 ⇒ 头显在②之前就冒出按钮（用户实测的错）。
+//   现在两条**实时**判据并肩，谁先到算谁：
+//     · 平台的 GameStart → APK 入队 inbox cmd=21 → game.js 回调 onStart → vrPlatStart = true；
+//     · PC 主控端的 /api/master/allow（PC 端自己也收那一帧，或操作员手动点「▶ 开始本局」）。
+//   ⚠ 页面每 2 秒问一次 PC（只带设备号，**不带**放行条 —— 放行条 TTL 只有 60 秒，第二局必然
+//     过期，见 F:/desk/第二次日志.txt 19:41:20）；PC 点「结束本局 / 平台关闭」→ 关门禁并收尾。
+//   ⚠ 第十三修留下的正确部分（不要回退）：inbox cmd=0 机位表**不是**开局信号，它只是注册回执。
 //
 // 【第十三修留下的正确部分（不要回退）】
-//   ① inbox `cmd=0` 机位表**不是**开局信号 —— 它只是平台收到我们 `0x01` 注册后的**回执**
-//      （APK 每补发一次 0x01，10ms 后就来一张表）⇒ 任何一次 APK 启动都有它，与「是否开始这局」无关；
-//   ② 平台驱动的拉起**不注入**本地 `cmd3 plat:true`（那是 APK 替平台说话，已删）—— 改用上面的 URL 参数，
-//      语义诚实：它表达的是「本页是 APK/平台拉起来的」，而不是伪称「平台下发了开局指令」。
+//   ① inbox cmd=0 机位表**不是**开局信号 —— 它只是平台收到我们 0x01 注册后的**回执**，
+//      任何一次 APK 启动都有它，与「是否开始这局」无关；
+//   ② onSeen 只做留痕，不改门禁。
 //
-// 【什么时候重新关】平台结束本局（inbox `cmd=16` → 待机态，或旧 `cmd=5/6`）→ 门禁重新关闭，
-//   等平台下一次「开始」。玩家自己按 A/B 退出 VR **不关**（那一局还在平台排期里，可以再进）。
-//   下一局平台重拉 → 待机页被本地 `cmd3`(plat:true) 唤醒 / 页面被整页重载（带 `?plat=1`）→ 门禁重新开。
-//
-// 【兜底（绝不留现场卡死）】关闭后 30 秒仍无平台开局信号 → **无条件放行**（需求方 2026-09-19 选定）。
-//   只对「**不是**我们拉起的页面」生效（玩家自己在 PICO 浏览器里打开 localhost:8080 / 幽灵页还原）；
-//   **待机态（`game._closedIdle`，平台已结束本局）不兜底** —— 否则平台关闭 30 秒后按钮自己冒出来，
-//   等于门禁又失效。`platformSeen` 只用来区分兜底原因，写进留痕：
-//     · 平台不在场 → 「30 秒内没收到任何平台信号」= 正常自测；
-//     · 平台在场却没有开局指令 → 「平台侧没发 cmd3/4」= 该需求只能由平台补指令（这条要上报）。
-// 【强制开关】`?vrbtn=1` **完全旁路门禁**（按钮常显，应急/自测）；`?vrbtn=0` 永远隐藏。
-//   改网址即可、不用重打包；APK 配置页的「直接显示进入 VR 按钮」勾选会自动加上 `&vrbtn=1`。
+// 【兜底（绝不留现场软锁）】门禁**归主控端管**时（MASTER_GATE_ON 且非桌面豁免）**不做** 30 秒
+//   无条件放行 —— 否则主控端还没点「开始本局」，按钮半分钟后自己冒出来 = 门禁等于没做。
+//   只有「门禁不归主控端管」的场合（调试包 / ?gate=0 / 桌面预览）才保留 30 秒兜底。
+// 【强制开关】网址 ?vrbtn=1 **完全旁路门禁**（按钮常显，应急/自测）；?vrbtn=0 永远隐藏。
+//   改网址即可、不用重打包；APK 配置页的「直接显示进入 VR 按钮」勾选会自动加上 &vrbtn=1。
 const VR_GATE_FALLBACK_MS = 30000;
 const VR_GATE_FORCE = new URLSearchParams(location.search).get('vrbtn');  // '1' | '0' | null
-const VR_GATE_PLAT = new URLSearchParams(location.search).get('plat') === '1';  // APK/平台拉起本页
+// APK/平台拉起本页（?plat=1）——**只作留痕**，不再当开局信号（第十八修，见上）
+const VR_GATE_PLAT = new URLSearchParams(location.search).get('plat') === '1';  // APK/平台拉起本页const VR_GATE_PLAT = new URLSearchParams(location.search).get('plat') === '1';  // APK/平台拉起本页
 const levelPanelEl = document.getElementById('level-panel');
 const vrGate = { open: false, why: '', cd: null, platformSeen: false };
 
@@ -327,51 +353,65 @@ const vrGate = { open: false, why: '', cd: null, platformSeen: false };
 //   现场出口有两个，都不用重打包：APK 配置页勾「跳过直播端校验」，或网址加 `?vrbtn=1`。
 const vrGuard = { known: false, ok: false, why: '' };
 
-// ── ★ 2026-09-23：主控门禁「允许运行」（《打包和平台对接》第 3 条）──────────────────
-// 【需求】正式包里**必须**由 PC 主控端明确回「允许运行」才让进游戏；就算有人绕过 APK
-//   直接在浏览器里打开本页，也进不去（用户原话：「exe 正常运行时会给 apk 发指令，apk 才会
-//   正常运行，否则会提示『需要主控端启动』」）。
-// 【判据来源】PC EXE 的 `POST /api/master/allow` —— 与 APK 的 `/api/launch/request`
-//   **同一套判定**（cast-pc/main.js 的 masterAllow()）。**不另立标准**：两处判据漂移会造出
-//   「APK 放行了、页面却拒绝」的现场事故。
-// 【为什么同源就能问到 PC】头显侧本页由 APK 的 GameServer 托管，它把 `/api/*` 原样代理到 PC
-//   （GameServer.proxyApi）⇒ 页面发 `/api/master/allow` 实际就是问 PC。
-// 【凭据】页面没有 secret、算不出 HMAC，所以用 APK 从 PC 取回的**放行条**
-//   （`dev` + `exp` + `voucher`，由 APK 拼进本页网址）来复验。
+// ── ★ 主控门禁「允许运行」（《打包和平台对接》第 3 条；第十八修改为**轮询**）────────────
+// 【需求】正式包里**必须**由 PC 主控端明确回「允许运行」才让进游戏；就算有人绕过 APK 直接在浏览器
+//   里打开本页也进不去（用户原话：「exe 正常运行时会给 apk 发指令，apk 才会正常运行，否则会提示
+//   『需要主控端启动』」），并且要**等平台/主控端发「开始游戏」信号后才能点**。
+// 【判据来源】PC EXE 的 POST /api/master/allow —— 与 APK 的 /api/launch/request **同一套判定**
+//   （tools/cast-pc/main.js 的 masterAllow）。**不另立标准**：两处判据漂移会造出「APK 放行了、
+//   页面却拒绝」的现场事故。
+// 【为什么是轮询而不是一次性的放行条】放行条（dev/exp/voucher）TTL 只有 60 秒，页面在第二局带着
+//   上一局的条子复验必然「已过期」（F:/desk/第二次日志.txt 19:41:20）⇒ 改为每 2 秒问一次、每次只
+//   报设备号 —— 判据落在 PC 的**实时**状态（主控端「开始本局 / 结束本局」）上。
+// 【为什么同源就能问到 PC】头显侧本页由 APK 的 GameServer 托管，它把 /api/* 原样代理到 PC
+//   （GameServer.proxyApi）⇒ 页面发 /api/master/allow 实际就是问 PC。
 // 【开关】编译时常量 MASTER_GATE（正式包 true / 调试包 false）；网址 ?gate=0 旁路（优先级最高，
 //   现场应急不必重打包）；?gate=1 可强制打开做对照。
-// 【绝不留现场卡死】5 秒超时（与 APK 的发现超时对齐）；失败**只记状态、不软锁**：
-//   已经拿到过 allow 的一次传输抖动不会把已放行的场次踢回来，且界面常驻「重试」按钮。
+// 【绝不留现场卡死】5 秒超时；失败**只记状态、不软锁**：已放行的一次传输抖动不会把场次踢回门禁外，
+//   且界面常驻「重试」按钮（updateGateRetryBtn）。
 const GATE_FORCE = new URLSearchParams(location.search).get('gate');   // '0' | '1' | null
 const MASTER_GATE_ON = GATE_FORCE === '1' || (MASTER_GATE && GATE_FORCE !== '0');
 const GATE_TIMEOUT_MS = 5000;
+const GATE_POLL_MS = 2000;         // 门禁关着时的轮询间隔（等主控端「开始本局」）
+const GATE_POLL_IDLE_MS = 5000;    // 已放行后的轮询间隔（只为感知「结束本局」，放慢省电）
 const _gateQ = new URLSearchParams(location.search);
 const vrMaster = {
   known: false,          // 是否拿到过 PC 的**明确**结论
-  ok: false,
-  why: '',
+  ok: false,             // 结论：本局是否已放行
+  why: '',               // PC 给的原因（原文，进日志与现场提示）
+  round: false,          // PC 回的「本轮是否已开始」（false = 还没点「开始本局」）
+  armedPrev: false,      // 上一次轮询的放行结论（用来识别「结束本局」的 1→0 跳变）
   exempt: false,         // 桌面（无 VR 设备）等场景豁免：本就没有「平台不知道的一局」
-  dev: _gateQ.get('dev') || '',
-  exp: _gateQ.get('exp') || '',
-  voucher: _gateQ.get('voucher') || '',
-  pc: _gateQ.get('pc') || '',          // APK 已探测到的 PC 地址（提示用）
+  err: false,            // 最近一次查询**失败**（连不上/超时）—— 只有它才让「重试」按钮出现
+  dev: _gateQ.get('dev') || '',   // 设备号：网址带的（APK 拼的）或从 /api/guard 取的（更权威）
+  pc: _gateQ.get('pc') || '',     // APK 已探测到的 PC 地址（提示用）
 };
-/** 本页是否拿到了可用于**独立复验**的放行条（APK 拼进网址的 dev+exp+voucher）。 */
-vrMaster.hasCred = !!(vrMaster.dev && vrMaster.exp && vrMaster.voucher);
+/**
+ * ★ 第二十修：**平台本人说了「开始游戏」**（游戏通道 CMD 5 GameStart → APK 入队 cmd=21 →
+ * game.js 的 onStart 回调）。
+ *
+ * 为什么它单独算一条放行：现场实测平台是两步，第二步那一帧才是开局信号，且它是**平台本人**
+ * 发的 —— 权威性高于任何本地推断（旧实现在这里用的是「APK 拉起页面」= 第一步，于是头显早早
+ * 就冒出「进入 VR」）。抓包显示该帧可能只发给 PC 那台机器：那种情况下放行由 PC 的
+ * /api/master/allow 给（PC 端自己也收这一帧，见 tools/cast-pc 的 startPlatformGameChannel）。
+ * 两条路互不依赖，谁先到算谁；都没有时，现场仍有 PC 界面的「▶ 开始本局」手动口子。
+ */
+let vrPlatStart = false;
+/** 本局的「平台已开始」是否已回报给 PC 主控端（一局只报一次，见 reportPlatformStartToMaster） */
+let vrPlatStartReported = false;
 
 /**
- * 主控门禁的最终判据。
- *   ① 本页**独立**问过 PC 且拿到 allow → 放行（最强证据）；
- *   ② 本页没有放行条可复验（APK 尚未拼这组参数）→ 退回 **APK 的结论**（`/api/guard`）。
- *      这**不是**漏洞：APK 只有在 PC 的 `/api/launch/request` 返回 allow 之后才拉得起浏览器
- *      （MainActivity.maybeLaunch 的 sGuardPassed 硬前置）⇒ 这正是**同一条判据的传递**。
- *      「绕过 APK 直接开页面」时 /api/guard 拿不到结论（fail-closed）⇒ 仍然进不去。
- *   ③ 什么都没有 → 拦。
+ * 主控门禁的最终判据（第十八修）：**PC 说本局已放行**才算过。
+ *   ① 门禁没启用（调试包 / 网址 ?gate=0）→ 不拦；
+ *   ② 桌面（无 VR 设备，vrMaster.exempt）→ 不拦（本就没有「平台不知道的一局」）；
+ *   ③ 其余 → 只认「本页轮询到 PC 回 allow」。
+ * ⚠ **不再**用「APK 拉起本页（?plat=1）」或「APK 的授权结论（/api/guard ok）」放行 —— 那两条只能
+ *   证明「有人开了这一局页面」，证明不了「平台/主控端现在要开始这一局」（用户实测：头显一连上 PC
+ *   就能点进 VR）。
  */
 function masterGateAllowed() {
-  if (vrMaster.known && vrMaster.ok) return true;
-  if (!vrMaster.hasCred && vrGuard.known && vrGuard.ok) return true;
-  return false;
+  // ★ 第二十修：平台**本人**说了「开始游戏」（vrPlatStart）也算放行 —— 见 vrPlatStart 的注释。
+  return !MASTER_GATE_ON || vrMaster.exempt || vrPlatStart || (vrMaster.known && vrMaster.ok);
 }
 vrGateLog('主控门禁：' + (MASTER_GATE_ON ? '已启用' : '未启用')
   + (GATE_FORCE ? '（网址 ?gate=' + GATE_FORCE + '）' : '（编译时常量 MASTER_GATE=' + MASTER_GATE + '）'));
@@ -411,27 +451,37 @@ function applyVRGate() {
   // XR 会话进行中绝不显示 DOM 按钮（虽然沉浸式下 DOM 本来不参与渲染，但退出瞬间会闪一下）
   const inXR = !!(world && world.renderer && world.renderer.xr && world.renderer.xr.isPresenting);
   // ★ 第十五修：再加一道「直播端是否放行」。`?vrbtn=1` 是总旁路，优先级最高。
-  const guardBlocked = vrGuard.known && !vrGuard.ok && VR_GATE_FORCE !== '1';
+  // 桌面（无 VR 设备）→ 两道门禁都不适用（见 vrMaster.exempt 的两处赋值），别在现场留一行红字
+  const guardBlocked = !vrMaster.exempt && vrGuard.known && !vrGuard.ok && VR_GATE_FORCE !== '1';
   // ★ 主控门禁（文档第 3 条）：**独立**于上面两道，任一不放行都不给按钮。
   //   注意 `vrMaster.known` 为 false 时也算拦 —— 没拿到 PC 的明确允许就不放行（硬闸门口径）。
   const masterBlocked = MASTER_GATE_ON && !vrMaster.exempt && !masterGateAllowed();
   const show = vrGate.open && !inXR && !guardBlocked && !masterBlocked;
   if (enterVRBtn) enterVRBtn.style.display = show ? 'block' : 'none';
   // 右侧「关卡快捷」面板点任一关也会进 VR → 与按钮同生死（不留第二个入口）
-  if (levelPanelEl) levelPanelEl.style.display = show ? 'flex' : 'none';
+  // 正式包（RELEASE）里这一块由 body.release 的 CSS 永久隐藏（选关属自测入口），不再动态改它
+  if (levelPanelEl && !RELEASE) levelPanelEl.style.display = show ? 'flex' : 'none';
   updateGateRetryBtn();
   if (show) {
     if (statusMsg && !statusMsg.classList.contains('error')) statusMsg.style.display = 'none';
   } else if (guardBlocked) {
     showStatus('⛔ 未连接直播端，无法开始游戏');
   } else if (masterBlocked) {
-    // 文案与 APK 侧提示页刻意保持一致 —— 现场一眼认出是同一个门禁。
-    showStatus('⛔ 需要主控端启动'
-      + (vrMaster.why ? '（' + vrMaster.why + '）' : '')
-      + '　请确认 PC 端「WebXR 直播接收端」已运行'
-      + (vrMaster.pc ? '（已探测到 ' + vrMaster.pc + '）' : ''), true);
+    // 第十八修：把「正常等待」与「要人处理」分开提示 ——
+    //   · PC 已达、只是还没点「开始本局」→ 等待（**不给「重试连接主控端」按钮**，
+    //     那是用户实测抱怨的误导：F:/desk/第二次日志.txt）；
+    //   · 从没拿到结论且查询失败（PC 连不上）或已经开始了却仍被拒（授权/白名单没过）→ 故障。
+    const hardFail = (vrMaster.err && !vrMaster.known) || (vrMaster.known && vrMaster.round);
+    if (!hardFail) {
+      showStatus('⏳ 等待平台点「开始游戏」…（平台第二步点了之后，这里会出现「进入 VR」）');
+    } else {
+      showStatus('⛔ 需要主控端启动'
+        + (vrMaster.why ? '（' + vrMaster.why + '）' : '')
+        + '　请确认 PC 端「WebXR 直播接收端」已运行'
+        + (vrMaster.pc ? '（已探测到 ' + vrMaster.pc + '）' : ''), true);
+    }
   } else {
-    showStatus('⏳ 等待平台开始游戏…');
+    showStatus('⏳ 等待平台点「开始游戏」…');
   }
 }
 
@@ -452,6 +502,9 @@ async function gateQueryGuard() {
     vrGuard.known = true;
     vrGuard.ok = !!j.ok;
     vrGuard.why = j.why || '';
+    // ★ 第十八修：把 APK 的设备号留下来给主控门禁用 —— 网址里的 dev 是 APK 拼的副本，
+    //   /api/guard 这份才是权威（APK 没拼网址参数时也能拿到）。
+    if (j.dev) vrMaster.dev = String(j.dev);
   } catch (e) {
     vrGuard.known = true;
     vrGuard.ok = false;                       // ← fail-closed：查不到就当未授权
@@ -519,21 +572,12 @@ async function gateQueryPcvr() {
  */
 async function gateQueryMaster() {
   if (!MASTER_GATE_ON) {
-    vrMaster.known = true; vrMaster.ok = true;
+    vrMaster.known = true; vrMaster.ok = true; vrMaster.round = true;
     vrMaster.why = '主控门禁未启用（调试包或网址 ?gate=0）';
-    vrGateLog('主控门禁：' + vrMaster.why + ' → 放行');
     applyVRGate();
     return;
   }
-  if (!vrMaster.hasCred) {
-    // APK 还没拼放行条 ⇒ 本页没有可复验的凭据。不发一个注定被拒的请求（那只会把
-    // 现场日志刷满「放行条参数缺失」），改为按 APK 的结论走（见 masterGateAllowed）。
-    vrMaster.known = false; vrMaster.ok = false;
-    vrMaster.why = '未收到主控端放行条（APK 未拼 dev/exp/voucher）→ 以 APK 的授权结论为准';
-    vrGateLog('主控门禁：' + vrMaster.why);
-    applyVRGate();
-    return;
-  }
+  if (vrMaster.exempt) { applyVRGate(); return; }   // 桌面：主控门禁不适用
   const ac = new AbortController();
   const timer = setTimeout(() => { try { ac.abort(); } catch (e) { /* 忽略 */ } }, GATE_TIMEOUT_MS);
   try {
@@ -541,36 +585,75 @@ async function gateQueryMaster() {
       method: 'POST', cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },
       signal: ac.signal,
-      body: JSON.stringify({
-        device: vrMaster.dev, exp: Number(vrMaster.exp) || 0, voucher: vrMaster.voucher,
-      }),
+      // ★ 只报设备号：**不带** dev/exp/voucher 放行条 —— 放行条 TTL 只有 60 秒，轮询必然过期
+      //   （第二次日志 19:41:20「放行条已过期」）。设备号可从网址带（APK 拼的）或 /api/guard 取。
+      body: JSON.stringify({ device: vrMaster.dev || '' }),
     });
     const j = await r.json();
     vrMaster.known = true;
     vrMaster.ok = !!j.allow;
+    vrMaster.round = !!(j.round && j.round.armed);
+    vrMaster.err = false;
     vrMaster.why = j.reason || j.why || '';
-    vrGateLog('主控端授权：' + (vrMaster.ok ? '已放行' : '未放行') + '（' + (vrMaster.why || '无原因') + '）');
-    try { VRPlus.reportEvent('master-gate', { ok: vrMaster.ok, why: vrMaster.why }); } catch (e) { /* 留痕失败不影响游玩 */ }
+    gateReactToMaster();
   } catch (e) {
     const reason = (e && e.name === 'AbortError')
       ? ('超时 ' + Math.round(GATE_TIMEOUT_MS / 1000) + ' 秒没回应')
       : ('请求失败：' + (e && e.message ? e.message : e));
     // 关键：**不改** vrMaster.ok —— 已放行的场次不因一次抖动被踢回门禁外。
+    vrMaster.err = true;
     vrMaster.why = vrMaster.ok ? vrMaster.why : reason;
-    vrGateLog('主控端授权：查询失败（' + reason + '）'
+    vrGateLog('主控端：查询失败（' + reason + '）'
       + (vrMaster.ok ? ' → 保持上次的放行结论' : ' → 暂不放行，可点「重试」'));
-    try { VRPlus.reportEvent('master-gate', { ok: vrMaster.ok, why: reason, error: true }); } catch (e2) { /* 同上 */ }
   } finally {
     clearTimeout(timer);
   }
   applyVRGate();
 }
 
+/**
+ * 把 PC 的结论翻译成门禁开关 + 本局收尾（第十八修）。
+ *
+ * 关键跳变：**已放行 → 未放行** = 主控端点了「结束本局」⇒ 关门禁；若玩家此刻正在 VR 里，
+ * 按「平台要求关闭本局」走同一套优雅收尾（game.js 的 _onPlatformCloseRequest），
+ * 与《打包和平台对接》的现场验收「点结束游戏（PC 与 APK 均关闭）」对齐。
+ */
+function gateReactToMaster() {
+  const allowed = masterGateAllowed();
+  const wasAllowed = vrMaster.armedPrev;
+  vrMaster.armedPrev = allowed;
+  if (allowed) {
+    // ★ 第十八修之后，这是**唯一**的正常开局路径：主控端点「开始本局」。
+    setVRGate(true, '主控端已放行本局（PC 端点「开始本局」）');
+    return;
+  }
+  setVRGate(false, '主控端未放行本局：' + (vrMaster.why || '无原因'));
+  if (wasAllowed) {
+    vrGateLog('主控端已结束本局 → 收尾');
+    try { game._onPlatformCloseRequest('主控端结束本局'); } catch (e) { /* 收尾失败不影响页面 */ }
+  }
+}
+
+/**
+ * 主控门禁轮询（第十八修）。间隔：门禁关着 2s（等「开始本局」，要快）、已放行后 5s
+ * （只为感知「结束本局」，放慢省电）。桌面豁免 / 门禁未启用时不轮询。
+ */
+let masterPollTimer = null;
+function scheduleMasterPoll() {
+  if (!MASTER_GATE_ON || vrMaster.exempt) return;
+  clearTimeout(masterPollTimer);
+  const delay = masterGateAllowed() ? GATE_POLL_IDLE_MS : GATE_POLL_MS;
+  masterPollTimer = setTimeout(() => { gateQueryMaster().finally(scheduleMasterPoll); }, delay);
+}
+
 /** 主控门禁的「重试」按钮（懒创建）。失败**绝不软锁** —— 现场点一下就能再问一次 PC。 */
 let gateRetryBtn = null;
 function updateGateRetryBtn() {
   if (!MASTER_GATE_ON || vrMaster.exempt) return;
-  const need = !masterGateAllowed();
+  // ⚠ 只有「PC 连不上/超时」或「PC 明确拒绝（授权没过）」才给重试按钮 ——
+  //   「尚未开始本局」是**正常等待**，那时冒一个「重试连接主控端」出来正是用户实测抱怨的误导
+  //   （F:/desk/第二次日志.txt 的情形）。
+  const need = !masterGateAllowed() && (vrMaster.err || (vrMaster.known && vrMaster.round));
   if (!need) { if (gateRetryBtn) gateRetryBtn.style.display = 'none'; return; }
   if (!gateRetryBtn) {
     if (!document.body) return;
@@ -593,6 +676,9 @@ function vrGateLog(msg) {
 /** 起「兜底放行」计时（门禁每次变化都重置；已开 / 强制隐藏 / 待机态时不计时） */
 function scheduleGateFallback() {
   if (vrGate.cd) { clearTimeout(vrGate.cd); vrGate.cd = null; }
+  // ★ 第十八修：门禁**归主控端管**时不做 30 秒无条件兜底 —— 主控端没点「开始本局」就永远不放行，
+  //   否则按钮半分钟后自己冒出来 = 门禁等于没做（用户实测的原症状）。
+  if (MASTER_GATE_ON && !vrMaster.exempt) return;
   if (vrGate.open || VR_GATE_FORCE === '0') return;
   // 第十四修：**待机态不兜底**。平台已结束本局（`_closedIdle`）时门禁就该一直关着等下一次「开始」，
   //   若还按 30 秒兜底放行，平台一关游戏、半分钟后按钮自己又冒出来 = 门禁等于没做。
@@ -629,29 +715,62 @@ function setVRGate(open, why) {
 
 // 平台信号 → 门禁：game.js 收到 inbox 指令时回调（见 game.js._platformSignal）
 game.platformHooks = {
-  onStart: (why) => setVRGate(true, why),
-  onEnd: (why) => setVRGate(false, why),
+  onStart: (why) => {
+    // ★ 第二十修：平台**真的**说了「开始游戏」→
+    //   ① 开门禁（「进入 VR」按钮出现，这才是第二步该有的样子）；
+    //   ② 把这个事实回报给 PC 主控端，让 PC 的「本局进行中」状态 / 推流跟平台对齐
+    //      （PC 端入口见 tools/cast-pc/main.js 的 handleRoundStart）。
+    vrPlatStart = true;
+    setVRGate(true, why);
+    reportPlatformStartToMaster(why);
+  },
+  onEnd: (why) => { vrPlatStart = false; vrPlatStartReported = false; setVRGate(false, why); },
   // onSeen =「平台在场」（收到过平台下发的东西，但未必是开局）→ 只影响兜底时长的判读与留痕
   onSeen: (why) => {
     if (vrGate.platformSeen) return;
     vrGate.platformSeen = true;
     VRPlus.reportEvent('vr-seen', { why });
-    vrGateLog('检测到平台在场（' + why + '）→ 只做留痕，不改门禁（门禁由 ?plat=1 与 cmd3/4 决定）');
+    vrGateLog('检测到平台在场（' + why + '）→ 只做留痕，不改门禁（门禁由平台「开始游戏」与主控端决定）');
   },
 };
 
-// 启动默认：`?plat=1`（APK/平台拉起本页）→ 直接开；否则关着等平台。`?vrbtn=1` → 常显
-setVRGate(VR_GATE_PLAT || VR_GATE_FORCE === '1',
-  VR_GATE_PLAT ? 'APK/平台拉起本页（?plat=1）→ 视为平台已开始本局'
-    : (VR_GATE_FORCE === '1' ? '?vrbtn=1 旁路门禁（调试）'
-                             : '页面启动：等平台发送开始游戏'));
+/**
+ * 把「平台已开始本局」回报给 PC 主控端（第二十修）。
+ *
+ * 为什么要有它：平台的开局帧（游戏通道 CMD 5）抓包实测**可能只发给 PC 那台机器** —— 那种情况
+ * PC 端自己就收到了，这条只是重复确认；但若平台把它发给了头显，头显这边立刻回报一声，PC 的
+ * 「本局进行中」与推流状态就跟平台同步了（否则 PC 界面显示成「还没开始」，操作员会困惑）。
+ * 经 APK 的 GameServer 代理（/api/* 原样转发）→ PC 的 POST /api/round/start。
+ * **fire-and-forget**：回报失败绝不影响门禁 —— 平台的开局信号本身就是权威。
+ */
+function reportPlatformStartToMaster(why) {
+  if (vrPlatStartReported) return;
+  vrPlatStartReported = true;
+  try {
+    fetch('/api/round/start', {
+      method: 'POST', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ why: String(why || '').slice(0, 80) }),
+    }).catch(() => { /* PC 不在 / 非直播场景：忽略 */ });
+    vrGateLog('已把「平台开始本局」回报给主控端（POST /api/round/start）');
+  } catch (e) { /* 忽略 */ }
+}
 
-// ★ 第十五修：再查一次「直播端是否放行」（同源、本地、毫秒级）——
-//   两者都成立才给「进入 VR」按钮：APK 说「本页是平台拉起来的」+ APK 说「直播端放行了」。
+// 启动默认（第十八修）：门禁一律**关着**，等主控端点「开始本局」。
+// ★ `?plat=1`（APK/平台拉起本页）不再开门禁 —— 页面起来后一律**关着**，等主控端点「开始本局」。
+//   · ?vrbtn=1 → 常显（应急/自测）；?vrbtn=0 → 永远隐藏（调试对照）。
+//   · 桌面（无 VR 设备）稍后由 vrMaster.exempt + setVRGate(true) 放行，不受这里影响。
+setVRGate(VR_GATE_FORCE === '1',
+  VR_GATE_FORCE === '1' ? '?vrbtn=1 旁路门禁（调试）'
+    : (VR_GATE_PLAT ? '页面由 APK/平台拉起（?plat=1）→ 仍需等主控端「开始本局」'
+                    : '页面启动：等主控端「开始本局」'));
+
+// ★ 第十五修：先查一次「直播端是否放行」（同源、本地、毫秒级）。
+//   第十八修后两道门禁**并列**：APK 说「本页由它托管且授权通过」+ PC 主控端说「本局已放行」。
 gateQueryGuard();
-// ★ 主控门禁（文档第 3 条）：与上一道**并列**，两者都要过。页面侧独立复验一次，
-//   防的就是「绕过 APK 直接打开本页」。
-gateQueryMaster();
+// ★ 主控门禁（文档第 3 条）：与上一道**并列**，两者都要过 —— 且判据是 PC 的**实时**状态，
+//   故首查之后不停轮询（见 scheduleMasterPoll）：主控端点「开始本局」即刻放行。
+gateQueryMaster().finally(scheduleMasterPoll);
 
 
 async function enterVR() {
@@ -817,6 +936,9 @@ async function startLevelAt(idx) {
   if (MIRROR.AUTO_OPEN && xrOk && isDesktopPage()) mirror.open();
 }
 (function buildLevelPanel() {
+  // ★ 正式包不建选关面板（#level-panel）：选关属自测入口，且点任一关都会进 VR —— 正式版只留
+  //   「进入 VR」一条入口（见 RELEASE 与 index.html 的 body.release 规则）。
+  if (RELEASE) return;
   const panel = document.getElementById('level-panel');
   if (!panel) return;
   LEVELS.forEach((lv, i) => {
@@ -838,7 +960,8 @@ function reportError(system, error) {
   if (!lastErrors.has(system) || now - lastErrors.get(system) > 5000) {
     console.error(`[${system}]`, error); lastErrors.set(system, now);
   }
-  pause.add('error');
+  // 正式包不因报错暂停：没有「继续游戏」可点，暂停 = 假死（只留日志与诊断条）
+  if (!RELEASE) pause.add('error');
 }
 world.renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
@@ -847,12 +970,14 @@ world.renderer.setAnimationLoop(() => {
   //   唤醒点：cmd3/4 或 startGame()（都会清 _renderPaused，见 game.js）。
   if (game._renderPaused) return;
   const menuAction = input.pollMenu();
-  if (game.state !== 'menu' && menuAction && !document.querySelector('dialog[open]')) {
+  // ★ 正式包：菜单键（P / Esc / 右手 A / B）不再暂停、继续、退场 —— 暂停功能整体不存在
+  //   （见 focusPause）。pollMenu() 仍要调用，它负责清内部队列，只是结果被丢弃。
+  if (!RELEASE && game.state !== 'menu' && menuAction && !document.querySelector('dialog[open]')) {
     if (!pause.paused) pause.add('manual');
     else if (menuAction === 'exit') exitGame();
     else resumeGame();
   }
-  const begin = performance.now();
+  const begin = monitor ? performance.now() : 0;
   if (!pause.paused) {
     try { game.update(dt); } catch (e) { reportError('游戏更新', e); }
     try { world.carpet?.update(Math.min(dt, 1 / 30)); } catch (e) { reportError('飞毯', e); }
@@ -864,9 +989,11 @@ world.renderer.setAnimationLoop(() => {
   // 直播推流：必须在 world.render() 之后 —— 此时 camera.matrixWorld 才是本帧最终位姿；
   // 且 XR 帧已提交，观众渲染再慢也只挤占下一帧预算，不拖慢本帧。
   try { cast.update(dt); } catch (e) { console.error('[主循环] cast 异常:', e); }
-  const sample = monitor.record(dt, rendered - begin, performance.now() - rendered, world.renderer.info,
-    { level: game.levelIndex + 1, state: game.state, paused: pause.paused, xr: world.isPresenting, skyCache: Object.keys(world._panoCache).length });
-  controls.updateStats(sample);
+  if (monitor) {
+    const sample = monitor.record(dt, rendered - begin, performance.now() - rendered, world.renderer.info,
+      { level: game.levelIndex + 1, state: game.state, paused: pause.paused, xr: world.isPresenting, skyCache: Object.keys(world._panoCache).length });
+    controls.updateStats(sample);
+  }
 });
 
 window.__game = game; // 调试用

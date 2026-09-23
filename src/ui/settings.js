@@ -1,9 +1,27 @@
 import * as THREE from 'three';
 import { saveSettings } from '../core/settings.js';
 
+/**
+ * 开发者/自测控制条：暂停 / 设置 / 日志 / 导出性能记录 + 桌面暂停面板 + 设置对话框 +
+ * 沉浸式（VR 内）「已暂停」3D 面板。
+ *
+ * 【正式包一项都不建】2026-09-23 需求原话：「游戏还包含暂停，继续，设置，导出等功能，正式版游戏
+ *   要去掉这些」。正式版的流程由平台 + PC 主控端驱动（门禁见 src/main.js、收尾见 src/game/game.js），
+ *   现场玩家/操作员不该看到任何调试入口。
+ *
+ * 【开关】`devUI = false`（= constants.RELEASE_UI 为真且网址没带 ?devui=1，由 main.js 判定）时
+ *   本类退化成**空壳**：不建 DOM、不建 3D 面板，showPaused / updateStats 成空实现。
+ *   构造签名保持不变 ⇒ main.js 不需要为界面写分支。
+ *
+ * 【暂停机制本身保留】pause 仍会因「页面失焦 / XR 会话不可见 / 报告错误」而暂停（那是性能与安全
+ *   需要，见 main.js），正式包里只是**没有可见的暂停界面** —— 恢复途径是头显右手 A 键
+ *   （main.js 的 input.pollMenu → resumeGame）。也正因如此，main.js 在正式包里**不再**用
+ *   「指针锁丢失」来暂停：那条只在桌面自测时触发，而桌面没有 A 键可恢复 = 假死。
+ */
 export class GameControls {
-  constructor({ world, game, pause, settings, onSettings, onResume, onExit, monitor }) {
+  constructor({ world, game, pause, settings, onSettings, onResume, onExit, monitor, devUI = false }) {
     this.world = world; this.game = game; this.pause = pause;
+    if (!devUI) return;                       // 正式包：整套调试界面都不建（见类注释）
     const bar = document.createElement('div');
     bar.id = 'game-controls';
     const button = (label, action, parent = bar) => {
@@ -64,7 +82,10 @@ export class GameControls {
     this.xrPanel.renderOrder = 9999; this.xrPanel.visible = false;
     world.scene.add(this.xrPanel);
   }
+
+  /** 显示/隐藏「已暂停」界面。**正式包（devUI=false）下是空实现** —— 根本没有界面可显示。 */
   showPaused(paused) {
+    if (!this.xrPanel) return;
     const active = paused && this.game.state !== 'menu';
     this.panel.hidden = !active || this.world.isPresenting;
     this.xrPanel.visible = active && this.world.isPresenting;
@@ -74,8 +95,9 @@ export class GameControls {
       this.xrPanel.translateZ(-1.7);
     }
   }
+  /** 刷新性能读数。**正式包（devUI=false）下是空实现** —— 没有读数区可刷。 */
   updateStats(sample) {
-    if (!sample) return;
+    if (!sample || !this.stats) return;
     this.stats.textContent = `${sample.fps.toFixed(0)} FPS · P95 ${sample.frameP95Ms.toFixed(1)}ms · ${sample.calls} calls · ${sample.textures} textures`;
   }
 }

@@ -1,6 +1,8 @@
 // 2D HUD 覆盖层：分数、飞船血量、关卡、准星、提示信息
+// ★ devUI=false（正式包）时不创建桌面「开始游戏」按钮 —— 见构造函数里的说明与
+//   src/core/constants.js 的 RELEASE_UI。
 export class HUD {
-  constructor() {
+  constructor({ devUI = true } = {}) {
     this.root = document.createElement('div');
     this.root.style.cssText = 'position:fixed;inset:0;pointer-events:none;font-family:sans-serif;color:#fff;z-index:10;';
     document.body.appendChild(this.root);
@@ -27,11 +29,16 @@ export class HUD {
     this.msg.style.cssText = 'position:absolute;top:42%;left:0;right:0;text-align:center;';
     this.root.appendChild(this.msg);
 
-    this.startBtn = document.createElement('button');
-    this.startBtn.textContent = '开始游戏';
-    this.startBtn.style.cssText = 'pointer-events:auto;position:absolute;top:55%;left:50%;transform:translate(-50%,-50%);padding:14px 34px;font-size:20px;border:none;border-radius:12px;background:#ff7675;color:#fff;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.4);';
-    this.root.appendChild(this.startBtn);
-    this.startBtn.onclick = () => this._onStart && this._onStart(0);
+    // ★ 桌面「开始游戏」按钮（PC 预览模式入口）：**只在调试包创建**。
+    //   正式包已去掉（2026-09-23 需求：「进入 VR 按钮上面的开始游戏的 PC 模式也要去掉了」）——
+    //   开局只能由平台/主控端驱动（「进入 VR」按钮的门禁见 src/main.js）。
+    if (devUI) {
+      this.startBtn = document.createElement('button');
+      this.startBtn.textContent = '开始游戏';
+      this.startBtn.style.cssText = 'pointer-events:auto;position:absolute;top:55%;left:50%;transform:translate(-50%,-50%);padding:14px 34px;font-size:20px;border:none;border-radius:12px;background:#ff7675;color:#fff;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.4);';
+      this.root.appendChild(this.startBtn);
+      this.startBtn.onclick = () => this._onStart && this._onStart(0);
+    }
 
     // 倒计时横幅（第十五关 180s 用，平时隐藏）
     this.timer = document.createElement('div');
@@ -45,8 +52,8 @@ export class HUD {
   }
 
   onStart(cb) { this._onStart = cb; }
-  hideStart() { this.startBtn.style.display = 'none'; }
-  showStart() { this.startBtn.style.display = 'block'; }
+  hideStart() { if (this.startBtn) this.startBtn.style.display = 'none'; }
+  showStart() { if (this.startBtn) this.startBtn.style.display = 'block'; }
 
   setLevel(text) { this._level = text; this._renderTop(); }
   setScore(s) { this._score = s; this._renderTop(); }

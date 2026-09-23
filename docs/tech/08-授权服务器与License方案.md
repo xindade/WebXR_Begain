@@ -299,8 +299,9 @@ if (String(r.payload.ke || '') !== mine) { r.why = 'license 属于另一台机�
 
 **⚠️ 授权服务器请求必须校验证书**：`licensePost()` 走严格校验，绝不写 `rejectUnauthorized: false`，那等于给中间人开门。
 
-**⚠️ 本机服务是纯 HTTP，不是 HTTPS**：`main.js` L392 是 `http.createServer`，`ensureCerts()` 是**从未被调用**
-的历史死代码（PICO 不信任自签证书 ⇒ 早已改成纯 HTTP；头显侧同样是 `HttpURLConnection` + `"http://" + pc`）。
+**⚠️ 本机服务是纯 HTTP，不是 HTTPS**：`main.js` 起的是 `http.createServer`；`certs/`、`ensureCerts()` 与
+`selfsigned` 依赖是**从未被调用**的历史死代码，**已于 2026-09-23 全部删除**
+（PICO 不信任自签证书 ⇒ 早已改成纯 HTTP；头显侧同样是 `HttpURLConnection` + `"http://" + pc`）。
 别拿 `https://` 去连它（会得到 `SSL: WRONG_VERSION_NUMBER`，且**看起来像接口挂了**）。
 
 ---
@@ -399,7 +400,7 @@ cd tools/cast-server && node xlang/exe-license-e2e.js
 > 跑完在 `finally` 里**逐字节还原**并断言 md5 等于打补丁前的值 ⇒ **不要在它运行时同时打包 EXE**。
 > ⚠️ 实跑 Electron 的三个环境坑（`ELECTRON_RUN_AS_NODE=1` 使 electron 退化成纯 Node /
 > 换 userData 必须用 `--user-data-dir`（覆盖 `APPDATA` **无效**）/ cast-pc 是纯 HTTP 不是 HTTPS，
-> `ensureCerts()` 已是从未被调用的死代码）见 skill 的 **Gotcha 30 的 ①⑤⑥**；
+> 自签 HTTPS 分支（`ensureCerts()` / `certs/`）**已删除**，不再是陷阱）见 skill 的 **Gotcha 30 的 ①⑤⑥**；
 > 夹具自身的可靠性纪律见 skill 硬约束 **85、86**。
 
 ---
@@ -668,3 +669,20 @@ node xlang/exe-prodkey-e2e.js --key <私钥.pem> \
 - 第十七修的固定密钥与门禁现状 → `VR+平台版本号实现.md` §28
 - 双端打包与直播链路 → `cast-implementation-and-packaging.md`
 - 复现入口（含 skill 模板） → skill `webxr-cast-dual-package`
+
+---
+
+## 附 · 2026-09-23 晚：`masterAllow()` 新增「本局放行（ROUND）」判据
+
+引入 `ROUND` 之后，`/api/master/allow` 的判定从两段变三段：
+
+| 段 | 判据 | 说明 |
+|---|---|---|
+| ① | `licenseGate()` | 内容授权门禁（License），原逻辑不变 |
+| ② | 凭据三选一 | 签名 `dev+ts+sig` / 放行条 `dev+exp+voucher` / **仅 `device`**；最后一种专供游戏页面每 2~5s 轮询 |
+| ③ | `ROUND.armed` | **仅当 `requireRound:true`**（`/api/master/allow` 默认）；`/api/launch/request` 传 `false` |
+
+- 未过 ③ 时返回 `allow:false` + `reason:"尚未开始本局（请在 PC 主控端点「开始本局」）"`，并附 `round: { armed:false, … }`。
+- **与 License 的关系**：`ROUND` 是 License 之外的第二道「这一局允不允许」，**不替代** `licenseGate()`；
+  平台若要求「按局计费/按场授权」，落点就是这一段（响应里已预留 `license` 字段）。
+- 收回放行的入口有两个：PC 界面 `round:set(false, …)`、画面侧 `POST /api/round/end`。二者都走 `roundSet()` 单一入口。

@@ -32,16 +32,20 @@ let introHardTimer = 0;    // 硬兜底定时器（影片时长 +5s 必定收起
 let lastInfo = null;       // 最近一次 /api/info 结果（供 updateHint 用）
 
 // ——————————————— 纯净模式（只保留游戏画面） ———————————————
-// 现场直播/大屏场景不需要地址栏、游戏目录配置与日志区，按 H 全部隐藏，只留画面。
-// 状态写入 localStorage → 下次启动自动保持；启动时带 ?pure=1（EXE 加 --pure 参数）可直接进入。
+// ★ 默认开启：现场直播/大屏只要画面，地址栏、游戏目录、授权面板与日志区按 H 全部隐藏。
+// 优先级：URL ?pure=1 / ?pure=0（EXE 的 --pure / --panels 参数）> 上次手动切换（localStorage）> 默认开。
 const PURE_KEY = 'castPure';
-let pure = new URLSearchParams(location.search).get('pure') === '1'
-  || localStorage.getItem(PURE_KEY) === '1';
+const pureParam = new URLSearchParams(location.search).get('pure');   // '1' / '0' / null
+const pureStored = (() => { try { return localStorage.getItem(PURE_KEY); } catch (e) { return null; } })();
+let pure = pureParam === '1' ? true
+  : pureParam === '0' ? false
+  : (pureStored === null ? true : pureStored === '1');
 
 function setPure(on) {
   pure = on;
   document.body.classList.toggle('pure', on);
   try { localStorage.setItem(PURE_KEY, on ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
+  if (!on) flushLog();             // 唤回面板：把纯净模式期间攒下的日志补上
   toast(on ? '纯净模式：仅显示画面（H 恢复面板 · F 全屏）' : '已恢复完整面板');
 }
 
@@ -61,8 +65,15 @@ function toggleFullscreen() {
 
 document.addEventListener('keydown', (e) => {
   const k = (e.key || '').toLowerCase();
+  // ⚠ 输入框里打字**不算**快捷键：在「游戏目录」里输 E:\AI_Work\... 会顺手按下 E
+  //   ⇒ 不设防就会当场「结束本局」（第十八修收尾）。修饰键组合同理（Ctrl+S 不该放行本局）。
+  const tgt = e.target;
+  if (tgt && (tgt.isContentEditable || /^(input|textarea|select)$/i.test(tgt.tagName || ''))) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (k === 'h') setPure(!pure);
   else if (k === 'f') toggleFullscreen();
+  else if (k === 's') setRound(true, '快捷键 S');    // 本局放行：开始本局（第十八修）
+  else if (k === 'e') setRound(false, '快捷键 E');   // 本局放行：结束本局
   else if (k === 'm') {                    // 开场影片声音开关（默认**开声**，观众要听得到）
     introMuted = !introMuted;
     intro.muted = introMuted;
@@ -73,17 +84,31 @@ document.body.classList.toggle('pure', pure);
 
 // ——————————————— 诊断日志 ———————————————
 // EXE 打包后看不到控制台，把关键事件打到界面上，便于定位「卡在哪一步」。
-// force=true 时即使在纯净模式下也写入（关键诊断不能因为隐藏日志区就消失）。
-function log(msg, cls, force) {
-  if (pure && !force) return;      // 纯净模式下日志区已隐藏，跳过 DOM 写入（省一点 CPU）
+// ★ 默认纯净模式下日志区是隐藏的 ⇒ 每条日志都先进内存环形缓冲（保留最近 200 条），
+//   按 H 唤回面板时**补渲染**。否则启动阶段的信令协商日志会白丢，黑屏时无从排查。
+// force=true 的条目即使处于纯净模式也立刻写 DOM（关键诊断即时可见）。
+const LOG_MAX = 200;
+const logBuf = [];
+function appendLog(e) {
   if (!logBox) return;
-  const t = new Date().toTimeString().slice(0, 8);
   const d = document.createElement('div');
-  d.innerHTML = `<span class="l-time">[${t}]</span> `
-    + (cls ? `<span class="${cls}">${msg}</span>` : msg);
+  d.innerHTML = `<span class="l-time">[${e.t}]</span> `
+    + (e.cls ? `<span class="${e.cls}">${e.msg}</span>` : e.msg);
   logBox.appendChild(d);
-  while (logBox.children.length > 200) logBox.removeChild(logBox.firstChild);
+  while (logBox.children.length > LOG_MAX) logBox.removeChild(logBox.firstChild);
   logBox.scrollTop = logBox.scrollHeight;
+}
+function flushLog() {
+  if (!logBox) return;
+  logBox.innerHTML = '';
+  for (const e of logBuf) appendLog(e);
+}
+function log(msg, cls, force) {
+  const e = { t: new Date().toTimeString().slice(0, 8), msg, cls };
+  logBuf.push(e);
+  while (logBuf.length > LOG_MAX) logBuf.shift();
+  if (pure && !force) return;      // 纯净模式：只入内存不写 DOM（省 CPU），唤回面板时补渲染
+  appendLog(e);
 }
 
 // ——————————————— 平台参数显示（文档第 4 条）———————————————
@@ -101,6 +126,37 @@ function renderPlatformArgs(pf) {
   n.textContent = `房间 ${pf.room || '-'} · 平台 ${pf.platform || '-'} · 游戏 ${pf.game || '-'}`
     + (pf.exeRel ? ` · ${pf.exeRel}` : '');
 }
+
+// ——————————————— 本局放行（开始本局 / 结束本局，第十八修）———————————————
+// 这是「平台开始游戏信号」在我们这一侧的唯一来源：头显页面（src/main.js 的主控门禁）每 2 秒问一次
+// /api/master/allow，只有这里 armed=true 才会让「进入 VR」按钮出现。故它在**纯净模式下也保留**。
+function renderRound(r) {
+  if (!r) return;
+  const on = !!r.armed;
+  const st = el('roundState');
+  if (st) { st.textContent = on ? '本局进行中' : '未开始'; st.style.color = on ? '#51cf66' : '#7a7a8c'; }
+  const a = el('roundStart'), b = el('roundEnd');
+  if (a) a.disabled = on;          // 已开始 → 「开始本局」不可点（避免重复触发）
+  if (b) b.disabled = !on;         // 未开始 → 「结束本局」不可点
+}
+
+async function setRound(armed, why) {
+  try {
+    renderRound(await window.castCfg.roundSet({ armed, why }));
+    toast(armed ? '已放行本局：头显将出现「进入 VR」' : '已结束本局：头显收尾并收掉浏览器');
+  } catch (e) {
+    log('本局放行设置失败：' + (e && e.message ? e.message : e), 'l-bad', true);
+  }
+}
+
+if (el('roundStart')) el('roundStart').onclick = () => setRound(true, 'PC 界面点「开始本局」');
+if (el('roundEnd')) el('roundEnd').onclick = () => setRound(false, 'PC 界面点「结束本局」');
+// 页面侧上报的「本局结束」（通关 / 平台关闭）也会经主进程广播回来 —— 界面上要跟着变，别停在「进行中」
+window.castCfg.onRoundChanged?.((r) => {
+  renderRound(r);
+  if (r && r.why) log(`本局放行 ${r.armed ? '已开启' : '已结束'}（${r.why}）`, r.armed ? 'l-ok' : 'l-warn', true);
+});
+(async () => { try { renderRound(await window.castCfg.roundGet()); } catch (e) { /* 忽略 */ } })();
 
 // ——————————————— 状态轮询 ———————————————
 async function pollInfo() {

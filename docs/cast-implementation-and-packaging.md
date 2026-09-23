@@ -181,7 +181,7 @@ export function createCast({ world, game }) {
 
 | 机制 | 位置 | 说明 |
 |---|---|---|
-| **纯净模式** | `setPure()` / `body.pure` 规则 | **H** 切换（隐藏地址栏/配置/日志，只留画面）；**F** 全屏；**M** 影片静音开关；状态存 `localStorage` |
+| **纯净模式**（★ 默认开启） | `setPure()` / `body.pure` 规则 | 启动即只留画面；**H** 唤回面板（隐藏地址栏/配置/授权/启动授权/日志）；**F** 全屏；**M** 影片静音开关；`--panels` = 启动即完整面板 |
 | **画面区状态提示** | `updateHint(info)` | 没帧时按阶段显示「等待推流端连接 / 正在建立 P2P 连接 / 已连接，等待头显开始游戏」，不再是静态文案 |
 | **WebRTC 接收** | `ensurePc()` / `onOffer()` / `showVideo()` | `iceServers: []`；收到 track → `<video>` 接管，置 `usingVideo=true` |
 | **收帧诊断与自愈** | `startVideoWatchdog()` | 每 3s 打 `收帧诊断 W×H 已解码=N 丢帧=M`；连上后 8s 仍 0 帧 → 放开 `usingVideo` 让 JPEG 接管 |
@@ -323,7 +323,7 @@ getCastUrl():
 | 用途 | 依赖 | 本机路径 / 版本 |
 |---|---|---|
 | PC 端 | Node.js + npm | 任意 LTS |
-| PC 端 | `electron ^33.0.0`、`electron-builder ^25.1.8`、`selfsigned ^2.4.1` | `tools/cast-pc/package.json`（`npm install` 装） |
+| PC 端 | `electron ^33.0.0`、`electron-builder ^25.1.8`（2026-09-23 起**无运行时依赖**：`selfsigned` 随自签 HTTPS 死代码一并移除） | `tools/cast-pc/package.json`（`npm install` 装） |
 | APK | JDK 17 | `C:/Program Files/Java/jdk-17` |
 | APK | Android SDK | `tools/cast-apk/local.properties` → `sdk.dir=C:/Users/x/AppData/Local/Android/Sdk` |
 | APK | Gradle | 优先用 `~/.gradle/wrapper/dists/` 已缓存发行版（8.14.3），避免 `gradlew` 联网下载 |
@@ -547,10 +547,212 @@ APK 工程要点：
 
 ## A.4 开局信号与结束/上报（文档第 5/6/7 条）
 
-- 第 5 条**维持现状**：`?plat=1`（APK/平台拉起本页）为开局信号，保留 30 秒无条件兜底。
-  平台日后补发真「开始游戏」指令时，两条判据**并肩**自动生效。
+- 第 5 条**已结案（第二十修）**：平台点「开始游戏」= 游戏通道 **CMD 5 GameStart**（UDP 51124）。
+  PC 端边听边放行，头显侧 APK 收到 `0x05` 转成 `cmd 21` 开门禁；页面还以
+  `POST /api/round/start` 回报 PC —— 覆盖「平台只把这一帧发给 PC」的分支（抓包证实如此）。
+  `?plat=1` **不再是**开局判据（第十八修结论未回退）；`MASTER_GATE` 的 30 秒无条件兜底仍在。
+  ⚠ 第十九修曾把「EXE 被平台拉起」当作开局信号，那会让头显**过早**出现「进入 VR」，已推翻。
 - 第 6 条**我方兜底已具备**：`src/game/game.js` 的「平台关闭看门狗」`_onPlatformGone`
   （连败 4 次 ≈6s → 判死复核 2.5s → 收尾），菜单态也生效（比 `start()` 更早启动）。
 - 第 7 条**本地留痕已具备**：`_endRound()` = `VRPlusGame.terminate()`（cmd 5）+ `_reportGameEnd()`；
   `_reportGameEnd` 写 `game-end` 事件（`reportEvent` → `/api/page/event` → APK `PageForensics`），
   带 5 秒去抖。**上行 CMD 6 `GameEnd` 的报文待平台方定义**（见《平台对接需求（对平台方）》）。
+
+---
+
+## 附录 B · 2026-09-23 晚 第十八修实现记录（正式版裁剪 + 本局放行 + 收浏览器）
+
+### B.1 `RELEASE_UI`：正式包不建调试界面（第十八修）
+
+- 常量：`src/core/constants.js` 新增 `export const RELEASE_UI = true;`（紧邻 `MASTER_GATE`）。
+  **打包脚本要区分正式/调试包，改的就是这一个值。**
+- `src/main.js` 顶部：`const RELEASE = RELEASE_UI && !new URLSearchParams(location.search).has('devui');`
+  → `if (RELEASE) document.body.classList.add('release');`
+- `src/ui/settings.js`：`GameControls` 构造签名改成 `(… , devUI = false)`；正式包**在构造里直接 return**，
+  暂停/继续/设置/日志/导出整块 DOM 都不建；`showPaused()` / `updateStats()` 变空实现（靠 `this.xrPanel` / `this.stats` 守卫）。
+- `src/ui/hud.js`：`constructor({ devUI = true } = {})`；桌面「开始游戏」`startBtn` 包进 `if (devUI)`；
+  `hideStart()` / `showStart()` 加空值守卫。
+- `src/main.js`：`buildLevelPanel()` 开头 `if (RELEASE) return;`；`applyVRGate()` 里 `if (levelPanelEl && !RELEASE)`；
+  `hud.onStart(...)`、`input.onUnlock = () => focusPause('manual', true)`、`reportError` 里的 `pause.add('error')` 全部加 `if (!RELEASE)`。
+- `index.html`：`</style>` 前加 `body.release #gun-mode-btn, body.release #hint, body.release #level-panel { display: none !important; }`。
+- **同期补充需求**：用户要求「不仅是标签去掉，还要把功能去掉」，故正式包里 `focusPause()` 直接
+  `return`、四条失焦/可见性监听只在 `!RELEASE` 注册、主循环 A/B 菜单键分支加 `!RELEASE` ⇒
+  `pause.paused` **恒为 false**（`PauseState` 对象保留，但无路径可 `add()`）。`game._renderPaused`
+  （平台驱动的「本局结束待机态」）不属暂停功能，未动。
+- **性能**：`const monitor = RELEASE ? null : new PerformanceMonitor();` —— 正式包不构造监视器，
+  主循环里 `if (monitor) { … monitor.record(…) }` 整段跳过（不再每帧采样）。
+- **日志**：`src/ui/pagelog.js` 新增 `disable()`（`disabled=true` ⇒ `append()` 直接 return，
+  不建 DOM、不追加，并移除已有面板）；`src/main.js` 在 RELEASE 时调 `window.__pageLog?.disable?.()`；
+  `index.html` 另加 `body.release .pagelog { display: none !important; }` 兜底。
+- 旁路：`?devui=1` 完整恢复调试界面**与暂停/性能/日志功能**；`?vrbtn=1` 放行「进入 VR」；`?gate=0` 旁路主控门禁。
+
+### B.2 `ROUND`：把「本局开始了没有」搬到 PC 端主控
+
+PC 侧 `tools/cast-pc/main.js`：
+
+```js
+const ROUND = { armed: false, at: 0, seq: 0 };
+function roundSnapshot() { return { armed: ROUND.armed, at: ROUND.at, seq: ROUND.seq }; }
+function roundSet(on, why) { /* 唯一入口：状态变化才 mainWindow.webContents.send('round:changed', {…}) */ }
+```
+
+- 新路由：`POST /api/round/end` → `handleRoundEnd(req,res)` → `roundSet(false, '画面侧上报：'+why)`。
+- `masterAllow(ip, body, { requireRound = true })` 三段判据：① `licenseGate()`；
+  ② 凭据三选一（签名 `dev+ts+sig` / 放行条 `dev+exp+voucher` / **仅 `device`** —— 最后一种专给页面轮询）；
+  ③ `ROUND.armed`。第二段任何一条通过即视为「已证明身份」。
+- `ROUND_IDLE_WHY = '尚未开始本局（请在 PC 主控端点「开始本局」）'` —— 头显看到的就是这句。
+- **`/api/launch/request` 必须 `requireRound:false`**：这一步只证明「头显想连本机」，
+  若也卡 `ROUND`，头显永远拉不起页面，操作员连等待界面都看不到。
+- `/api/master/allow` 与 `/api/info` 响应都带 `round: roundSnapshot()`。
+- IPC：`round:get` → `roundSnapshot()`；`round:set` → `roundSet(!!p.armed, String(p.why || 'PC 界面'))`。
+
+PC 界面：`preload.js` 暴露 `roundGet/roundSet/onRoundChanged`；`renderer/index.html` 加 `#roundbar`
+（`▶ 开始本局` / `■ 结束本局` / `#roundState`）；`renderer/renderer.js` 加 `renderRound` / `setRound` 与快捷键 `S` / `E`。
+
+> **`#roundbar` 不能进 `body.pure` 的隐藏名单** —— 纯净模式是交付默认态，按钮必须可见可点。
+
+头显侧 `src/main.js`：
+
+- `vrMaster` 结构改为 `{ known, ok, why, round, armedPrev, exempt, err, dev, pc }`（删掉 `hasCred` / `exp` / `voucher`）。
+- `gateQueryMaster()`：`POST /api/master/allow` 只带 `{ device }`；成功 → `known=true; ok=true;` 并同步 `round`；
+  失败 → **只记 `err` 与 `why`，不推翻 `ok`**（避免网络抖动把已放行的一局打断）。
+- `gateReactToMaster()`：`armedPrev` 的 1→0 跳变 = 主控端点了「结束本局」 ⇒ `setVRGate(false)` + `game._onPlatformCloseRequest('主控端结束本局')`。
+- `scheduleMasterPoll()`：门禁关着按 `GATE_POLL_MS`（2000ms）、已放行按 `GATE_POLL_IDLE_MS`（5000ms）轮询。
+- `scheduleGateFallback()` 开头 `if (MASTER_GATE_ON && !vrMaster.exempt) return;`
+  —— 主控端负责时**不做** 30 秒无条件兜底，否则按钮半分钟后会自己冒出来。
+- `setVRGate(VR_GATE_FORCE === '1', …)`：`?plat=1` **不再**开门禁，只作留痕。
+
+### B.3 结束收尾：上报 + 卸载页面
+
+`src/game/game.js`：
+
+- `this._roundOver` 一次性标志（`_onPlatformGone` 置 true；两处通关 `_endRound` 前置 true），
+  用于区分「本轮真的结束」与「玩家自己退 VR」。
+- `_reportGameEnd(why, { roundOver })` 的 payload 带 `roundOver`，且 `if (roundOver) this._tellMasterRoundEnd(why)`。
+- `_tellMasterRoundEnd(why)` → `fetch('/api/round/end', { method:'POST', keepalive:true, … }).catch(()=>{})`。
+  **`keepalive` 是硬要求**：下一行就是 `location.replace('about:blank')`，普通 fetch 会被取消。
+  ⚠ 别在这里 import `VRPlus` —— 那是 `main.js` 挂到 window 的；本文件里的类叫 `VRPlusGame`。
+- 直播模式收尾：`cast.dispose()` → `VRPlus.reportDead('cast-round-over', …)` → 500ms 后 `location.replace('about:blank')`；
+  非直播维持四修「待机态、零重载」。
+- `setSystems(audio, input, wristUI, pageLog, cast = null)` 新增第 5 个参数并存 `this.cast`。
+
+APK 侧 —— **必须重打 APK，否则浏览器收不干净**：
+
+- `GameServer.java`：`notifyGameEndIfAny` 区分 `cast` 与 `roundOver`；`cast && !roundOver` 才跳过退出策略；
+  `cast && roundOver` 时置 `public static volatile boolean sCastRoundOver = true;`。
+- `MainActivity.java`：`restoreClientAndCloseBrowser` 新增 `castRoundOver` 分支 —— 直播 + 本轮结束时
+  **不依赖**「顶客户端」流程，直接 1.5s 后 `killBrowser(app)` 并 `return`。
+
+### B.4 故障速查（本轮新增）
+
+| 现象 | 原因 | 处置 |
+|---|---|---|
+| 头显一直「⏳ 等待平台开始游戏…」 | PC 端没点「开始本局」 | PC 画面下方点 `▶ 开始本局`（或按 `S`） |
+| 头显「⛔ 需要主控端启动」 | PC 端没开 / 不同网段 / 防火墙挡 8443 | 查 `http://<PC>:8443/api/info` 是否返回 `round` |
+| 第二局「重试连接主控端」 | 旧包的放行条 60s TTL 过期 | 已由 `ROUND` 轮询机制取代，确认两包头显 + PC **都是新包** |
+| 关掉后头显再进连不上直播 | 页面没卸载、旧信令占着 | 确认 APK 已重打（`sCastRoundOver` 分支） |
+
+---
+
+## 附录 C · 2026-09-23 晚 第十九修实现记录（开局交给平台 + 顶回平台客户端）
+
+> ⚠ **本节 C.1 已被第二十修推翻**（当头显过早出现「进入 VR」的根因），C.2 的修法已加强。
+> 现行实现见 **附录 D · 第二十修**。
+
+### C.1 `PLATFORM_LAUNCHED`：平台拉起 EXE 就是平台点了「开始游戏」
+
+`tools/cast-pc/main.js`：
+
+```js
+const PLATFORM_LAUNCHED = !!(platformPositional || PLATFORM_ARGS.room || PLATFORM_ARGS.platform
+  || PLATFORM_ARGS.game || PLATFORM_ARGS.exeRel);
+
+const ROUND = {
+  armed: PLATFORM_LAUNCHED,
+  at: PLATFORM_LAUNCHED ? Date.now() : 0,
+  seq: PLATFORM_LAUNCHED ? 1 : 0,
+};
+```
+
+- 依据：平台「开始游戏」= `{"cmd":"start"}` → `DoStartGame` → CreateProcess(我们的 EXE)
+  （`平台指令/VRPlatform-流量取证/指令速查.md`）。
+- `logPlatformArgs()` 增加一行「开局判据」日志，现场一眼看出本局是平台拉起还是手动排练。
+- `ROUND_IDLE_WHY` 同步改成「等平台点「开始游戏」；或在 PC 主控端点「开始本局」」。
+- **渲染进程无需改动**：它启动时就 `roundGet()`（`renderer.js`），拿到的就是 `armed:true`。
+- 平台参数解析在前（`PLATFORM_ARGS` 约 L69），`ROUND` 在后（约 L1232）⇒ 顺序安全。
+
+### C.2 直播模式结束分支：顶客户端 + 关浏览器
+
+`MainActivity.restoreClientAndCloseBrowser()`：`castMode && castRoundOver` 分支由
+「1.5s 后无条件 `killBrowser`」改为 **先 `bringClientToFront(app, why)`**，
+再按 `killBrowser` 开关把「关浏览器」交给 `verifyClientFront` 的实测结论。
+
+```java
+PageForensics.line("APK", "退出策略（直播模式·本轮结束）：把平台客户端顶回前台"
+        + (wantKill ? "，并关闭浏览器" : "，不关浏览器")
+        + "（平台客户端开关=" + wantClient + "，路由=" + why + "）");
+sPendingKillBrowser = wantKill;
+bringClientToFront(app, why);
+return;
+```
+
+⚠ **不要再改回「只关浏览器」**：那是用户第四次实测的故障（白页 + 客户端在后台 ⇒ 下一局拉不起游戏）。
+
+### C.3 本轮重打包边界
+
+- 改了 `tools/cast-pc/main.js` ⇒ **EXE 重打**（`npm run dist`）。
+- 改了 `MainActivity.java` ⇒ **APK 重打**（Java 编译，必须重跑 `build-apk.ps1`）。
+- 游戏侧 `src/` 本轮**未动** ⇒ 不必 `sync-assets.ps1`（跑了也无害）。
+---
+
+## 附录 D · 2026-09-23 晚 第二十修实现记录（开局 = CMD 5；关闭 = 顶回平台客户端）
+
+### D.1 `tools/cast-pc/main.js`：平台游戏通道（UDP 51124）
+
+- `startPlatformGameChannel()`：`app.whenReady()` 里在 `startBeacon()` 之后调用；`--no-game-channel` 可关。
+- 收 `0x05` → `roundSet(true, …)` + **回 118 字节确认帧**；收 `0x10 closeGame` → `roundSet(false)` + 回 `0x02`；
+  收 `0x01` + Machines → 记机位数。
+- 源端口 = **51124**（与真实游戏一致）；bind 后 0/1.5/3/4.5s 向 `<平台IP>:51234` 发 `0x01` 注册。
+- **回退第十九修**：`const ROUND = { armed: false, … }` —— `PLATFORM_LAUNCHED` 保留但**只用于日志/显示**。
+- 新增 `POST /api/round/start` → `handleRoundStart()`（头显页面回报平台开局）。
+- `/api/info` 新增 `gameChannel`（bound / lastStartAt / lastStartFrom / lastCloseAt / machines / why）。
+- `ROUND_IDLE_WHY` = 「尚未开始本局（等平台点「开始游戏」；或在 PC 主控端点「开始本局」）」。
+
+### D.2 `src/game/game.js` + `src/main.js`：头显侧放行链
+
+```js
+cmd === 21  → _platformSignal('onStart', …)        // APK 由 0x05 转换而来
+cmd 3 / 4   → 只有带 payload.plat 才开门禁，否则只回菜单
+_pageT0 残留清理：n === 21 || (n === 3 && msg.plat)
+
+src/main.js : let vrPlatStart = false;
+              reportPlatformStartToMaster()          // POST /api/round/start，一局一次
+              platformHooks.onStart → vrPlatStart = true + setVRGate(true, why) + 回报 PC
+              platformHooks.onEnd   → 复位
+              masterGateAllowed() = !MASTER_GATE_ON || vrMaster.exempt || vrPlatStart || (vrMaster.known && vrMaster.ok)
+```
+
+### D.3 `VRPlusLink.java` / `MainActivity.java`：收 0x05 + 关闭顶客户端
+
+```java
+VRPlusLink  : FRAME_GAME_START = 0x05 → handleGameStart() → 入队 cmd=21 type=gameStart plat=true + 回 118 字节确认帧
+              recvLoop 里放在 closeGame 判断**之前**；clearStaleClose() 新增丢弃 cmd==21 与 cmd==3&&plat
+              handleCloseGame()：若 MainActivity.castConfigured() → GameServer.sCastRoundOver = true
+MainActivity: static boolean castConfigured()      // 直播模式也走退出策略
+              RESTORE_FAST_MS = 0L                // why 含 closeGame → 不等 2.5s
+              reviveClosedPage() → enqueueLocal(3, …, false)
+              bringClientToFront() → 连顶 3 次 + verifyClientFront
+              restoreClientAndCloseBrowser() → 顶客户端 + **固定 1.2s 后 killBrowser**
+```
+
+⚠ **两个不要改回去的点**：① 别把「EXE 被平台拉起」当放行依据；
+② 别把 `castRoundOver` 分支改回「等 `verifyClientFront` 实测回调」—— 那个回调在这条分支跑不到，
+结果是浏览器永远不关、头显停在 blank。
+
+### D.4 重打包边界
+
+- `tools/cast-pc/main.js` 改了 ⇒ **EXE 重打**（`npm run dist`）。
+- `VRPlusLink.java` / `MainActivity.java` 改了 ⇒ **APK 重打**（`build-apk.ps1`）。
+- `src/game/game.js` / `src/main.js` 改了 ⇒ 已随 `build-apk.ps1` 同步进 `assets/game/src`。
+
+

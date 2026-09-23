@@ -167,7 +167,12 @@ export class Game {
       // ★ 时序门禁：只丢「上一会话的**会话终止类**指令」（16=closeGame / 5,6=旧平台结束）。
       //   为什么不一律丢：机位表(cmd=0)是**合法早于页面**的 —— 注册握手发生在页面加载之前
       //   （APK 一被拉起就发 0x01，平台 57ms 就回表），一刀切会把这张表也丢掉。
-      if ((n === 16 || n === 5 || n === 6) && msg.t && msg.t < this._pageT0) {
+      //   ★ 第二十修再加两条：21 = 平台「开始游戏」（见 _onPlatformCommand 的 21 分支）；
+      //     3 + plat = APK 转达的平台开局。残留的这两条会让**新页面**一打开就放开「进入 VR」
+      //     （= 操作员还没点「开始游戏」，头显就先冒出按钮），所以同样按残留丢弃。
+      const staleKill = (n === 16 || n === 5 || n === 6 || n === 21 || (n === 3 && msg.plat))
+        && msg.t && msg.t < this._pageT0;
+      if (staleKill) {
         this.log(`忽略上一会话残留的关闭指令 cmd=${n}`
           + `（入队于本页启动前 ${Math.round((this._pageT0 - msg.t) / 1000)}s，已丢弃）`);
         return;
@@ -191,6 +196,9 @@ export class Game {
     this._renderPaused = false;
     this.preloadDone = false;    // main.js 的进度条是否走完（setPreloadDone 置 true）
     this._gameEndReportedAt = 0;         // 上次上报「本局结束」的时刻（去抖，见 _reportGameEnd）
+    // ★ 2026-09-23：「本轮是否真的结束」（通关 / 平台关闭 / 主控端结束）——一次性标志，
+    //   _endRound 读它并复位；玩家自己按 A/B 退出 VR 时**不是**本轮结束（那一局还能再进）。
+    this._roundOver = false;
     // ★ 第十二修：「平台开始 / 结束」信号的回调口（main.js 用它开关「进入 VR」按钮门禁）。
     //   默认 null = 没人监听 → _platformSignal 空操作。门禁这类**界面策略**不进游戏内核，
     //   内核只负责「如实播报平台说了什么」。
@@ -206,8 +214,11 @@ export class Game {
     });
   }
 
-  setSystems(audio, input, wristUI = null, pageLog = null) {
+  setSystems(audio, input, wristUI = null, pageLog = null, cast = null) {
     this.audio = audio; this.input = input; this.wristUI = wristUI; this.pageLog = pageLog;
+    // ★ 2026-09-23：直播推流句柄 —— 直播模式下本局结束要**停推流**（见 _onPlatformGone 的
+    //   cast 分支）。不注入时为 null，非直播场景零影响。
+    this.cast = cast;
     this.leftSword.setAudio(this.audio); // 注入音效管理器，供激光剑嗡鸣随剑出现/消失
     this.waves.audio = audio; // 注入音频到波次管理器（脸谱Boss 召唤语音用）
     this.shurikens.setAudio(this.audio); // 注入音频，供手里剑投掷/命中音效
@@ -358,6 +369,26 @@ export class Game {
       this._platformSignal('onSeen', `平台机位表（Machines=${n}）→ 平台在场`);
       return;
     }
+    // ★ 2026-09-23（第二十修）：cmd 21 = **平台「开始游戏」**。
+    //   来源：APK 的 VRPlusLink 收到游戏通道 CMD 5 `GameStart`（\x05 + JSON）就入队这一条。
+    //   这是现场实测的**唯一**真正的开局帧（用户第五次反馈：「第二步是平台点开始游戏，
+    //   这个时候头显里才会显示进入VR」）；cmd3/4 只是「把页面拉起来 / 叫回来」。
+    if (cmd === 21) {
+      this._hidePlatformClosed();          // 平台（重新）开始本局：撤掉「已结束」封盖
+      this._closedIdle = false;
+      this._renderPaused = false;
+      this._goneHandled = false;           // 允许本局结束后再次响应平台关闭
+      this._closedByPlatformCommand = false;
+      if (this._reviveTimer) { clearInterval(this._reviveTimer); this._reviveTimer = null; }
+      const gid = payload?.start?.gameId;
+      this._platformSignal('onSeen', '平台「开始游戏」（CMD 5 GameStart）→ 平台在场');
+      // ★ 开门禁：平台**本人**说了开始 → 玩家这才被允许进 VR（main.js 显示按钮）
+      this._platformSignal('onStart', '平台「开始游戏」（游戏通道 CMD 5 GameStart'
+        + (gid != null ? '，gameId=' + gid : '') + '）');
+      this.log('平台「开始游戏」→ 已放开「进入 VR」按钮，等玩家自己进 VR 开局');
+      VRPlus.reportEvent('platform-start', { cmd, gameStart: true, gameId: gid ?? null });
+      return;
+    }
     // cmd 3/4 = 平台「启动 / 开始游戏」（旧平台兼容路径；新平台改用 `am start` 拉起整个页面）。
     // ⚠ 2026-09-16 修正：0xff(255) **不是**开局信号（那是平台对 0x01 的心跳应答）。
     // ⚠ 2026-09-17 补充：新平台（抓包实测）根本不通过这条通道下发 3/4 —— 它用
@@ -379,17 +410,20 @@ export class Game {
       // 否则上一局的 closeGame 会永久禁掉本局的自愈能力。
       this._closedByPlatformCommand = false;
       if (this._reviveTimer) { clearInterval(this._reviveTimer); this._reviveTimer = null; }
-      this._platformSignal('onSeen', '平台开局指令 cmd=' + cmd + '（平台在场）');
-      // ★ 开「进入 VR」门禁 = 平台真的说了开始，玩家这才被允许进 VR（main.js 显示按钮）
-      this._platformSignal('onStart', payload?.local
-        ? (payload?.plat ? '平台驱动的本次拉起（APK 本地通知：平台已开始本局）'
-                         : '平台重新启动本局（APK 本地唤醒待机页）')
-        : ('平台开局指令 cmd=' + cmd));
-      this.log(payload?.plat
-        ? '平台已开始本局（APK 确认本次拉起由平台驱动）→ 回到菜单，等玩家点「进入 VR」'
-        : (payload?.local ? '平台已重新开始本局 → 退出待机回到菜单，等玩家点「进入 VR」'
-                          : '平台「开始游戏」（cmd=' + cmd + '）→ 已放开「进入 VR」按钮，等玩家自己进 VR 开局'));
-      VRPlus.reportEvent('platform-start', { cmd, plat: !!payload?.plat });
+      this._platformSignal('onSeen', '平台拉起页面 cmd=' + cmd + '（平台在场）');
+      // ★ 第二十修：cmd3/4 **不再**开门禁 —— 它只表示「把游戏页拉起来 / 叫回来」。
+      //   现场实测（用户第五次反馈）：平台是**两步** —— 第一步「启动游戏」拉起页面（就是这一类
+      //   动作 + APK 本地唤醒待机页），第二步「开始游戏」才该出现「进入 VR」。平台真正的开局帧
+      //   是游戏通道 CMD 5 = inbox **cmd 21**（见上面 21 分支）。
+      //   只有带 `plat` 标记的才照旧开门禁 —— 那是 APK 明确转达「平台已开始本局」（老链路保底）。
+      if (payload?.plat) {
+        this._platformSignal('onStart', 'APK 明确转达：平台已开始本局（本次拉起由平台驱动）');
+        this.log('平台已开始本局（APK 转达）→ 回到菜单，等玩家点「进入 VR」');
+        VRPlus.reportEvent('platform-start', { cmd, plat: true });
+      } else {
+        this.log('平台拉起本局页面（cmd=' + cmd + '）→ 只回菜单；等平台点「开始游戏」'
+          + '（游戏通道 CMD 5）才放开「进入 VR」');
+      }
       return;
     } else if (cmd === 16) {
       // 【2026-09-17 新增】平台关游戏 —— 游戏通道 `0x10 closeGame`（APK 侧已代为回 0x02 确认）。
@@ -471,6 +505,7 @@ export class Game {
     // 会让 fetch 成片失败 —— 必须先确认「本地 8080 真的连不上」才认定 APK 已死。
     if (confirm) { this._confirmThenGone(why); return; }
     this._goneHandled = true;
+    this._roundOver = true;                    // 本轮真的结束（见 _reportGameEnd 的 roundOver）
     this.log('平台已结束本局，正在退出…（' + why + '）');
     // ★ 留痕（2026-09-19）：页面即将退出 —— 把死因写进 APK 的统一时间线磁盘文件。
     //   页面自己的日志会随页面一起消失，而这条会留在 APK 上，事后打开 APK 配置页
@@ -484,6 +519,21 @@ export class Game {
     this.toMenu();                             // 回菜单：内部上报 cmd5 + 清理实体 + 恢复天空背景
     const sess = this.world?.renderer?.xr?.getSession?.();
     if (sess) sess.end().catch(() => {});      // 退出沉浸式会话（菜单态无会话则跳过）
+    // ★ 2026-09-23（用户第三次现场实测）：**直播模式**下本局结束必须收干净。
+    //   原话：「由于游戏结束后只是在浏览器里提示，没有关闭浏览器，导致头显再次调起游戏后无法
+    //   连接 PC 端直播」—— 旧实现在这里只盖一层黑底、把页面**留在浏览器里**，下一局被拉起时
+    //   这一页的 WebRTC/信令连接还挂着，新页面就抢不到 PC 的推流端席位。
+    //   做法：停推流 + 关信令（cast.dispose）→ 整页卸载成 about:blank（浏览器里不留任何会抢
+    //   信令的页面）。APK 侧另有一道：收到带 roundOver 的 game-end 会关掉浏览器，见
+    //   GameServer.notifyGameEndIfAny / MainActivity.restoreClientAndCloseBrowser。
+    //   非直播（平台投屏）情况保持四修行为：留在待机态等平台下一次拉起/唤醒，零重载。
+    if (/[?&]cast=1/.test(location.search)) {
+      try { this.cast?.dispose(); } catch (e) { /* 停流失败也要继续收尾 */ }
+      VRPlus.reportDead('cast-round-over', { why });
+      this.log('直播模式：本局已结束 → 停推流并卸载页面（避免下一局抢不到 PC 直播）');
+      setTimeout(() => { try { location.replace('about:blank'); } catch (e) { /* 忽略 */ } }, 500);
+      return;
+    }
     this._enterClosedIdle(why);                // ★ 四修：进待机态（**不再** replace('about:blank')）
   }
 
@@ -594,21 +644,44 @@ export class Game {
    *
    * @param {string} why 结束原因（回菜单 / 通关 / 飞船坠落 …），只为留痕可读
    */
-  _reportGameEnd(why) {
+  _reportGameEnd(why, { roundOver = false } = {}) {
     // 去抖：一条时间线里同一局只留一条（_onPlatformGone 会连着走 toMenu + 待机态两处）
     const now = Date.now();
     if (this._gameEndReportedAt && now - this._gameEndReportedAt < 5000) return;
     this._gameEndReportedAt = now;
     const castMode = /[?&]cast=1/.test(location.search);
+    // roundOver = **本轮真的结束**（通关 / 平台关闭 / 主控端结束本局），区别于「玩家自己按 A/B
+    //   退出 VR」（那一局还在进行，只是暂时回菜单）。
+    //   APK 侧据此决定直播模式要不要收掉浏览器（见 GameServer.notifyGameEndIfAny）。
     VRPlus.reportEvent('game-end', {
-      why, st: this.state, lvl: this.levelIndex, cast: castMode,
+      why, st: this.state, lvl: this.levelIndex, cast: castMode, roundOver,
     });
+    // 本轮结束 → 顺手请 PC 主控端**收回「本局放行」**：不收回的话，下一局的页面一打开门禁就
+    // 直接开着（= 用户实测的「一连上就能点进 VR」）。玩家自己退 VR 时不动 —— 那一局还能再进。
+    if (roundOver) this._tellMasterRoundEnd(why);
+  }
+
+  /**
+   * 通知 PC 主控端「本局已结束」→ 收回本局放行（fire-and-forget，失败绝不影响游玩）。
+   * 头显侧经 APK 的 GameServer 代理到 PC（见 GameServer.proxyApi 的 /api/* 转发）；
+   * PC 侧入口见 tools/cast-pc/main.js 的 handleRoundEnd。
+   * ⚠ keepalive：直播模式收尾时本页马上要 replace('about:blank')，普通 fetch 会被取消。
+   */
+  _tellMasterRoundEnd(why) {
+    try {
+      fetch('/api/round/end', {
+        method: 'POST', cache: 'no-store', keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ why }),
+      }).catch(() => { /* PC 不在 / 非直播场景：忽略 */ });
+    } catch (e) { /* 忽略 */ }
   }
 
   /** 本局收尾的唯一出口：报平台（cmd5 兜底）+ 报 APK（唤醒平台客户端 / 关浏览器） */
   _endRound(why) {
     VRPlusGame.terminate();
-    this._reportGameEnd(why);
+    this._reportGameEnd(why, { roundOver: !!this._roundOver });
+    this._roundOver = false;      // 一次性标志：下一条结束路径默认不是「本轮结束」
   }
 
   // 释放开场视频并还原背景舞台（幂等；start / toMenu / _startIntroVideo 都会调）
@@ -1336,6 +1409,7 @@ export class Game {
       this.levelIndex++;   // 倒计时归零 → 直接下一关，不抽卡
       if (this.levelIndex >= LEVELS.length) {
         this.state = 'over';
+        this._roundOver = true;                 // 通关 = 本轮结束（见 _reportGameEnd）
         this._endRound('通关（翻牌关收尾）');   // cmd 5 兜底：翻牌关通关暂未实现 cmd 6 结算
         this.hud.message('通关！', '按「开始游戏」重新挑战', '#2ecc71');
         this.hud.showStart();
@@ -1994,6 +2068,7 @@ export class Game {
   // 正常测试通关：停止补怪后场上清空即达成。与 _gameOver 对称，但为绿色胜利提示。
   _testWin() {
     this.state = 'over';
+    this._roundOver = true;              // 通关 = 本轮结束（见 _reportGameEnd）
     this._endRound('全部消灭（通关）');   // cmd 5 兜底：通关暂未实现 cmd 6 结算，先按中途结束上报
     this.log('全部消灭，通关！');
     this.balloons.clear();

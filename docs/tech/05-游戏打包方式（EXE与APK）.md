@@ -47,7 +47,7 @@
     "start": "electron .",
     "dist": "electron-builder --win --x64"
   },
-  "dependencies": { "selfsigned": "^2.4.1" },
+  "dependencies": {},
   "devDependencies": { "electron": "^33.0.0", "electron-builder": "^25.1.8" },
   "build": {
     "appId": "com.local.webxrcast",
@@ -61,8 +61,8 @@
 
 | 字段 | 说明 |
 |---|---|
-| `"main": "main.js"` | 主进程入口，同时承载 HTTPS 服务、信令、窗口 |
-| `selfsigned` | 运行时生成自签证书（SAN 含 `localhost` 与局域网 IP） |
+| `"main": "main.js"` | 主进程入口，同时承载 **纯 HTTP** 服务、信令、窗口 |
+| `"dependencies": {}` | 2026-09-23 起无运行时依赖（原 `selfsigned` 只服务于**从未被调用的**自签 HTTPS 分支，已随 `ensureCerts()` / `certs/` 一并删除） |
 | `target: ["nsis"]` | 产出 Windows 安装包（非 one-click，可选安装目录） |
 | `signAndEditExecutable: false` | 本地自用，跳过代码签名与 exe 资源改写 |
 | **`asar: true`** | 代码打进 `app.asar` → **决定了重打包边界**（见 §4） |
@@ -205,7 +205,7 @@ powershell -ExecutionPolicy Bypass -File build-apk.ps1     # 出 app-debug.apk
 
 **EXE**
 - [ ] `npm run dist` 成功，`dist/` 下生成 NSIS 安装包；安装后能启动
-- [ ] 启动后自动生成自签证书，`https://localhost:8443` 可访问
+- [ ] 启动后 `http://localhost:8443` 可访问（端口被占则自动 +1）；**默认进入纯净模式**（按 H 唤回面板，或加 `--panels` 启动即完整面板）
 - [ ] 在界面里配置游戏目录（含 `index.html`）后，PC 端能显示「已连接 / 等待头显开始游戏」占位画面
 - [ ] 改一处 `renderer` 层代码后重跑 `dist`，行为变化生效（证明 asar 边界理解正确）
 
@@ -238,7 +238,7 @@ argv[1] = "<exe 相对路径>$<进程名不含 .exe>$<平台本机 IP>"
 | `--platform=<IP:端口>` | 平台本机地址 | 取位置参数第 3 段 |
 | `--game=<游戏名>` | 游戏名 | 取位置参数第 2 段（进程名） |
 
-- 与既有参数并存：`--port` / `--root` / `--game-root` / `--no-serve` / `--pure` / `--fullscreen` / `--cert` / `--key`。
+- 与既有参数并存：`--port` / `--root` / `--game-root` / `--no-serve` / `--pure` / `--panels` / `--fullscreen`（`--cert` / `--key` 已随自签 HTTPS 死代码删除）。
 - **一个都不给时的行为与改造前完全一致**（自动发现 + 手动配置游戏目录 + 端口 fallback）。
 - 参数会打进日志，并在接收端界面**顶部**显示（打包后没有控制台，只能靠界面核对）。
 - ⚠ **踩过的坑**：原实现写死 `process.argv.slice(2)`。打包后 `process.argv = [<exe>, ...平台参数]`，
@@ -257,3 +257,21 @@ argv[1] = "<exe 相对路径>$<进程名不含 .exe>$<平台本机 IP>"
 PC 接收端 HTTP 默认 **8443**，被占用时**自动 +1 重试至 8453**；
 头显通过 UDP 信标（组播 `224.0.0.100:8444`，每 2s）自动拿到**实际**端口，无需人工改。
 APK 本地游戏服务固定 **8080**。若现场 AP 开了**组播隔离**，信标到不了头显 → 需在 APK 配置页手工填 PC 地址。
+
+---
+
+## 附 · 2026-09-23 晚 第十八修（正式版裁剪与重打包边界）
+
+- 源码新增编译时常量 **`RELEASE_UI`**（`src/core/constants.js`，与 `MASTER_GATE` 并列）：
+  `true` = 正式包，游戏内**不创建**暂停/继续/设置/日志/导出面板、无桌面「开始游戏」、无右侧选关面板。
+  **改这一个值就能出「调试包」（全界面）。**
+- 运行时旁路：`?devui=1` 恢复全部调试界面（现场自测用）。
+- **重打包边界（本轮新增）**：动了 `RELEASE_UI`、`src/ui/settings.js`、`src/ui/hud.js`、`index.html` 的 `body.release` 规则 ⇒
+  **APK 必须重打**（`sync-assets.ps1` + `build-apk.ps1`）；PC 端 EXE 只有在动了 `tools/cast-pc/**` 时才需要重打。
+- 本轮改动同时涉及 `GameServer.java` / `MainActivity.java`（直播模式结束收浏览器的 `sCastRoundOver` 分支）⇒
+  **APK 非重打不可**，否则「结束本局后浏览器不关、下一局连不上直播」会复现。
+- PC 端新增 `/api/round/end` 与 `round:get` / `round:set` IPC、界面 `#roundbar`（`▶ 开始本局` / `■ 结束本局`，快捷键 `S` / `E`）⇒
+  **EXE 也需重打**（`npm run dist`）。
+- 本轮产物（2026-09-23 20:05 / 20:06）：
+  - APK `app-debug.apk` → `release/头显端-WebXR打气球.apk`（126.89 MB，SHA256 `6DCC3EE2…E2F5`）
+  - EXE `dist/WebXR直播接收端 Setup 1.0.0.exe` → `release/PC端-直播接收端-Setup.exe`（77.94 MB，SHA256 `EF5D7AD0…B296`）

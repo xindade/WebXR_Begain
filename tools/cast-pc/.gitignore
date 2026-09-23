@@ -1,0 +1,3 @@
+# cast-pc 构建产物（不入库）
+dist/
+node_modules/

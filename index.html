@@ -137,6 +137,17 @@
     .pagelog-line.lvl-info { color: #cfd8e3; }
     .pagelog-line.lvl-warn { color: #ffd43b; }
     .pagelog-line.lvl-error { color: #ff7675; font-weight: 700; }
+    /* ── 正式包界面裁剪 + 功能裁剪（body.release，由 src/main.js 的 RELEASE_UI 添加）─────
+       隐藏全部调试/自测入口：枪支模式、操作提示、右侧「关卡快捷」（选关）、页面运行日志。
+       「暂停 / 继续 / 设置 / 日志 / 导出性能记录」与桌面「开始游戏」在 JS 侧**根本不创建**
+       （见 src/ui/settings.js 与 src/ui/hud.js 的 devUI）；暂停 / 性能 / 日志**功能**本身
+       也已关掉（见 src/main.js 的 RELEASE 判定与 focusPause、src/ui/pagelog.js 的 disable()）。
+       !important 是为了压掉 applyVRGate() 写在 style.display 上的内联值。
+       .pagelog 这条是兜底：即便有人手动展开，正式包里也不允许它出现。 */
+    body.release #gun-mode-btn,
+    body.release #hint,
+    body.release #level-panel,
+    body.release .pagelog { display: none !important; }
   </style>
   <!-- three.js 本地化：头显无需外网即可加载（去除 unpkg CDN 依赖，解决头显白屏进不去） -->
   <script type="importmap">

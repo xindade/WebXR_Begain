@@ -433,9 +433,25 @@ public class GameServer extends NanoHTTPD {
             if (json == null || json.indexOf("game-end") < 0) return;   // 快速排除（99% 的事件都不含它）
             JSONObject o = new JSONObject(json);
             if (!"game-end".equals(o.optString("ev"))) return;
-            if (o.optBoolean("cast", false)) {
-                PageForensics.line("APK", "页面上报本局结束，但当前是直播模式（?cast=1）→ 不执行退出策略");
+            final boolean cast = o.optBoolean("cast", false);
+            // ★ 第十八修（2026-09-23）：区分「本轮真的结束」与「玩家自己退出 VR」。
+            //   roundOver = 通关 / 平台关闭 / 主控端点了「结束本局」（见 game.js 的 _reportGameEnd）。
+            //   · 非直播（平台投屏）：照旧执行退出策略；
+            //   · 直播（?cast=1）：**只有本轮真的结束**才执行 —— 玩家自己退 VR 时那一局还在进行，
+            //     浏览器就是推流源，关掉 = 直播中断（旧行为，保留）。
+            final boolean roundOver = o.optBoolean("roundOver", false);
+            if (cast && !roundOver) {
+                PageForensics.line("APK", "页面上报本局结束（玩家自己退出 VR），当前是直播模式（?cast=1）"
+                        + " → 不执行退出策略");
                 return;
+            }
+            if (cast) {
+                // 直播模式下「本轮结束」必须把页面/浏览器收干净 —— 用户第三次现场实测：
+                // 「由于游戏结束后只是在浏览器里提示，没有关闭浏览器，导致头显再次调起游戏后无法
+                // 连接 PC 端直播」（上一页的 WebRTC/信令还挂着，新页面抢不到推流端席位）。
+                // 页面侧已经 replace('about:blank') 收工（见 game.js），这里再把浏览器一并收掉。
+                sCastRoundOver = true;
+                PageForensics.line("APK", "直播模式：本局结束（roundOver）→ 允许退出策略关闭浏览器");
             }
             Runnable r = sOnGameEnd;
             if (r == null) {
@@ -450,6 +466,13 @@ public class GameServer extends NanoHTTPD {
 
     /** 页面报「本局结束」时的回调（由 CastApp 注入，在主线程执行）。见 notifyGameEndIfAny。 */
     public static volatile Runnable sOnGameEnd = null;
+
+    /**
+     * ★ 第十八修：本次退出策略是不是「直播模式 + 本轮真的结束」（见 notifyGameEndIfAny）。
+     * 供 MainActivity.restoreClientAndCloseBrowser 判断 —— 这种场合**必须**把浏览器收掉：
+     * 它已经不再是有效的推流源（页面自己收工了），留着只会让下一局抢不到 PC 的推流端席位。
+     */
+    public static volatile boolean sCastRoundOver = false;
 
     /** 最小 HTML 转义（只用于把留痕文本塞进 &lt;pre&gt;，防页面结构被日志内容破坏） */
     /** 极简 JSON 字符串转义（放行条是纯 hex，实际不会被转义；这里只为不破坏 JSON 结构）。 */

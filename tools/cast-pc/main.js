@@ -15,8 +15,9 @@
 //   GET  /api/info           返回端口 / 本机 IP / 对端在线状态（含 guard/ver：是否已支持启动授权）
 //   GET  /__cast/...         接收端自己的界面（避免 file:// 导致相对路径失效）
 //
-// 用法：npm start [-- --port=8443 --root=<游戏目录> --no-serve --cert=<pem> --key=<pem>
-//                        --game-root=<游戏目录> --room=<房间号> --platform=<IP:端口> --game=<游戏名>]
+// 用法：npm start [-- --port=8443 --root=<游戏目录> --no-serve --game-root=<游戏目录>
+//                        --room=<房间号> --platform=<IP:端口> --game=<游戏名>
+//                        --pure | --panels（强制完整面板）| --fullscreen]
 //      平台拉起时还会带一个位置参数 "<exe 相对路径>$<进程名>$<平台本机 IP>"（见「平台参数」段）。
 
 const { app, BrowserWindow, ipcMain } = require('electron');
@@ -72,6 +73,24 @@ const PLATFORM_ARGS = {
   exeRel: platformPositional ? platformPositional.exeRel : null,
   raw: PLATFORM_ARGV_RAW,
 };
+/**
+ * ★ 第二十修（2026-09-23 晚）：本次 EXE 是不是**被平台拉起**的 —— 即平台点了**第一步**「启动游戏」。
+ *
+ * <p>平台操作员是**两步**（用户第五次现场实测，与抓包逐帧一致）：
+ *   ① 「启动游戏」→ 启动器通道 `{"cmd":"start","msgData":"<相对路径>$<进程名>$<平台IP>"}`
+ *      → `DoStartGame` → **拉起本 EXE** + 拉起头显里的游戏（我们的 APK）；
+ *   ② 「开始游戏」→ 游戏通道 `CMD 5 GameStart`（UDP 51124）→ **这一步才是开局信号**。
+ *
+ * <p>⚠ 第十九修曾把 ①（被平台拉起）当成开局信号 ⇒ 头显在操作员还没点②时就冒出「进入 VR」
+ *   （用户原话：「平台首先点的是启动游戏…第二步是平台点开始游戏，这个时候头显里才会显示
+ *   进入VR」）。现在 ① **只用于显示与留痕**，放行一律等 ②（见 startPlatformGameChannel()）。
+ *
+ * <p>判定口径与 `logPlatformArgs()` 一致：位置参数解析成功，或三个具名参数任意一个给了值。
+ * 手动双击 / 现场排练时没有这些参数 ⇒ false。
+ */
+const PLATFORM_LAUNCHED = !!(platformPositional || PLATFORM_ARGS.room || PLATFORM_ARGS.platform
+  || PLATFORM_ARGS.game || PLATFORM_ARGS.exeRel);
+
 /** 把平台参数打进日志（打包后看不到控制台，界面顶部也会再显示一份）。 */
 function logPlatformArgs() {
   if (!PLATFORM_ARGS.room && !PLATFORM_ARGS.platform && !PLATFORM_ARGS.game) {
@@ -81,6 +100,9 @@ function logPlatformArgs() {
   console.log('[cast-pc] 平台参数：'
     + `room=${PLATFORM_ARGS.room || '-'} platform=${PLATFORM_ARGS.platform || '-'} game=${PLATFORM_ARGS.game || '-'}`
     + (PLATFORM_ARGS.exeRel ? ` exeRel=${PLATFORM_ARGS.exeRel}` : ''));
+  console.log('[cast-pc] 本次由平台「启动游戏」拉起（第一步）→ 本局**尚未**放行；'
+    + '等平台点「开始游戏」（游戏通道 CMD 5 GameStart，本机 UDP 51124）'
+    + '或操作员点「▶ 开始本局」才放行');
 }
 
 let PORT = Number(argValue('port', 8443));   // 实际启动端口由 tryListen 决定（fallback）
@@ -158,73 +180,6 @@ function lanIPs() {
     }
   }
   return out;
-}
-
-// 证书目录：优先主程序旁 certs/，打包后该目录只读则退回 userData
-function certDir() {
-  const local = path.join(__dirname, 'certs');
-  try {
-    fs.mkdirSync(local, { recursive: true });
-    fs.accessSync(local, fs.constants.W_OK);
-    return local;
-  } catch (e) {
-    const ud = path.join(app.getPath('userData'), 'certs');
-    fs.mkdirSync(ud, { recursive: true });
-    return ud;
-  }
-}
-
-// 顺序：--cert/--key 指定 → certs/ 已存在 → 自动生成（selfsigned）
-function ensureCerts() {
-  const givenCert = argValue('cert', null);
-  const givenKey = argValue('key', null);
-  if (givenCert && givenKey && fs.existsSync(givenCert) && fs.existsSync(givenKey)) {
-    return {
-      cert: fs.readFileSync(givenCert),
-      key: fs.readFileSync(givenKey),
-      src: givenCert,
-    };
-  }
-  const dir = certDir();
-  const certPath = path.join(dir, 'cert.pem');
-  const keyPath = path.join(dir, 'key.pem');
-  if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
-    return { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath), src: certPath };
-  }
-
-  const ips = lanIPs();
-  try {
-    const selfsigned = require('selfsigned');
-    // type 2 = DNS 名，type 7 = IP。必须包含 127.0.0.1：接收端界面本身也走这张证书。
-    const altNames = [
-      { type: 2, value: 'localhost' },
-      { type: 7, ip: '127.0.0.1' },
-      ...ips.map((ip) => ({ type: 7, ip })),
-    ];
-    const pems = selfsigned.generate([{ name: 'commonName', value: 'webxr-cast' }], {
-      keySize: 2048,
-      days: 825,
-      algorithm: 'sha256',
-      extensions: [
-        { name: 'basicConstraints', cA: false },
-        { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
-        { name: 'extKeyUsage', serverAuth: true },
-        { name: 'subjectAltName', altNames },
-      ],
-    });
-    fs.writeFileSync(certPath, pems.cert);
-    fs.writeFileSync(keyPath, pems.private);
-    console.log(`[cast-pc] 已生成自签证书：${certPath}（SAN 含 ${['localhost', '127.0.0.1', ...ips].join(', ')}）`);
-    return { cert: pems.cert, key: pems.private, src: certPath };
-  } catch (e) {
-    throw new Error(
-      `证书生成失败（${e.message}）。请手工生成后重跑：\n`
-      + `  openssl req -x509 -newkey rsa:2048 -nodes -keyout "${keyPath}" -out "${certPath}" `
-      + `-days 825 -subj "/CN=webxr-cast" `
-      + `-addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:${ips[0] || '192.168.x.x'}"\n`
-      + `或复用 http-server -S 的证书：npm start -- --cert=<路径> --key=<路径>`
-    );
-  }
 }
 
 const MIME = {
@@ -462,6 +417,13 @@ app.whenReady().then(() => {
     if (pathname === '/api/launch/request' && req.method === 'POST') return handleLaunchRequest(req, res);
     // ★ 门禁（文档第 3 条）：APK 与游戏页面共用的「允许运行」查询 —— 与上一行**同一套判据**。
     if (pathname === '/api/master/allow' && req.method === 'POST') return handleMasterAllow(req, res);
+    // ★ 本局收尾（第十八修）：画面侧上报「本局已结束」→ 收回本局放行（见 ROUND / roundSet）。
+    //   头显页面在「本轮真的结束」时调（game.js 的 _tellMasterRoundEnd），经 APK 的 GameServer
+    //   代理过来；PCVR / 直连诊断时页面直接打到这里。
+    if (pathname === '/api/round/end' && req.method === 'POST') return handleRoundEnd(req, res);
+    // ★ 第二十修：反向那条 —— 头显先收到平台开局帧时，把「平台已开始本局」回报过来
+    //   （见 src/main.js 的 reportPlatformStartToMaster）。与上一行对称，判据仍是 roundSet()。
+    if (pathname === '/api/round/start' && req.method === 'POST') return handleRoundStart(req, res);
     // ★ 第十七修：配置下发。头显拿到放行条后立刻来取「轻量配置」，文件齐全才建游戏界面。
     //   只允许 GET（HMAC 参数走 query），且必须排在 handleStatic 兜底之前。
     if (pathname === '/api/config/dump') return handleConfigDump(req, res);
@@ -479,8 +441,14 @@ app.whenReady().then(() => {
         guard: true, ver: '1.4.0',
         // ★ 门禁（文档第 3 条）：本端支持 /api/master/allow —— APK/页面据此区分「旧版接收端」。
         masterAllow: true,
+        // ★ 本局放行（第十八修）：armed=true 表示操作员已点「开始本局」，头显页面此时才给
+        //   「进入 VR」按钮。现场排障时这一行比任何推断都直接。
+        round: roundSnapshot(),
         // ★ 平台参数（文档第 4 条）：平台拉起时带的房间号 / 平台 IP / 游戏名；独立运行全为 null。
         platform: PLATFORM_ARGS,
+        // ★ 第二十修：平台游戏通道（UDP 51124）状态 —— 「平台到底点没点开始游戏」在 PC 侧的
+        //   第一手证据（bound / lastStartAt / lastCloseAt）；现场排障时先看这一行。
+        gameChannel: platformChannelSnapshot(),
         // session = 本局局号；configManifest = 会下发哪些路径（排查「文件不齐」时一眼看出）
         session: SESSION_ID, configManifest: CONFIG_MANIFEST,
         // ★ 授权状态摘要（一眼看出「EXE 到底授权没有」；完整凭据走 /api/license/current）
@@ -589,6 +557,13 @@ app.whenReady().then(() => {
 
     // ——— IPC：授权（License）—— 读状态 / 激活 / 手动续期 ———
     // 界面只做「显示 + 触发」，全部判断都在主进程 —— 渲染进程改不了门禁结果。
+    // ——— IPC：本局放行（第十八修）—— PC 大屏上的「开始本局 / 结束本局」就是平台的开局信号 ———
+    ipcMain.handle('round:get', () => roundSnapshot());
+    ipcMain.handle('round:set', (_e, patch) => {
+      const p = patch || {};
+      return roundSet(!!p.armed, String(p.why || 'PC 界面'));
+    });
+
     // ——— IPC：平台参数（文档第 4 条）—— 界面顶部原样显示平台带了什么，便于现场核对 ———
     ipcMain.handle('platform:get', () => ({ ...PLATFORM_ARGS, argv, packaged: !!app.isPackaged }));
 
@@ -610,6 +585,7 @@ app.whenReady().then(() => {
     });
 
     startBeacon();
+    startPlatformGameChannel();
 
     mainWindow = new BrowserWindow({
       width: 1280, height: 780,
@@ -621,12 +597,9 @@ app.whenReady().then(() => {
         preload: path.join(__dirname, 'preload.js'),  // 暴露 castCfg（GET/SET 游戏目录）
       },
     });
-    // 自签证书：本机服务，直接放行（否则 Electron 会因证书不受信而白屏）
-    mainWindow.webContents.on('certificate-error', (event, url, error, cert, callback) => {
-      event.preventDefault();
-      callback(true);
-    });
-    mainWindow.loadURL(`http://localhost:${usedPort}/__cast/index.html${hasFlag('pure') ? '?pure=1' : ''}`);
+    // 纯净模式默认开（现场大屏只留画面）：--panels 强制完整面板便于现场排查，--pure 显式指定。
+    const pureQ = hasFlag('panels') ? '?pure=0' : (hasFlag('pure') ? '?pure=1' : '');
+    mainWindow.loadURL(`http://localhost:${usedPort}/__cast/index.html${pureQ}`);
     // --fullscreen：启动即全屏（配合 --pure 就是「开机即大屏」）。也可在界面内按 F 切换。
     if (hasFlag('fullscreen')) mainWindow.setFullScreen(true);
     mainWindow.on('closed', () => { mainWindow = null; });
@@ -1085,7 +1058,9 @@ function handleLaunchRequest(req, res) {
   readJsonBody(req, 4096, (body) => {
     // 判定走**唯一出口** masterAllow（授权总闸 + 凭据 + 白名单都在里面），这里只负责把结论
     // 翻译成 APK 既有的字段名（why），并签发放行条。**不要再在这里加判据** —— 见 masterAllow 注释。
-    const r = masterAllow(ip, body);
+    // ⚠ requireRound:false —— 这一步是「头显想连本机」，不是「这一局要开始了」。
+    //   若在这里也要求「已开始本局」，头显就永远拉不起页面，操作员连等待界面都看不到。
+    const r = masterAllow(ip, body, { requireRound: false });
     guardPush(r.entry);
     console.log(`[cast-pc] 启动授权 ${r.allow ? 'ALLOW' : 'DENY '} dev=${r.entry.dev || '(空)'} ip=${ip} why=${r.reason}`);
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1125,6 +1100,9 @@ function handleMasterAllow(req, res) {
     res.end(JSON.stringify({
       allow: r.allow, reason: r.reason, voucher: r.voucher, ttl: r.ttl,
       session: SESSION_ID, room: room || null, server: Date.now(),
+      // ★ 第十八修：把「本轮是否已开始」一并回去 —— 页面据此把「正常等待开始」与「授权没过」
+      //   两种拦分开提示（见 src/main.js 的 applyVRGate）。
+      round: roundSnapshot(),
       license: licenseSummary(),
     }));
   });
@@ -1249,29 +1227,155 @@ function licenseSummary() {
  * @param {object} body {device|dev, ts, sig} 或 {device|dev, exp, voucher}，可选 room
  * @return {{allow:boolean, reason:string, entry:object, voucher:string|null, ttl:number}}
  */
-function masterAllow(ip, body) {
+// ——————————————————— 本局放行（「开始本局 / 结束本局」）———————————————————
+/**
+ * 本局是否已由平台 / 主控端放行。**这是「等平台发开始游戏信号」的落地物**：
+ * 头显页面每 2 秒问一次 /api/master/allow，只有这里为 true 才给「进入 VR」按钮。
+ *
+ * 为什么要有它（用户 2026-09-23 现场实测两条）：
+ *   · 「第一次头显连上 PC 端后，我可以直接点进去 VR」—— 旧的 ?plat=1 判据（APK 拉起页面）
+ *     把「拉起」当成了「开始游戏」，太早；
+ *   · 「第二次开游戏…头显上提示重试连接主控端」—— 放行条 TTL 只有 60 秒，第二局必然过期。
+ *
+ * ★ 第二十修（2026-09-23 晚，用户第五次实测后定稿）：**放行的唯一权威来源 = 平台点「开始游戏」**
+ *   = 游戏通道 `CMD 5 GameStart`（UDP 51124），见 startPlatformGameChannel()。
+ *   三个入口都只走 roundSet()：
+ *     ① 平台 GameStart —— **主路径**，本 EXE 就是平台登记并拉起的那台机器上的游戏进程，
+ *        平台把这一帧发给本机 51124（抓包实录 20:49:56 `.237:58734 -> .237:51124`）；
+ *     ② 头显页面把收到的同一帧回报过来（POST /api/round/start）—— 平台把它发给头显时的兜底；
+ *     ③ PC 界面上的「▶ 开始本局」—— 现场排练 / 平台不在场时的手动口子。
+ *   ⚠ 「EXE 被平台拉起」（第一步「启动游戏」）**不再**作为放行依据，见 PLATFORM_LAUNCHED。
+ */
+const ROUND = {
+  armed: false,     // ★ 必须从 false 起：平台还没点「开始游戏」时，头显不能出现「进入 VR」
+  at: 0,
+  seq: 0,
+};
+const ROUND_IDLE_WHY = '尚未开始本局（等平台点「开始游戏」；或在 PC 主控端点「开始本局」）';
+
+function roundSnapshot() { return { armed: ROUND.armed, at: ROUND.at, seq: ROUND.seq }; }
+
+/**
+ * 开/关「本局放行」。**唯一**入口：PC 界面按钮、页面 /api/round/end 上报都走它。
+ * 状态没变时只打日志、不广播（避免轮询把它刷成噪声）。
+ * @param {boolean} on
+ * @param {string} why 谁按的（进日志，现场对账用）
+ */
+function roundSet(on, why) {
+  const next = !!on;
+  if (next !== ROUND.armed) {
+    ROUND.armed = next;
+    if (next) { ROUND.at = Date.now(); ROUND.seq += 1; }
+    console.log(`[cast-pc] 本局放行 ` + (next ? '已开启 → 头显将出现「进入 VR」' : '已结束 → 头显收尾') + `（` + why + `）`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('round:changed', { ...roundSnapshot(), why });
+    }
+  } else {
+    console.log(`[cast-pc] 本局放行：状态未变（` + why + `）`);
+  }
+  return roundSnapshot();
+}
+
+/** POST /api/round/end —— 画面侧上报「本局已结束」→ 收回本局放行（见 game.js 的 _tellMasterRoundEnd）。 */
+function handleRoundEnd(req, res) {
+  readJsonBody(req, 2048, (body) => {
+    const why = String((body && body.why) || '本局结束').slice(0, 80);
+    const r = roundSet(false, '画面侧上报：' + why);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, round: r }));
+  });
+}
+
+/**
+ * POST /api/round/start —— 画面侧上报「**平台已开始本局**」（第二十修）。
+ *
+ * 与 handleRoundEnd 对称。用途：平台的开局帧（游戏通道 CMD 5）**可能只发给 PC 那台机器**
+ * （抓包实测如此），也可能同时发给头显 —— 头显侧收到时立刻回报一声，PC 的「本局进行中」
+ * 状态与推流就与平台同步（否则 PC 界面会显示成「还没开始」，操作员会困惑）。
+ * 谁先到算谁：本端自己收到那一帧时走的是 startPlatformGameChannel → roundSet(true)。
+ */
+function handleRoundStart(req, res) {
+  readJsonBody(req, 2048, (body) => {
+    const why = String((body && body.why) || '平台已开始本局').slice(0, 80);
+    const r = roundSet(true, '画面侧上报：' + why);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, round: r }));
+  });
+}
+
+/**
+ * ★ 门禁总判定 —— **唯一出口**（2026-09-23 平台对接新增；第十八修加「本局放行」一档）。
+ *
+ * <p>调用方与要求：
+ *   · /api/launch/request（头显 APK 拉起浏览器之前）→ **requireRound:false** —— 这一步只证明
+ *     「头显想连本机、且凭据可信」，**不是**「这一局要开始了」（那由操作员点「开始本局」决定）。
+ *     若这里也要求「已开始本局」，头显就永远拉不起页面 → 操作员连等待界面都看不到。
+ *   · /api/master/allow（APK + 游戏页面）→ requireRound:true（默认）—— 这是进 VR 前的门禁。
+ *
+ * <p>判据顺序 = 优先级：
+ *   ① 本机授权 licenseGate() —— EXE 自己授权不合法就一律拒，连凭据都不看；
+ *   ② 设备凭据（三选一）：dev+ts+sig（HMAC，APK）｜dev+exp+voucher（放行条）｜**仅 device**
+ *      （第十八修的页面轮询：设备须在白名单里或已开自动登记）；
+ *   ③ 本局放行 ROUND.armed（仅当 requireRound）—— 操作员点了「开始本局」。
+ *
+ * @param {string} ip 客户端 IP（仅留痕）
+ * @param {object} body {device|dev, ts, sig} 或 {device|dev, exp, voucher} 或 {device|dev}
+ * @param {{requireRound?:boolean}} [opts]
+ * @return {{allow:boolean, reason:string, entry:object, voucher:string|null, ttl:number}}
+ */
+function masterAllow(ip, body, { requireRound = true } = {}) {
   // device 是《打包和平台对接》里的字段名，dev 是本项目历史字段名 —— 两个都认，免得调用方记错。
   const dev = String((body && (body.device || body.dev)) || '');
+  const deny = (entry) => ({ allow: false, reason: entry.why, entry, voucher: null, ttl: 0 });
+  const roundOk = (entry) => {
+    if (requireRound && !ROUND.armed) { entry.allow = false; entry.why = ROUND_IDLE_WHY; return false; }
+    return true;
+  };
+
   const gate = licenseGate();
   if (gate) {
     const entry = { at: Date.now(), ip, dev, allow: false, why: gate };
     return { allow: false, reason: gate, entry, voucher: null, ttl: 0 };
   }
-  if (body && body.voucher && dev) {           // 放行条路径（游戏页面）
+
+  // ②-a 放行条路径（历史上给游戏页面做独立复验；第十八修后页面改成轮询、不再带放行条，
+  //     这条留给外部复验）
+  if (body && body.voucher && dev) {
     const entry = guardVerifyVoucher(ip, dev, Number(body.exp || 0), String(body.voucher));
-    return { allow: entry.allow, reason: entry.why, entry, voucher: null, ttl: 0 };
+    if (!entry.allow) return deny(entry);
+    if (!roundOk(entry)) return deny(entry);
+    return { allow: true, reason: entry.why, entry, voucher: null, ttl: 0 };
   }
-  const entry = guardVerify(ip, {             // 签名路径（APK）
-    dev,
-    ts: String((body && body.ts) || ''),
-    sig: String((body && body.sig) || ''),
-  });
-  let voucher = null;
-  if (entry.allow) {
+
+  // ②-b 签名路径（头显 APK）
+  if (body && body.ts && body.sig) {
+    const entry = guardVerify(ip, { dev, ts: String(body.ts), sig: String(body.sig) });
+    if (!entry.allow) return deny(entry);
+    if (!roundOk(entry)) return deny(entry);
     entry.exp = Date.now() + GUARD_VOUCHER_TTL_MS;
-    voucher = guardVoucher(entry.dev, entry.exp);
+    const voucher = guardVoucher(entry.dev, entry.exp);
+    return { allow: true, reason: entry.why, entry, voucher, ttl: Math.round(GUARD_VOUCHER_TTL_MS / 1000) };
   }
-  return { allow: entry.allow, reason: entry.why, entry, voucher, ttl: Math.round(GUARD_VOUCHER_TTL_MS / 1000) };
+
+  // ②-c 只有设备号（第十八修）：**页面轮询**「本局放行了吗」。
+  //     没有设备号（页面不是 APK 托管：PCVR / 直连诊断）时只认「本局放行」—— 此时入口就在
+  //     PC 本机上，且必须操作员先放行，风险可接受。
+  const entry = { at: Date.now(), ip, dev, allow: false, why: '' };
+  if (!dev) {
+    entry.why = '未带设备号（PCVR / 直连诊断）—— 只按「本局放行」判定';
+  } else if (GUARD.allowList.includes(dev)) {
+    entry.why = '白名单命中';
+  } else if (GUARD.autoAllow) {
+    GUARD.allowList.push(dev);
+    saveGuard();
+    entry.why = GUARD.allowList.length === 1 ? '配对窗口：自动登记首台设备' : '自动登记并放行（新设备）';
+  } else {
+    entry.why = '设备不在白名单（且未开启自动登记）';
+    return deny(entry);
+  }
+  if (!roundOk(entry)) return deny(entry);
+  entry.allow = true;
+  return { allow: true, reason: entry.why, entry, voucher: null, ttl: 0 };
 }
 
 /**
@@ -1324,4 +1428,134 @@ function startBeacon() {
   send();
   setInterval(send, 2000);
   console.log(`[cast-pc] 局域网发现信标已开启（组 ${GROUP}:${DISCOVERY_PORT}，每 2s 广播）`);
+}
+
+// ————————————————————— 平台游戏通道（UDP 51124）—————————————————————
+/**
+ * ★ 第二十修（2026-09-23）：**平台「开始游戏」的接收端**。
+ *
+ * <h3>为什么 PC 端要收这个通道</h3>
+ * 平台操作员是**两步**（用户现场实测 + 抓包逐帧一致）：
+ *   ① 「启动游戏」→ 启动器通道 `{"cmd":"start",...}` → 拉起本 EXE + 头显里的游戏（APK）；
+ *   ② 「开始游戏」→ **游戏通道 `CMD 5 GameStart`（UDP 51124）** ← **这一步才是开局信号**。
+ * 抓包（`平台指令/VRPlatform-流量取证/pcap-game_channel`）实测：平台的 GameStart **只发给
+ * 「跑游戏的那台机器」** —— `20:49:56 .237:58734 -> .237:51124 \x05{...}`；客户端那台（.228）
+ * **没有**收到，它的开局是靠游戏自己的 UNet（14568）对联机同步过去的。
+ * 而本 EXE **正是平台登记并拉起的那台机器上的游戏进程** ⇒ GameStart 会打到本机。
+ * （同一份抓包里，closeGame 却是 `.237:58756 -> .237:51124` **和** `.237:58758 -> .228:51124`
+ *   两路同发 —— 所以「收不到 GameStart」不是端口的锅，是平台只发给主机那台。）
+ *
+ * <h3>本 EXE 在这里扮演什么</h3>
+ * 「PC 侧的游戏实例」：启动即用**同一个 socket**（源端口必须 51124，抓包实测）向
+ * `<平台IP>:51234` 发 `0x01` 注册（真实游戏是 `start` 之后约 4 秒注册），然后：
+ *   · `0x05` + JSON  → **放行本局**（roundSet(true)）→ 头显页面 2 秒内出现「进入 VR」，
+ *                       并按真实游戏的做法回一帧 `0x05` + 确认 JSON（`flag=1`）；
+ *   · `0x10` + "closeGame" → 收回放行（roundSet(false)）并回 `0x02`（平台在等这个确认）；
+ *   · `0x01` + Machines JSON → 机位表回执，只记日志（= 平台已认到本机）。
+ *
+ * <h3>失败也不影响任何东西</h3>
+ * 平台没在跑 / 51124 被别的进程占 / 平台拉起时没给 IP ⇒ 只打日志，其余行为与以前**完全一致**
+ * （头显 APK 自己也能收这一帧，并把结论经 POST /api/round/start 回报过来）。
+ */
+const GAME_CH_PORT = 51124;        // 平台 → 游戏（本机收；真实游戏日志里的 sendUDPPort）
+const GAME_CH_ACK_PORT = 51234;    // 平台收游戏上报（recvUDPPort）
+const PC_FRAME_REGISTER = 0x01;    // 本机 → 平台：注册
+const PC_FRAME_CLOSE_ACK = 0x02;   // 本机 → 平台：closeGame 确认
+const PC_FRAME_GAME_START = 0x05;  // 平台 → 本机：开始游戏（GameStart）
+const PC_FRAME_CLOSE_GAME = 0x10;  // 平台 → 本机：关闭游戏（CloseGame）
+/** 实测确认帧（与抓包逐字节一致，见 auto_client_v3.py 的 GAMESTART_ACK，118 字节） */
+const GAME_START_ACK = {
+  difficulty: 0, gameIntensity: 0, video: 0, guide: 0,
+  posSum: 0, gameId: 0, flag: 1, levelInfo: null, recordTime: 0,
+};
+const PLATFORM_CH = {
+  enabled: false, bound: false, frames: 0, machines: 0,
+  lastStartAt: 0, lastStartFrom: null, lastCloseAt: 0, why: '未启用（EXE 不是被平台拉起的）',
+};
+/** 供 /api/info 显示（现场排障第一眼看这个） */
+function platformChannelSnapshot() { return { ...PLATFORM_CH }; }
+
+function startPlatformGameChannel() {
+  if (hasFlag('no-game-channel')) { PLATFORM_CH.why = '被 --no-game-channel 关闭'; return; }
+  const raw = String(PLATFORM_ARGS.platform || '').trim();
+  const platIp = raw ? raw.split(':')[0] : null;
+  let sock;
+  try {
+    sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  } catch (e) {
+    PLATFORM_CH.why = 'socket 创建失败：' + e.message;
+    console.warn('[cast-pc] 平台游戏通道不可用：', e.message);
+    return;
+  }
+  PLATFORM_CH.enabled = true;
+  const sendFrame = (cmd, payloadBuf, destIp) => {
+    const head = Buffer.from([cmd & 0xff]);
+    const frame = (payloadBuf && payloadBuf.length) ? Buffer.concat([head, payloadBuf]) : head;
+    const targets = destIp ? [destIp] : [platIp, '127.0.0.1'].filter(Boolean);
+    for (const t of targets) {
+      try {
+        sock.send(frame, 0, frame.length, GAME_CH_ACK_PORT, t, (err) => {
+          if (err) console.warn(`[cast-pc] 游戏通道发送失败 → ${t}:${GAME_CH_ACK_PORT}:`, err.message);
+        });
+      } catch (e) { console.warn('[cast-pc] 游戏通道发送异常：', e.message); }
+    }
+  };
+  sock.on('error', (e) => {
+    PLATFORM_CH.why = 'socket 错误：' + e.message;
+    console.warn('[cast-pc] 平台游戏通道错误：', e.message);
+  });
+  sock.on('message', (buf, rinfo) => {
+    try {
+      PLATFORM_CH.frames++;
+      const b0 = buf[0];
+      const hex = '0x' + b0.toString(16).padStart(2, '0');
+      if (b0 === PC_FRAME_GAME_START) {
+        let info = null;
+        try { info = JSON.parse(buf.slice(1).toString('utf8').trim()); } catch (e) { /* 载荷解析失败也照样放行 */ }
+        PLATFORM_CH.lastStartAt = Date.now();
+        PLATFORM_CH.lastStartFrom = `${rinfo.address}:${rinfo.port}`;
+        console.log(`[cast-pc] ← 平台「开始游戏」CMD 5 GameStart（来自 ${rinfo.address}:${rinfo.port}）：`
+          + (info ? JSON.stringify(info) : buf.slice(1).toString('utf8').slice(0, 120)));
+        roundSet(true, `平台「开始游戏」（游戏通道 CMD 5 GameStart${info && info.gameId != null ? ' gameId=' + info.gameId : ''}）`);
+        sendFrame(PC_FRAME_GAME_START, Buffer.from(JSON.stringify(GAME_START_ACK)), rinfo.address);
+        return;
+      }
+      if (b0 === PC_FRAME_CLOSE_GAME) {
+        PLATFORM_CH.lastCloseAt = Date.now();
+        console.log(`[cast-pc] ← 平台「关闭游戏」CMD 16 CloseGame（来自 ${rinfo.address}:${rinfo.port}）`);
+        roundSet(false, '平台「关闭游戏」（游戏通道 0x10 closeGame）');
+        sendFrame(PC_FRAME_CLOSE_ACK, null, rinfo.address);   // 平台在等这个确认（抓包 7ms）
+        return;
+      }
+      if (b0 === PC_FRAME_REGISTER) {
+        try {
+          const s = buf.toString('utf8');
+          const s0 = s.indexOf('{');
+          const jo = (s0 >= 0 && s.lastIndexOf('}') > s0) ? JSON.parse(s.slice(s0, s.lastIndexOf('}') + 1)) : null;
+          const ms = jo && (jo.Machines || jo.machines);
+          PLATFORM_CH.machines = Array.isArray(ms) ? ms.length : 0;
+          console.log(`[cast-pc] ← 平台机位表（Machines=${PLATFORM_CH.machines}）→ 平台已认到本机（注册生效）`);
+        } catch (e) { /* 忽略 */ }
+        return;
+      }
+      console.log(`[cast-pc] ← 平台游戏通道未知帧 首字节=${hex} len=${buf.length} 原文=`
+        + buf.toString('utf8').replace(/[\x00-\x1f]/g, ' ').slice(0, 120));
+    } catch (e) {
+      console.warn('[cast-pc] 游戏通道收帧处理异常：', e.message);
+    }
+  });
+  sock.bind(GAME_CH_PORT, '0.0.0.0', () => {
+    PLATFORM_CH.bound = true;
+    PLATFORM_CH.why = `已监听 UDP ${GAME_CH_PORT}` + (platIp ? `（平台 ${platIp}:${GAME_CH_ACK_PORT}）` : '（没有平台 IP，只被动接收）');
+    console.log(`[cast-pc] 平台游戏通道已监听 UDP ${GAME_CH_PORT}；`
+      + (platIp
+        ? `将以 0x01 向 ${platIp}:${GAME_CH_ACK_PORT} 注册（源端口 51124，与真实游戏一致），等平台回机位表`
+        : '本次没拿到平台 IP（EXE 不是被平台拉起的）→ 只被动等平台下发 GameStart'));
+    // 注册 0x01：真实游戏是 start 之后约 4 秒注册；这里 0/1.5/3/4.5s 各发一次，抗 UDP 丢包
+    [0, 1500, 3000, 4500].forEach((d) => setTimeout(() => {
+      if (!PLATFORM_CH.enabled) return;
+      sendFrame(PC_FRAME_REGISTER, null, null);
+      console.log(`[cast-pc] → 游戏通道 0x01 注册（+${d}ms）`);
+    }, d));
+  });
 }

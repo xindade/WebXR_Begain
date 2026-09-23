@@ -71,9 +71,9 @@
     #hint { position: absolute; color: #888; font-size: 14px; text-align: center;
             line-height: 1.8; padding: 0 24px; }
 
-    /* —— 纯净模式：只保留游戏画面 ——
+    /* —— 纯净模式：只保留游戏画面（★ 默认开启）——
        按 H 切换（状态存 localStorage，下次启动保持）；按 F 切换全屏。
-       启动时加 --pure 参数可直接进入（EXE 快捷方式里可加）。 */
+       排查时按 H 唤回面板，或用启动参数 --panels（= ?pure=0）强制显示完整面板。 */
     body.pure #bar, body.pure #cfgbox, body.pure #guardbox, body.pure #licbox, body.pure #logbox { display: none !important; }
     body.pure #hint { font-size: 13px; }
 
@@ -93,6 +93,19 @@
     .l-bad  { color: #ff6b6b; }
     .l-warn { color: #ffa94d; }
     .l-dim  { color: #7a7a8c; }
+    /* —— 本局放行（第十八修）：PC 大屏上的「开始本局 / 结束本局」——
+       ★ **纯净模式下也必须可见可点** —— 它是「平台开始游戏信号」的唯一来源：头显页面在等到它
+       之前不会出现「进入 VR」按钮（见 src/main.js 的主控门禁）。快捷键：S = 开始本局，E = 结束本局。 */
+    #roundbar { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+                z-index: 20; display: flex; align-items: center; gap: 10px;
+                padding: 8px 14px; border-radius: 12px; background: rgba(0,0,0,.66);
+                border: 1px solid rgba(255,255,255,.16); box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+    #roundbar button { font-size: 15px; padding: 8px 18px; border: none; border-radius: 8px;
+                       cursor: pointer; color: #fff; }
+    #roundStart { background: #2ecc71; }
+    #roundEnd { background: #e74c3c; }
+    #roundbar button:disabled { opacity: .35; cursor: default; }
+    #roundState { font-size: 13px; color: #7a7a8c; min-width: 72px; text-align: center; }
   </style>
 </head>
 <body>
@@ -119,7 +132,7 @@
     </div>
     <div id="cfgbox">
       <span>游戏目录（PC 端托管路径②；可绕过 APK 直接 serve 游戏）：</span>
-      <input id="cfgRoot" type="text" placeholder="例如 E:\AI_Work\WebXR_Begain（需含 index.html）" />
+      <input id="cfgRoot" type="text" placeholder="例如 E:\AI_Work\WebXR_Begain_Platform（需含 index.html）" />
       <button id="cfgApply" class="sec">应用</button>
       <span id="cfgStatus" class="dim">（未配置）</span>
     </div>
@@ -149,6 +162,14 @@
       <video id="video" autoplay playsinline></video>
       <img id="img" alt="JPEG 兜底画面" />
       <video id="intro" preload="auto" playsinline></video>
+      <!-- ★ 本局放行（平台对接第 3 条 / 第十八修）：点「开始本局」= 平台「开始游戏」——
+           头显页面在等到它之前不会出现「进入 VR」按钮（见 src/main.js 的主控门禁）。
+           快捷键 S / E。纯净模式下也保留：这是现场唯一的开局信号。 -->
+      <div id="roundbar">
+        <button id="roundStart" title="放行本局（快捷键 S）">▶ 开始本局</button>
+        <button id="roundEnd" title="结束本局（快捷键 E）">■ 结束本局</button>
+        <span id="roundState">未开始</span>
+      </div>
       <div id="hint">等待推流端连接…<br /><span class="dim">若长时间无响应，查看下方日志区，常见原因已在日志中标注。</span></div>
     </div>
     <div id="logbox"></div>
