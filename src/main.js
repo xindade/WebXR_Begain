@@ -317,6 +317,10 @@ function resetEnterVrLabels() {
 const statusMsg = document.getElementById('status-msg');
 let vrStarting = false;
 const mirrorBtn = document.getElementById('mirror-btn');
+// ★ 第二十三修：镜像按钮 / 「PC 镜像」标签只在「游戏页跑在桌面 PC」时有意义（头显上没有第二块屏，
+//   点了只会被拒）。故非桌面环境（头显）与正式包都直接不显示：给 body 加类，由 index.html 的 CSS
+//   统一压掉（!important，避免 mirror.js 写行内 display 时把标签又露出来）。
+if (!isDesktopPage() || RELEASE) document.body.classList.add('no-mirror');
 if (mirrorBtn) {
   mirrorBtn.onclick = () => {
     if (!MIRROR.ENABLED) { showStatus('镜像功能已关闭（userConfig.MIRROR.ENABLED）'); return; }

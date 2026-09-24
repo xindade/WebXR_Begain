@@ -43,7 +43,7 @@ public final class PageForensics {
     private static final String TAG = "Forensics";
     private static final String FILE_NAME = "page-forensics.log";
     /** 本构建的标识：装机后看留痕文件第一行即可确认「装的是不是这一版」 */
-    public static final String BUILD_TAG = "2026-09-20o-guard-pair-config";
+    public static final String BUILD_TAG = "2026-09-24-p29-round-reset";
 
     private static final long MAX_BYTES = 128 * 1024;
     private static final long KEEP_BYTES = 48 * 1024;

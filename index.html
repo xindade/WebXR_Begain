@@ -155,7 +155,18 @@
     body.release #gun-mode-btn,
     body.release #hint,
     body.release #level-panel,
-    body.release .pagelog { display: none !important; }
+    body.release .pagelog,
+    /* ★ 第二十三修：右上角那条 2D 船血条（140×16 绿条 + 「船血 x/x」文字）——
+       用户实测在头显 2D 页面上就是「选关旁边那条绿色长条」。VR 里船血看左手腕面板
+       （见 src/vr/wrist-ui.js），所以正式包把这条 2D 冗余显示去掉（调试包仍保留，方便桌面自测）。 */
+    body.release #hud-hp,
+    /* ★ 第二十三修：镜像按钮 / 「PC 镜像」标签只在「游戏页跑在桌面 PC」时有意义
+       （头显上点了只会被拒：没有第二块屏可显示）。故非桌面环境（no-mirror）与正式包
+       都不显示；!important 是为了压掉 mirror.js 写在行内 style 上的 display。 */
+    body.release #mirror-btn,
+    body.release #mirror-label,
+    body.no-mirror #mirror-btn,
+    body.no-mirror #mirror-label { display: none !important; }
   </style>
   <!-- three.js 本地化：头显无需外网即可加载（去除 unpkg CDN 依赖，解决头显白屏进不去） -->
   <script type="importmap">

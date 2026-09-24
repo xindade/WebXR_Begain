@@ -12,6 +12,9 @@ export class HUD {
     this.root.appendChild(this.top);
 
     this.hpWrap = document.createElement('div');
+    // ★ 第二十三修（2026-09-23）：给这条 2D 船血条一个 id，好让正式包用 CSS 隐藏它
+    //   （用户实测：头显 2D 页面上它就是右上角那条绿色长条。VR 里船血看左手腕面板，见 vr/wrist-ui.js）。
+    this.hpWrap.id = 'hud-hp';
     this.hpWrap.style.cssText = 'position:absolute;top:78px;right:145px;width:140px;';
     this.root.appendChild(this.hpWrap);
     this.hpBar = document.createElement('div');

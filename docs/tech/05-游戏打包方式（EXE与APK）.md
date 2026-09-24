@@ -305,3 +305,424 @@ APK 本地游戏服务固定 **8080**。若现场 AP 开了**组播隔离**，�
 - 「进入 VR」二选一（蓝 ⚡射速加倍/攻击减半、红 💥攻击加倍/射速减半）改的是 `constants.js`/`player.js`/
   `main.js`/`availability.js`/`index.html` ⇒ 同为 APK 重打范围。
 - 详见 `docs/cast-implementation-and-packaging.md` 附录 F。
+
+---
+
+---
+
+## 附 · 2026-09-24 第二十三 / 二十四修（界面裁剪 + 授权关闭 + 服务器清单）
+
+### 本轮改了什么（决定重打包范围）
+
+| 改动 | 涉及文件 | 重打 APK | 重打 EXE |
+|---|---|---|---|
+| 隐藏右上角 2D 船血条 | `src/ui/hud.js`（`this.hpWrap.id = 'hud-hp'`）、`index.html`（`body.release` 选择器组） | ✔ | ✖ |
+| 隐藏镜像标签 / 选关上方绿色长条 | `index.html`、`src/main.js` | ✔ | ✖ |
+| 授权校验默认关闭 | `tools/cast-pc/main.js`（`LICENSE_ENABLED`）、`MainActivity.java`、`renderer/` | ✔ | ✔ |
+| 服务器清单 + 旧配置清理 | `tools/cast-server/server.js`、`sync-content.js`、`tools/cast-pc/main.js`、`renderer/`、`MainActivity.java` | ✔ | ✔ |
+
+⇒ **本轮 APK 与 EXE 都要重打**。
+
+### 打包命令（照抄）
+
+```powershell
+# APK（→ app\build\outputs\apk\debug\app-debug.apk，126.97 MB）
+cd tools\cast-apk
+powershell -ExecutionPolicy Bypass -File .\build-apk.ps1
+
+# EXE（→ dist\WebXR直播接收端 Setup 1.0.0.exe，97.09 MB）
+cd tools\cast-pc
+$env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'
+$env:ELECTRON_BUILDER_BINARIES_MIRROR='https://npmmirror.com/mirrors/electron-builder-binaries/'
+npm run dist
+```
+
+### ⚠ 本轮新增的一条部署前置（**最容易漏**）
+
+配置**不再随 EXE 安装包走**（第二十一修「把配置内置进 EXE」的做法在清单模式下不生效）：
+
+```powershell
+# 每次改了 src/content/** 或 src/core/userConfig.js，必须发布一次：
+node tools\cast-server\sync-content.js --ver 1.0.0
+# 再部署到服务器 —— content/ 在 .gitignore 里，git pull 不会把它带过去！
+```
+
+现场应急（服务器不可用）：EXE 加 `--local-content`，配置改从「游戏目录」出。
+完整口径见 `docs/tech/09-服务器清单与旧配置清理.md`。
+
+---
+
+## 附 · 2026-09-24 第二十五修（接收端窗口：诊断行默认不显示）
+
+现场反馈：PC 接收端窗口里那几行把**服务器地址、共享密钥、设备号**都摆在屏幕上（大屏投出去更明显）。
+按「还在用的 → 隐藏显示；已不用的 → 不出现」处理：
+
+| 那一行 | 还在用吗 | 处理 |
+|---|---|---|
+| 平台参数（`#platline`） | 在（平台对接诊断） | **默认不显示**，`--panels` 才显示 |
+| 服务器清单的「来源 https://webvr123.site …」 | 在 | **默认不显示**（清单状态本身仍常显），`--panels` 才显示 |
+| 授权（本机直播端）（`#licbox`） | **已不用**（第二十三修起授权校验默认关闭） | **整行不出现**；加 `--license` 恢复旧行为时自动回来 |
+| 启动授权（`#guardbox`：密钥 `webxr-cast` / 局号 / 设备白名单） | 在（主控门禁） | **默认不显示**，`--panels` 才显示 |
+
+- 实现：`body:not(.diag) #platline, #mftDiag, #guardbox { display:none }`，`body.diag` 由 `--panels` 驱动
+  （与第二十二修的「游戏目录」面板同一套开关）；授权行由 `body.no-lic` 控制。
+- **不只是隐藏**：诊断关着时这些内容**根本不写进 DOM**（`renderManifest` / `renderGuard` 提前返回）
+  —— `display:none` 看不见但 DOM 里仍在，检修时用 DevTools 一样能读到。
+- 常显的只剩：本机地址 / 推流端状态 / 头显请打开地址 / **服务器清单「已就绪 ver=x（n 个文件 / xKB）」**。
+- ⚠ 顺带修掉一个真 bug：`license:get` 原来回的是 `licenseState()`，它没有 `off` 字段 ⇒
+  第二十三修做的「关掉授权就不显示整行」实际没生效（现场看到「未激活（未加载）剩余 - 天」）。
+  新增 `licenseUiState()` 收口（关闭时回含 `off:true` 的摘要）。
+
+**重打包边界**：只改 `tools/cast-pc/**`（`main.js` + `renderer/`）⇒ **只需重打 EXE**，APK 不受影响。
+
+---
+
+## 附 · 2026-09-24 第二十六修（平台「二次拉起」不再打断 VR）
+
+现场反馈：平台客户端「启动两次游戏，中间隔 20 秒左右」，第二次时玩家已在 VR 里 →
+头显弹 PICO 系统弹窗「退出PICO浏览器 / 你需要退出当前应用才能继续操作」，本局被挤出 VR。
+
+根因：平台的 `am start` 会带来**新进程**（那套启动里带 `kill`），而「免打扰」判据原先只存在于
+**进程内**（`sLaunched`、`GameServer.lastPageHitMs`）⇒ 新进程判据全空 ⇒ 走完整门禁 +
+建「正在等待直播端启动…」提示页（一个 2D 窗口）⇒ 弹窗 + 挤掉 XR 会话。
+
+本修落地（**只影响 APK**）：
+
+| 文件 | 改动 |
+|---|---|
+| `PagePresence.java`（新） | 页面在场证据写进 SharedPreferences（跨 `force-stop` 存活）：最后打点时刻 / `st` / `xr` / `cs`；`aliveNow()` = 6s 内打过点，或 90s 内打过点且当时 `xr=1` |
+| `GameServer.java` | 新增 `lastPageXr`；每次页面轮询/事件都刷新跨进程记录 |
+| `MainActivity.java` | `onCreate` 最前面读回记录（免打扰判据在新进程里也成立）；页面在 XR 里时**不发任何前台动作**、只 `finish()`；5s 兜底复核；`onNewIntent` 收页 |
+| `src/game/game.js` | 判死复核 1 轮 → 2 轮（各 2.5s），避免撞上 APK 重启窗口被误判「游戏已死」 |
+
+**重打包边界**：只改 APK 侧（含 `src/game/game.js`）⇒ **只需重打 APK**；EXE、服务器都不用动。
+平台侧的根本解（停止每 20s 重发整套启动）见 `docs/平台对接需求（对平台方）.md` 第 8 条。
+
+### 第二十七修（2026-09-24，「平台重拉弹窗」的客户端解法 · APK 侧）
+
+| 文件 | 改动 |
+|---|---|
+| `EntryLock.java`（新） | 组件级**停用/恢复平台入口** + 死人开关（闹钟 60s）+ 进程启动自愈 + 心跳复核；留痕标记 `第二十七修-本局停用平台入口` |
+| `RecoverActivity.java`（新，`enabled=false`） | **人工恢复入口**：只在停用期间启用；点它=恢复 + 打开配置页。平台隐式拉起时用 referrer 判出并**只 finish**（不建窗口） |
+| `EntryFuseReceiver.java` / `BootReceiver.java`（新） | 死人开关接收端；开机 / 覆盖安装（`MY_PACKAGE_REPLACED`）恢复 |
+| `AndroidManifest.xml` | `RECEIVE_BOOT_COMPLETED`；`RecoverActivity`（MAIN/LAUNCHER + `enabled=false`）；两个 receiver |
+| `GameServer.java` | 页面轮询里的 `xr` 驱动 `EntryLock.onPageXr`；新增 `/api/entry`（状态）/ `/api/entry/unlock` / `/api/entry/lock` / `?on=0|1` |
+| `MainActivity.java` | `scheduleClientRestore` 开头恢复；心跳线程每 5s 复核；配置页 `cbEntryLock` + `tvEntryLock`；被拉起且处于停用态时明确留痕 |
+| `CastApp.java` | `onCreate` 里 `EntryLock.onProcessStart`（进程启动自愈） |
+| `activity_main.xml` | 新增勾选框 `cbEntryLock`（默认勾选）+ 状态行 `tvEntryLock` |
+
+**为什么第二十六修不够**：留痕实测 14:02:18.241 我们「只 finish 本页、没发任何前台动作」，
+89ms 后 `xr-end` 仍然发生 ⇒ **只要我们的 Activity 被创建，PICO 就会建 2D 面板并顶掉 XR 会话**
+（与本文件第九修注释里 18:24:04 那次的结论一致）。故第二十七修改为**让平台那次 `am start` 落不到我们身上**。
+
+**现场自救（⚠ 口径已被第二十八修改写，见下节）**：电脑浏览器打开
+`http://<头显IP>:8080/api/entry/unlock`；或重启头显。
+
+**重打包边界**：只改 APK 侧 ⇒ **只需重打 APK**；EXE、服务器都不用动。
+
+### 第二十九修（2026-09-24，「本局结束即作废页面在场记录」· APK 侧）
+
+**现象**：进 VR 不再弹窗 ✔，但**每次的第二场都起不来**，只有第一场正常。
+
+**留痕判读**（build=…-p28-zero-entry，15:45–15:50 连试三次，三次都起不来）：
+
+| 时刻 | 留痕 | 判读 |
+|---|---|---|
+| 15:46:20.840 | `收到平台关闭指令 0x10 closeGame` | 第一场正常结束 |
+| 15:46:22.067 | `[PAGE] {"ev":"DEAD:pagehide"…}` | 浏览器页被卸掉（退出策略关的浏览器） |
+| 15:47:02.583 | `跨进程页面在场判据：上一进程最后打点 18s 前 state=playing xr=true → alive=true` | ❌ 死页被当成活页 |
+| 15:47:02.599 | `平台重复拉起：判定游戏页仍在 → 免打扰路径：不重开浏览器` | ❌ **第二场就这么被吞掉** |
+| 15:47:07.606 | `免打扰路径复核：页面在打点（age=23173ms）→ 本次重拉零打扰结束` | ❌ 复核也把「有记录」当成「还在打点」 |
+
+**根因**：第一场结束时页面是**在 XR 里**被杀的，跨进程记录（`PagePresence`，第二十六修）最后一条打点
+带着 `xr=true`、`state=playing`；第二场的平台 `am start` 落在 20~40s 后，仍在
+`ALIVE_XR_MS = 90s` 窗口内 ⇒ 被判成「页面还在跑」⇒ 免打扰路径「不重开浏览器」⇒ 头显上什么都没发生。
+**第二十六修那条为「平台 kill 我们之后重启」设计的规则，在「本局已经结束」的场景下变成了毒药。**
+
+**本修改动（3 处，只动 APK 侧）**：
+
+| 文件 | 改动 |
+|---|---|
+| `PagePresence.java` | 新增作废标记 `K_DEAD` + `markRoundOver(why)` / `isRoundOver()`；`aliveNow()` 见标记即 false；页面任何一次打点都会把标记撤掉；`ALIVE_XR_MS` 90s → **45s**；`BUILD_NOTE` → `第二十九修-本局结束即作废（原第二十六修-跨进程页面在场）` |
+| `MainActivity.java` | ① `restoreClientAndCloseBrowser()`（= 退出策略，**本局结束的两种路由都经过它**）开头调 `markRoundOver`；② 免打扰 5s 复核的判据由「有记录」收紧为「**8s 内真的收到过页面请求**」（新常量 `PAGE_FRESH_MS`） |
+| `GameServer.java` | `/api/page/dead`（sendBeacon 死因）与 `/api/page/event` 里带 `DEAD:` 的生命周期事件 → 一并 `markRoundOver` |
+
+**预期行为**：第一场结束 → 第二场平台「启动游戏」→ 浏览器**重新打开**游戏页（预加载约 10s）→ 正常进 VR。
+留痕应出现 `页面在场记录已作废（本局结束（平台关闭指令 0x10 closeGame））`。
+
+**重打包边界**：只改 APK 侧 ⇒ **只需重打 APK**；EXE、服务器都不用动。
+平台侧的根本解仍是「停止每 20s 重发整套启动」（`docs/平台对接需求（对平台方）.md` 第 8 条）。
+
+### 第二十八修（2026-09-24，「包内零入口」· APK 侧）
+
+第二十七修上线后现场**仍然弹窗**。p27 留痕（build=…-p27-entry-lock，14:57–15:00）三行定案：
+
+| 时刻 | 留痕 | 判读 |
+|---|---|---|
+| 14:59:08.737 | `★ 平台入口已临时停用（页面在 XR 沉浸式会话里（?xr=1））` | 停用已生效，`MainActivity` 确为 DISABLED |
+| 14:59:17.418 | `⚠ 平台的 am start 落到了「恢复入口」上 → 说明平台用的是不带 -n 的隐式 intent` | 平台被 `-n …/.MainActivity` 拒掉后**退化成隐式 MAIN/LAUNCHER**（或客户端直接 `getLaunchIntentForPackage`），解析到了当时唯一启用的 `RecoverActivity` |
+| 14:59:17.618 | `xr-end st=intro byPlayer=false idle=false vis=visible` | **200ms** 后 XR 又掉了 —— 弹窗照旧 |
+
+⇒ **只要包内还剩任何一个可被隐式意图解析的 Activity，平台就总能拉到它。**
+第二十七修为了让现场能从应用列表自救而启用 `RecoverActivity`，恰好把靶子从 `MainActivity` 换成了它。
+
+本修改动（**只动 APK 侧**）：
+
+| 文件 | 改动 |
+|---|---|
+| `EntryLock.java` | `holdForXr` 由 `apply(a, false, true)` → `apply(a, false, false)`：**入口与恢复入口同时停用**；留痕标记改 `第二十八修-包内零入口` |
+| `AndroidManifest.xml` | `RecoverActivity` 注释改口径（实现与清单项保留、`enabled=false`，停用期间**不再启用**） |
+| `PageForensics.java` | 留痕 build 标记 → `2026-09-24-p28-zero-entry` |
+
+**不变式（本修起）**：「页面在 XR 会话里」⇔「包内 MAIN/LAUNCHER 入口数 = 0」。
+
+**代价（现场须知）**：本局在 VR 里的那几分钟，头显应用列表里**点不到本游戏**
+（这正是要的效果 —— 平台也点不到）。出 VR（`?xr=0`）秒级恢复；其余六道安全网不变
+（本局结束 / 页面打点停 20s / 进程启动自愈 / 死人开关 60s / 开机与覆盖安装 / 重装）。
+人工恢复走**非 Activity 通道**：电脑浏览器 `http://<头显IP>:8080/api/entry/unlock`
+（`/api/entry` 查状态），或重启头显。
+
+**平台侧影响**：VR 期间平台那次 `am start` 现在会**解析失败**（shell 版 `Error: Activity not started,
+unable to resolve Intent`；应用内 `startActivity` 抛 `ActivityNotFoundException`）⇒ 已并入
+`docs/平台对接需求（对平台方）.md` 第 4 条（请改用显式组件并对失败容错）。
+
+**重打包边界**：只改 APK 侧 ⇒ **只需重打 APK**；EXE、服务器都不用动。
+## 附 · 2026-09-24 发行身份：包名 / 显示名 / 版本号 一键改（`tools/rebrand.ps1`）
+
+**为什么要有它**：目前 APK 的安装身份是**临时顶替**另一个游戏来的 ——
+`applicationId = com.GoodNet.DeepmindHacker`、显示名 `DeepmindHacker`、版本 `2.0.5 (205)`。
+正式发行要换成自己的名字，而「换包名」在这套工程里零碎踩点很多（见下），所以做成一条命令。
+
+```powershell
+# 问答式（最省事）：双击 tools\rename-game.bat，或
+powershell -ExecutionPolicy Bypass -File tools\rebrand.ps1 -Interactive
+
+# 也可一次给全（不写盘只预览：加 -DryRun；只看当前身份：-Restore）
+powershell -ExecutionPolicy Bypass -File tools\rebrand.ps1 -PackageId com.yourdomain.balloon -AppName 打气球 -VersionName 1.0.0 -VersionCode 101
+
+# 常用开关：-NoBuild（只改文件不打包）/ -Sync ""（不往交付目录拷）/ -SyncName 文件名
+#           -PcAppId / -PcProductName（顺带改 PC 端 exe 的 build.appId / productName）
+```
+
+不给 `-VersionCode` 时**自动 +1**（平台与 Android 都是按 versionCode 判新旧，同号覆盖安装会被拒）。
+
+### 它到底改哪几处（2 个文件 + 2 类字符串）
+
+| | 位置 | 说明 |
+|---|---|---|
+| ✅ 安装包名 | `tools/cast-apk/app/build.gradle` → `applicationId` | 唯一的安装身份来源 |
+| ✅ 版本 | 同文件 → `versionCode` / `versionName` | 平台按它认版本 |
+| ✅ 显示名 | `tools/cast-apk/app/src/main/res/values/strings.xml` → `app_name` | 清单里是 `android:label="@string/app_name"` |
+| ✅ 注释 | `MainActivity.java` / `CastApp.java` 中**注释行**内的旧包名 | 只动 `*`、`//` 开头的行 |
+| ✅ 通知标题 | `CastService.java` → `setContentTitle("… 运行中")` | 全工程唯一一处用户可见的硬编码名字 |
+| ❌ 不动 | Java 包名 `com.local.webxrcast`、`AndroidManifest.xml`、`assets/`、PC 端 exe、服务器、授权 | 与「安装身份」无关；动 Java 包名只会白造一堆 diff 与风险 |
+
+改完自动做三件事：**打包 → `aapt2 dump badging` 读产物的真实身份自证 → 拷到交付目录并重算 SHA256**
+（顺带更新交付目录 `使用说明.md` 里的校验值）。防的是「构建 SUCCESS 但身份没吃到改动」这种要装到
+设备上才发现的事故；改包名时旧交付包会先归档到 `_旧包-<日期>\`，不会被同名覆盖掉。
+
+### 改名前必须知道的 4 件事
+
+1. **平台要重新登记新包名**，否则平台枚举不到、也拉不起来（它按包名枚举并
+   `am start -n <包名>/.MainActivity`）；平台登记里的**版本号**也要一起改。
+2. 头显上它变成**全新应用**：旧包不会自动消失（可共存），`prefs` 全丢 ⇒ 现场要
+   **重新授予一次悬浮窗权限**，否则关局后顶不回平台客户端（见第二十 / 二十八修）。
+3. 别落在平台自己的前缀里（`com.GoodNet.*` 工具会告警），更不能占用平台客户端包名
+   `com.GoodNet.LauncherClient`（工具直接拒绝）。
+4. **签名与升级**：改名不影响签名；但**换签名**（debug → 自己的 release keystore）会让
+   **同包名也装不上**（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`），必须先卸载旧包。
+
+### ★ 编码规矩（两条方向相反的坑，都实测过）
+
+| 文件 | BOM | 为什么 |
+|---|---|---|
+| `.ps1`（本工具、`build-apk.ps1`） | **必须带** | PowerShell 5.1 把无 BOM 的脚本按 GBK 读 —— 中文注释的字节会吞掉引号，直接语法报错（`Missing closing '}'`） |
+| `build.gradle` / `.java` / `.xml` / `src/*.js` | **绝不能带** | `build.gradle` 带 BOM → Groovy `Unexpected character: '?'`；`.java` 带 BOM → javac `illegal character: '\ufeff'` |
+
+
+---
+
+## 附 · 2026-09-24 现场「一局采集」脚本（`tools\collect-round.bat` + `tools\cap-round.py`）
+
+**它回答一个问题**：游戏自然结束后，我方发不发 / 平台看不看得见「本局结束」，
+以及平台收到之后会不会**顺手把游戏关掉**。答案一半在原始帧里、一半在平台日志里，所以脚本一次做完两件事：
+
+| 维度 | 手段 | 能看到什么 |
+|---|---|---|
+| 原始帧 | raw socket 抓 UDP **51124 / 51234 / 62135 / 62136** | 结束帧的**真实字节**、方向、时间线 —— 平台日志里**没有**帧内容 |
+| 平台行为 | 抓平台 `DebugLog\*.log` 命中行 | 平台**收到**了什么、之后有没有 `SendCloseGameToGame` / `kill` |
+
+> **2026-09-24 首次跑通即结案**：答案是 **CMD 7 `GameStatistics`**，**不是** CMD 6 `GameEnd`
+> —— 完整证据与字节样本见本文末〈结论：平台的「游戏结束」是 CMD 7〉。
+
+### 一条命令
+
+```bat
+tools\collect-round.bat              :: 双击也行 —— 自己弹 UAC 提权，跑完按回车出报告
+tools\collect-round.bat -s 180       :: 抓 180 秒自动停
+tools\collect-round.bat --selftest   :: 自检（不需管理员，不抓包）
+tools\collect-round.bat --analyze <某个.pcap>   :: 只分析已有抓包（不需管理员）
+```
+
+产物：`E:\AI_Work\WebXR_Capture\<时间戳>\` —— `round.pcap`（原始帧）+ `report.txt`
+（一页报告：逐帧时间线 + CMD 命中表 + 结论 + 下一步）。
+
+### 现场铁律（否则白跑）
+
+1. 必须在**平台认为在跑游戏的那台机器**上抓（开局帧只发给它，抓错机器一帧都收不到）。
+2. **必须让这一局自然结束**（打完 / 打输 / 通关）。用平台的「结束游戏」收场只会看到
+   `kill` + `CloseGame`，**永远看不到结束帧（CMD 7）** —— 之前几份抓包就是这么错过的。
+3. **上报之后别急着停**：结束帧发出去后平台还要走 `PostGameResult` → 暂停计时 → 落库一串动作。
+   报告里若出现「⚠ 最后一次结算上报之后只观察到 N 秒」就是在提醒你 —— 再等 **30~60 秒**才收工。
+
+### 实现注记（五条，全是现场实测踩出来的）
+
+- **必须提权**：raw socket 收混杂包要管理员。`.bat` 用 `net session` + `fltmc` 双重判定并自动弹
+  UAC 自提权；`%TEMP%\collect-round.elevated.tmp` 是哨兵文件，防的是「提权后仍判不成管理员
+  ⇒ UAC 死循环」。`--analyze` / `--selftest` 是只读模式，走快速通道不弹 UAC。
+- **`SIO_RCVALL` 要过三道坎**（2026-09-24 现场连撞两次；`--selftest` 测不到，只有**提权跑真抓包**才会碰到）：
+  1. **常量名**：Python 的 socket 里叫 **`socket.SIO_RCVALL`**，**没有** `IOCTL_RCVALL` ⇒ `AttributeError`；
+  2. **数值越界**：`0x98000001 > INT_MAX`，而 `setsockopt` 的 `optname` 是 C `int`
+     ⇒ `OverflowError: Python int too large to convert to C long`（补码负值 `-1744830463` 才塞得进）；
+  3. **`socket.ioctl()` 在 Windows 上对 `> 0x7fffffff` 的控制码会被拒**。
+  现在的做法：`ws2_ioctl()` 用 **ctypes 直呼 `ws2_32.WSAIoctl`**（绕开 ②③），失败再退
+  `setsockopt` 补码、再退无符号；实际生效的写法会打进日志（`…，抓包模式 ctypes.WSAIoctl →`）。
+  该 helper 之所以单独抽出来，是为了能用**不需要管理员**的控制码 `SIO_UDP_CONNRESET (0x9800000C)`
+  在普通 UDP socket 上先自测一遍管道 —— 已验证返回 `(0, 0)`。
+- **绑哪个 IP 有讲究**：`SIO_RCVALL` 绑**具体接口地址**最稳（绑 `0.0.0.0` 在部分 Windows 上收不到包）。
+  默认自动取本机主用 IPv4，日志里会打印**实际绑定的地址**；可用 `--bind-ip` 指定。
+- **`.bat` 只能写 ASCII（这条最反直觉）**：cmd.exe 是**按当前代码页逐字节**读批处理文件的，
+  `.bat` 里放中文会在多字节字符**中间**被切断，cmd 接着把切碎的字节当命令执行，现场报错就是
+  `'xxx游戏」，否则永远看不到' is not recognized as an internal or external command`。
+  所以 `collect-round.bat` 整文件 ASCII，中文提示交给 Python 打印。
+- **控制台编码**：Python 侧 `fix_console()` 把代码页切 UTF-8 并 `reconfigure` stdout，
+  否则报告里的 ✅ / ❌ 会抛 `UnicodeEncodeError` 把脚本直接打断（Windows 控制台默认 GBK 代码页）。
+
+---
+
+### 结论：平台的「游戏结束」是 **CMD 7**，不是 CMD 6（2026-09-24 实测）
+
+现场一局采集（`E:\AI_Work\WebXR_Capture\20260924-175353\`，`round.pcap` 78868 字节，
+17:53:53 ~ 18:10:34，游戏通道 12 帧 / 控制通道 647 帧），跑的是**原版 Unity 游戏**
+（`DeepmindHacker-2.0.4`）⇒ 拿到的是**权威样本**。
+
+| 时间 | 方向 | 内容 |
+|---|---|---|
+| 17:54:24.103 | 游戏(本机) → 平台 | `0x01` 注册（源端口 **51124** → `51234`） |
+| 17:54:24.137 | 平台 → 游戏 | `0x01` + 240 字节 Machines JSON（机位表回执） |
+| 17:54:45.197 | 平台 → 游戏 | `0x10` + `closeGame`（＝平台的「结束游戏」） |
+| 17:55:05.429 | 平台 → 游戏 | `0x05` + 109 字节 StartInfo（`gameId:128`）＝「开始游戏」 |
+| 17:55:05.444 | 游戏 → 平台 | `0x05` + 118 字节确认帧（`flag:1`） |
+| **18:10:20.386** | **游戏(本机) → 平台** | **`0x07` + 398 字节 = 本局结束上报（首字节 1 + JSON 397）** |
+
+平台 `DebugLog\2026-09-24-17-38-22.log` 同一秒：
+
+```
+6:10:20 PM  ===ReceiveCall==IP==192.168.31.228,,cmd = 7
+6:10:20 PM  收到客户端发来的消息啦7,
+6:10:20 PM  OnReceiveResultMsg, str = {…与抓包逐字一致…}
+6:10:20 PM  ==PostGameResult=={"gameid":128,"instid":15,"shopid":1,…}
+6:10:20 PM  游戏计时已暂停: 15:15.24
+6:10:20 PM  游戏结束 场次ID:15 结算类型:正常结算,
+6:10:23 PM  收到结算消息，游戏已暂停:
+6:11:42 PM  关闭游戏=128                       ← 82 秒之后，且是**人点「结束游戏」**触发的
+```
+
+**四条可直接落地的结论**：
+
+1. **CMD 6 从头到尾不存在**（我方没发、平台也没用）—— 「游戏结束」对平台而言就是 **CMD 7**。
+2. **平台收到 CMD 7 就弹结算、且不关游戏**：那次 `kill` + `SendCloseGameToGame` 出现在 **82 秒之后**，
+   由人点「结束游戏」触发。⇒ 这正是「通知平台本局结束、但别关游戏」的正解。
+3. **`gameid` / `instid` / `shopid` 原版也全发 `0`**，平台按本局会话自行补成 `128 / 15 / 1`
+   ⇒ 我方照发 `0` 即可，不用猜。
+4. **`gameData` 是字符串化的 JSON、平台原样透传**（`PostGameResult` 里仍是转义字符串），
+   不是嵌套对象 —— 别改成对象发。
+
+**帧格式**：`0x07` + UTF-8 JSON，**无长度前缀、无结尾符**（全 0 的样本 JSON 397 字节）。
+
+那 397 字节的权威样本（`JSON.stringify` 逐字节一致）：
+
+```json
+{"gameid":0,"instid":0,"shopid":0,"pos_playerid":null,"result":0,"scoreMul":0,"score":0,"mode":0,"time":0,"kill":0,"dead":0,"headshot":0,"meminfos":null,"gameData":"{\"gameIntensity\":0,\"result\":0,\"gameTime\":900,\"curProgress\":1,\"maxProgress\":6,\"playerData\":[{\"pos\":1,\"score\":0,\"total_kill\":0,\"total_die\":0,\"total_killhead\":0,\"hitRate\":0,\"killHeadRate\":0,\"estimate\":0}]}"}
+```
+
+**我方实现**：`tools/cast-pc/main.js` §平台游戏通道
+
+- `PC_FRAME_GAME_RESULT = 0x07`；`buildGameResultPayload(opts)` **逐字照抄**上面这份样本
+  （`curProgress = level + 1`、`maxProgress = 关卡总数`）；
+- `sendPlatformGameResult(opts, why)` 复用**注册时的同一个 socket**（源端口必须 **51124**，否则平台不认）；
+- 触发点：页面本局自然结束 → `POST /api/round/end` → `handleRoundEnd`
+  （**仅当本局真被平台开过**才发，免得空局乱报）；开关 `--no-game-result`（默认开）；
+- 现场**不必打满一整局**的自测端点：`POST /api/platform/game-result`
+  （在平台已点「开始游戏」的那一局里打一下，平台界面应立刻弹结算）；
+- 载荷**已与抓包字节逐字节比对通过**：`buildGameResultPayload({level:0,maxLevel:6,gameTime:900})`
+  与 `round.pcap` 里那 397 字节**完全相等**。
+
+> ⚠ 前提：EXE 必须是**被平台拉起**的。否则游戏通道不启用（`PLATFORM_CH.enabled === false`），
+> 上报会被跳过 —— `GET /api/info` 的 `gameChannel.lastResultWhy` 会写明原因。
+
+---
+
+### 现场轻量验证（一键）—— `tools\trigger-game-result.bat`
+
+**不用打满一整局**就能验「平台收到 CMD 7 会不会弹结算、会不会顺手关游戏」：
+
+```bat
+tools\trigger-game-result.bat              :: 双击也行
+tools\trigger-game-result.bat -DryRun      :: 只看状态，不发
+tools\trigger-game-result.bat -Port 8444   :: 已知端口时跳过探测
+```
+
+它等价于下面这条 curl，但把三个**现场坑**挡掉了：
+
+```powershell
+curl.exe -s -X POST http://127.0.0.1:8443/api/platform/game-result -H "Content-Type: application/json" -d "{}"
+```
+
+1. **端口**：PC 端 HTTP 从 8443 起、被占用会 +1 一路退到 **8453**；而打包后的 EXE
+   **不写日志文件**、纯净模式下界面又把「头显请打开 http://…:<端口>」那行藏了
+   ⇒ 现场**看不到**端口，硬猜 8443 会白试。脚本自己扫 8443~8453。
+   （另：PowerShell 里 `curl` 可能是 `Invoke-WebRequest` 的别名，必须写 **`curl.exe`**。）
+2. **前提**：`gameChannel.enabled = false`（EXE 不是被平台「启动游戏」拉起的）或本局还没
+   「开始游戏」时，上报会被跳过。脚本先把这几项状态摆出来，免得把「没发出去」误判成
+   「功能坏了」。
+3. **源 IP**：**最容易踩、也最不容易发现**的一个，详见本节后面〈⚠ 第一次跑这个脚本没反应？先看源 IP〉。
+   （2026-09-24 现场第一次跑就栽在这里。）
+
+命中后平台侧应当**立刻**（不用等）出现 `cmd = 7` → `==PostGameResult==` →
+`游戏结束 场次ID:N 结算类型:正常结算`，且**不关游戏** —— 这就是「只告知、不关掉」。
+想连抓包与平台日志一起留证，再用 `tools\collect-round.bat`。
+
+#### ⚠ 第一次跑这个脚本没反应？先看**源 IP**（2026-09-24 现场定案）
+
+现场第一次跑完，脚本报 `ok: true / results: 1`、PC 端也**确实发了 397 字节**，
+但平台界面什么都没有、**计时照常跑**。原因不是功能没做，而是**发去的地址是 `127.0.0.1`**：
+
+- 平台对上行帧做**来源 IP 白名单**校验。只要*目标*是回环，内核会把**源地址**也选成 `127.0.0.1`，
+  平台收到后直接丢弃，只在 `DebugLog` 留一句 `127.0.0.1这个外来IP想连接` —— `cmd = 7`
+  **一个字节都进不去**。
+- 对照证据：同一份日志里 `cmd = 5`（GameStart 应答）来了 3 次，因为那条回发用的是
+  「平台发帧过来的地址」；而 `cmd = 7` **一次都没有**。
+
+现在 PC 端按**证据强度**选、且只选一个目标，**绝不回退回环**：
+
+| 优先级 | 来源 | 备注 |
+| --- | --- | --- |
+| ① | `gameChannel.lastFromIp` | 平台自己发帧过来的源 IP，最可靠 |
+| ② | 启动参数 `--platform` / `argv[1]` 第 3 段 | 平台给的那个 |
+| ③ | 本机默认路由网卡地址 | 上面都拿不到时兜底（本机实测 `192.168.31.228`，正好在平台 Machines 表里） |
+
+> ★ ② **也要过滤回环**：平台**自己**给被拉起的游戏传的启动参数就是 `plstformIP = 127.0.0.1`
+> （见平台日志 `=StartGame==gamePath==...plstformIP = 127.0.0.1`），照抄它就等于自己踩同一个坑。
+> 故 ①②③ 三个来源一律过一遍「回环 / `0.0.0.0` / 空 → 丢掉」。
+
+排障一眼看：`tools\trigger-game-result.bat -DryRun` 会打印**上报目标地址**（读 `/api/info` 的
+`gameChannel.lastFromIp` / `platformIp`）；真发完还会回显 `实际发往:` —— 要是 `127.x`，
+说明平台从没下发过帧、启动参数也没给可用地址。
+
+**★ 2026-09-24 现场复测：通过 ✔** —— 重打 EXE 后跑一次 `tools\trigger-game-result.bat`，
+平台界面**立刻出现结算按钮**、且**不关游戏**；同一次平台日志里 `cmd = 7` → `==PostGameResult==`
+→ `游戏结束 场次ID:N 结算类型:正常结算`，与预期完全一致。
+
+> 小注：`127.0.0.1这个外来IP想连接` 这句**平台自身回环流量也会触发**（没跑本脚本时也出现过），
+> 所以它只是旁证；**决定性证据是 `cmd = 7` 有 0 次、而 `cmd = 5` 有 3 次**。

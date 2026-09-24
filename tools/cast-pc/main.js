@@ -14,11 +14,17 @@
 //                            （见「启动授权」段的 CONFIG_MANIFEST；本局局号 SESSION_ID 随包下发）
 //   GET  /api/license/current 出示本机 license + proof（**无鉴权**，见「授权（License）」段）
 //   GET  /api/info           返回端口 / 本机 IP / 对端在线状态（含 guard/ver：是否已支持启动授权）
+//   ★ 第二十四修：配置不再来自游戏目录磁盘，而是「每次启动从服务器拉清单」——
+//     GET  /api/manifest（服务器侧，见 tools/cast-server/server.js）→ 本机落 userData/manifest/，
+//     /src/content/** 与 /api/config/dump 只认这份清单（清单没到位就明确失败，绝不回落本地旧文件）。
 //   GET  /__cast/...         接收端自己的界面（避免 file:// 导致相对路径失效）
 //
 // 用法：npm start [-- --port=8443 --root=<游戏目录> --no-serve --game-root=<游戏目录>
 //                        --room=<房间号> --platform=<IP:端口> --game=<游戏名>
 //                        --pure | --panels（强制完整面板）| --fullscreen]
+//                        ★ 清单相关（第二十四修）：
+//                        --manifest（强制开清单模式，开发模式默认关）/ --local-content（强制关：应急用本地配置）
+//                        --manifest-url=<基址> --manifest-key=<共享密钥> --content-ver=<版本号>]
 //      平台拉起时还会带一个位置参数 "<exe 相对路径>$<进程名>$<平台本机 IP>"（见「平台参数」段）。
 
 const { app, BrowserWindow, ipcMain } = require('electron');
@@ -214,6 +220,25 @@ function lanIPs() {
   return out;
 }
 
+/**
+ * 本机**默认路由**所用网卡的 IPv4 地址（比 lanIPs()[0] 可靠 —— 后者受网卡枚举顺序影响，
+ * 有 VMware / Hyper-V / 虚拟网卡时会挑错，而挑错就等于上行帧的源 IP 不在平台白名单里）。
+ *
+ * 做法：UDP `connect` 一个公网地址，让内核替我们选源地址（UDP 不会真的发包），再读回来。
+ * 拿不到就退回 lanIPs()[0]。
+ */
+function primaryLanIp() {
+  try {
+    const s = dgram.createSocket('udp4');
+    s.connect(53, '8.8.8.8');
+    const ip = s.address().address;
+    s.close();
+    if (ip && ip !== '0.0.0.0' && !ip.startsWith('127.')) return ip;
+  } catch (e) { /* 没默认路由等 → 下面兜底 */ }
+  const list = lanIPs();
+  return list[0] || null;
+}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',     // ES module 必需，错 MIME 会被浏览器拒绝加载
@@ -268,6 +293,8 @@ function pushStatus() {
     panels: PANELS,
     publisher: !!publisher,
     viewer: !!viewer,
+    // ★ 第二十四修：清单状态也推给界面（现场排障第一眼）
+    manifest: { on: MANIFEST.on, ok: MANIFEST.ok, ver: MANIFEST.ver, count: MANIFEST.count, why: MANIFEST.why },
   });
 }
 
@@ -460,6 +487,8 @@ app.whenReady().then(() => {
     //   头显页面在「本轮真的结束」时调（game.js 的 _tellMasterRoundEnd），经 APK 的 GameServer
     //   代理过来；PCVR / 直连诊断时页面直接打到这里。
     if (pathname === '/api/round/end' && req.method === 'POST') return handleRoundEnd(req, res);
+    // 现场自测：不玩整局也能验「平台会不会弹结算」——POST /api/platform/game-result
+    if (pathname === '/api/platform/game-result' && req.method === 'POST') return handleManualGameResult(req, res);
     // ★ 第二十修：反向那条 —— 头显先收到平台开局帧时，把「平台已开始本局」回报过来
     //   （见 src/main.js 的 reportPlatformStartToMaster）。与上一行对称，判据仍是 roundSet()。
     if (pathname === '/api/round/start' && req.method === 'POST') return handleRoundStart(req, res);
@@ -496,9 +525,15 @@ app.whenReady().then(() => {
         // ★ 授权状态摘要（一眼看出「EXE 到底授权没有」；完整凭据走 /api/license/current）
         //   故意不调 licenseState()：那个会去枚举网卡算指纹，不该出现在高频的 /api/info 里。
         license: licenseSummary(),
+        // ★ 第二十四修：清单状态（ver / 指纹 / 什么时候清的旧配置）—— 现场排障第一眼看这里
+        manifest: manifestSummary(),
       }));
       return;
     }
+    // ★ 第二十四修：清单管辖的配置路径（/src/content/**、/src/core/userConfig.js）**只认清单缓存**，
+    //   绝不回落游戏目录。必须排在下面的 handleStatic 兜底之前。
+    if (manifestManages(pathname.replace(/^\/+/, ''))) return handleManifestStatic(req, res, pathname);
+
     return handleStatic(req, res, pathname);
   });
 
@@ -528,13 +563,35 @@ app.whenReady().then(() => {
     console.log(`[cast-pc] 本机 IP：${ips.join(', ')}`);
     console.log(`[cast-pc] 静态托管根：${currentServeRoot() || '（未托管）'}`
       + (BUNDLED_SERVE ? '（EXE 内置：配置 + 开场影片）' : '（开发模式：项目根）'));
-    console.log(`[cast-pc] 配置下发根：${CONFIG_ROOT || '（无 —— 头显会拒绝启动）'}`
-      + (GAME_ROOT ? '（外部游戏目录）' : (BUNDLED_SERVE ? '（EXE 内置 resources/game-cfg）' : '')));
+    // ★ 第二十四修：清单模式下「配置下发根」是服务器清单，不是磁盘目录 —— 日志要说清，免得现场找错地方。
+    console.log(MANIFEST_ON
+      ? `[cast-pc] 配置来源：**服务器清单** ${MANIFEST_BASE}（期望 ver=${MANIFEST_VER}，落 ${MANIFEST_DIR}）`
+      : `[cast-pc] 配置下发根：${CONFIG_ROOT || '（无 —— 头显会拒绝启动）'}`
+        + (GAME_ROOT ? '（外部游戏目录）' : (BUNDLED_SERVE ? '（EXE 内置 resources/game-cfg）' : '')));
     console.log('[cast-pc] 头显请打开：' + (ips[0] ? `http://${ips[0]}:${usedPort}/?cast=1` : '(未取到局域网 IP)'));
     logPlatformArgs();
     console.log('==================================================');
 
     loadGuard();
+
+    // ★ 第二十四修：服务器清单 —— 「每次启动从服务器拉清单 + 启动前清掉旧时间的配置」。
+    //   ① 启动**无条件先清**：这是主防线 —— 被平台 kill（关局时 kill + closeGame 并发）或断电时
+    //      before-quit 根本不会执行，不清就会把上一次的配置留到下一局；
+    //   ② 再拉一份（带重试）。拉不到就明确失败：/api/config/dump 与 /src/content/* 都不回落本地。
+    if (MANIFEST_ON) {
+      manifestClear('启动前（第二十四修：旧配置先清掉）');
+      manifestEnsure('启动').then((ok) => {
+        console.log(ok
+          ? '[cast-pc] ✓ 启动清单就绪'
+          : '[cast-pc] ✖ 启动清单未就绪：' + MANIFEST.why + '（头显取配置时会自动再试；仍失败则头显起不来游戏）');
+      });
+      if (GAME_ROOT && fs.existsSync(path.join(GAME_ROOT, 'src', 'content'))) {
+        console.warn('[cast-pc] ⚠ 外部游戏目录里还留着 src/content/ —— 本地这份**不会被使用**'
+          + '（清单模式下配置只认服务器清单）。装机时不应把配置放进游戏目录。');
+      }
+    } else {
+      console.log(`[cast-pc] 清单模式**关闭**（--local-content 或开发模式）：配置直接取自${CONFIG_ROOT || '（无）'}`);
+    }
 
     // ——— IPC：让 UI 改游戏目录配置（持久化 + 立即影响新请求） ———
     ipcMain.handle('cfg:get', () => ({
@@ -616,7 +673,7 @@ app.whenReady().then(() => {
     // ——— IPC：平台参数（文档第 4 条）—— 界面顶部原样显示平台带了什么，便于现场核对 ———
     ipcMain.handle('platform:get', () => ({ ...PLATFORM_ARGS, argv, packaged: !!app.isPackaged }));
 
-    ipcMain.handle('license:get', () => licenseState());
+    ipcMain.handle('license:get', () => licenseUiState());
     ipcMain.handle('license:set', async (_e, patch) => {
       if (!patch || typeof patch !== 'object') return { ok: false, why: '无有效 patch' };
       if (typeof patch.actCode === 'string' && patch.actCode.trim()) {
@@ -624,11 +681,11 @@ app.whenReady().then(() => {
       }
       if (patch.renew === true) {
         const r = await licenseRenew('界面手动');
-        return { ok: r.ok, why: r.why || (r.ok ? '续期成功' : '续期失败'), state: licenseState() };
+        return { ok: r.ok, why: r.why || (r.ok ? '续期成功' : '续期失败'), state: licenseUiState() };
       }
       if (patch.reload === true) {           // 便于手工放一份 license.json 后热载
         loadLicense();
-        return { ok: LICENSE.ok, why: LICENSE.why, state: licenseState() };
+        return { ok: LICENSE.ok, why: LICENSE.why, state: licenseUiState() };
       }
       return { ok: false, why: '无有效动作（actCode / renew / reload）' };
     });
@@ -658,6 +715,15 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+/**
+ * ★ 第二十四修：正常退出也清一遍清单。
+ * <p>注意它是**辅助**不是主防线 —— 平台关局是 `kill`（实测与 closeGame 并发），
+ * 那种情况下本事件不会执行，所以「启动无条件先清」才是真正兜住残留的那一道（见 onListen）。
+ */
+app.on('before-quit', () => {
+  if (MANIFEST_ON) manifestClear('退出（before-quit）');
 });
 
 // ————————————————————————— 启动授权（LaunchGuard） —————————————————————————
@@ -691,7 +757,19 @@ const GUARD_SECRET_DEFAULT = 'webxr-cast';
 // 本次进程运行期间的「局号」。头显把它随下发配置一起存盘；下次启动时若发现本机存的局号与当前
 // EXE 报的不一致 ⇒ 本地下发文件视为**已失效**、整包重下。等价于「退出即失活」，但不会在错误
 // 时机真删文件（Activity 销毁时真删，会把平台重拉后正在跑的游戏页资源删掉）。
-const SESSION_ID = crypto.randomBytes(4).toString('hex');
+// ★ 第二十四修：由 const 改 let —— 清单内容变化时**换局号**，头显据此整包重下（见 rotateSession）。
+let SESSION_ID = crypto.randomBytes(4).toString('hex');
+
+/**
+ * 换一个局号（第二十四修）。头显把局号随下发配置存盘：对不上就整包重下、换新配置。
+ * <p>只在「服务器清单内容变了」时调 —— 平时同一份内容不该让所有头显白重下一遍。
+ * @param {string} why 进日志（现场对账：这一局为什么重下过配置）
+ */
+function rotateSession(why) {
+  SESSION_ID = crypto.randomBytes(4).toString('hex');
+  console.log(`[cast-pc] 局号已更换 → ${SESSION_ID}（${why}）`);
+  pushStatus();
+}
 
 // 下发给头显的「轻量配置」清单（相对**游戏根目录**；目录以 / 结尾 = 整目录递归）。
 // 只收文本类文件（.js/.mjs/.json/.txt/.md/.css/.html）且单文件 <512KB —— 重资源（GLB / 全景图）
@@ -736,6 +814,57 @@ const LICENSE_HTTP_TIMEOUT_MS = 8000;                 // 授权服务器请求�
 //   否则「授权服务器」形同虚设。代价是服务器成了硬单点，必须靠「剩余天数常显 + 一键续期」
 //   + 服务器侧监控来兜运营风险（见 licenseState() 与界面上的授权面板）。
 const LICENSE_GRACE_MS = 0;
+
+// ★ 第二十三修（2026-09-23 深夜）★ 加密狗式「授权（License）」验证**默认关闭**。
+//   需求方决定不再做服务器授权校验，改用「每次启动从服务器拉清单」的口径
+//   （见 docs/tech/09-服务器清单与旧配置清理.md）。
+//   关闭时的行为（全部由这一个开关决定）：
+//     · licenseGate() 一律放行（不再因「未激活/已到期」拒绝头显）；
+//     · 界面不显示授权面板、不联网续期、不做激活；
+//     · /api/info 与 /api/license/current 回报 license.mode='off'，头显据此**跳过** license 校验。
+//   需要临时恢复旧的硬门禁（排障 / 回归）：启动加 `--license`。
+//   ⚠ 改这一行的默认值 = 恢复「服务器授权是硬单点」的旧行为，别顺手改。
+const LICENSE_ENABLED = hasFlag('license');
+
+// ————————————————— 服务器清单（第二十四修 · 2026-09-24）—————————————————
+// 需求（需求方 2026-09-24 确认「按你的建议来」）：不再做加密狗式授权校验（见上面的 LICENSE_ENABLED），
+// 改成「**每次启动从服务器拉一份清单**」，并在**关闭游戏**与**下次启动前**把旧时间的配置清掉。
+//
+// 口径（与需求方逐条对齐过）：
+//   · 清单范围 = 现有的「轻量配置」（与 CONFIG_MANIFEST 同范围：src/content/ 整目录 + src/core/userConfig.js）；
+//   · 来源     = 授权服务器（默认与 license 同基址，见 MANIFEST_BASE），走**共享密钥**，不绑机器、不要激活码；
+//   · 落盘     = userData/manifest/（**不进 GAME_ROOT**），meta.json 记 ver/builtAt/fetchedAt；
+//   · 清理     = ① 每次启动**无条件先清**（主防线：被平台 kill / 断电时 before-quit 根本不会跑）
+//                ② 本局结束（roundSet(false)）清一遍 ③ 正常退出（before-quit）再清一遍；
+//   · 拿不到清单 ⇒ /src/content/* 与 /api/config/dump **明确失败**，绝不回落本地旧文件
+//     （与头显侧「只认下发、不回落 assets」同一口径）。应急/自测：`--local-content` 回落本地游戏目录。
+//
+// ⚠ 强度定位诚实：这是「配置集中管理 + 版本一致 + 不留旧配置」，**不是**防破解（清单密钥在客户端里）。
+//   要防破解得回到 Ks 签名那套（见 docs/tech/08-授权服务器与License方案.md）。
+const MANIFEST_BASE = argValue('manifest-url', LICENSE_BASE);
+const MANIFEST_KEY = argValue('manifest-key', 'webxr-manifest');   // ⚠ 与服务器 cfg.manifestKey 逐字一致
+const MANIFEST_VER = argValue('content-ver', '1.0.0');            // ⚠ 与服务器 content/<ver>/ 目录名一致
+const MANIFEST_DIR = path.join(app.getPath('userData'), 'manifest');
+const MANIFEST_META = path.join(MANIFEST_DIR, 'meta.json');
+const MANIFEST_TIMEOUT_MS = 8000;                   // 单次请求超时
+const MANIFEST_RETRY_MS = [0, 2000, 5000, 10000];   // 启动时的重试节奏（现场刚开机 / 网络慢）
+const MANIFEST_MAX_BYTES = 4 * 1024 * 1024;         // 清单响应体上限（防呆：服务器发疯时别把内存吃光）
+const MANIFEST_TMP = MANIFEST_DIR + '.tmp';         // 拉取中转目录（落完再原子替换，见 manifestFetch）
+/**
+ * 清单模式开关。
+ *   <p>正式包（打包后）默认**开** —— 这就是产品形态：每次启动从服务器拉配置；
+ *   开发模式（npm start）默认**关** —— 本地调页面不该依赖服务器；
+ *   `--manifest` 强制开、`--local-content` 强制关（应急：现场断网时用本地游戏目录的配置跑）。
+ */
+const MANIFEST_ON = hasFlag('local-content') ? false
+  : (hasFlag('manifest') ? true : (typeof app.isPackaged === 'boolean' && app.isPackaged));
+/** 清单运行态（/api/info 与界面都读它；clearedAt/clearedWhy = 「旧配置什么时候被清的」） */
+const MANIFEST = {
+  on: MANIFEST_ON, ok: false, why: MANIFEST_ON ? '未拉取' : '已关闭（本地配置模式）',
+  ver: '', builtAt: 0, fetchedAt: 0, count: 0, bytes: 0, fp: '', sessionFp: '',
+  tries: 0, lastErr: '', clearedAt: 0, clearedWhy: '',
+};
+let manifestInflight = null;   // manifestEnsure 的并发去重（同一时刻只跑一趟重试）
 
 const LICENSE = {
   text: '', payload: null, ok: false, why: '未加载',
@@ -928,7 +1057,7 @@ async function licenseActivate(code) {
   LICENSE.lastRenewWhy = r.body.idempotent ? '已激活（重复激活，幂等命中）' : '激活成功';
   console.log(`[cast-pc] 激活${r.body.idempotent ? '幂等命中' : '成功'} lic=${v.payload.lic}`
       + ` 客户=${v.payload.cust || '-'} 到期=${new Date(v.payload.exp).toLocaleString()}`);
-  return { ok: true, why: LICENSE.lastRenewWhy, state: licenseState() };
+  return { ok: true, why: LICENSE.lastRenewWhy, state: licenseUiState() };
 }
 
 /** 续期：用 Ke 签 proof 换新 license。失败**只记日志、不阻塞启动**（方案 §6 要求） */
@@ -951,7 +1080,7 @@ async function licenseRenew(reason) {
   saveLicenseText(r.body.license);
   LICENSE.lastRenewWhy = '续期成功';
   console.log(`[cast-pc] 续期成功（${reason}）lic=${lic} 新到期=${new Date(v.payload.exp).toLocaleString()}`);
-  return { ok: true, state: licenseState() };
+  return { ok: true, state: licenseUiState() };
 }
 
 /** 启动跑一次，之后每 6 小时一次；只在「进入续期窗口 / 已过期」时才真去联网 */
@@ -986,6 +1115,10 @@ function startLicenseWatch() {
  * @return {string|null} null = 放行；否则为拒绝原因
  */
 function licenseGate() {
+  // ★ 第二十三修：授权验证已关闭（默认）→ 不再是门禁的一部分，一律放行。
+  //   注意只去掉「本机授权」这一条判据；启动授权（白名单 + 放行条）与
+  //   平台门禁（「开始游戏」）不受影响。
+  if (!LICENSE_ENABLED) return null;
   if (LICENSE.ok) return null;
   return LICENSE.text
     ? `直播端授权不可用：${LICENSE.why}`
@@ -1003,6 +1136,14 @@ function handleLicenseCurrent(req, res) {
   const q = (() => { try { return new URL(req.url, 'https://x').searchParams; } catch (e) { return new URLSearchParams(''); } })();
   const nonce = String(q.get('nonce') || '').replace(/[^0-9a-fA-F]/g, '').slice(0, 64);
   res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+  // ★ 第二十三修：关闭授权验证时明确告诉头显「不必校验」。
+  //   头显据此**跳过** LicenseVerify（否则拿不到 license 会判 DENY，游戏起不来）。
+  //   ⚠ 必须 200 + off:true，**不能** 404 —— 404 在头显侧的含义是「直播端版本过旧」。
+  if (!LICENSE_ENABLED) {
+    return res.end(JSON.stringify({
+      ok: true, off: true, nonce, why: '授权验证已关闭（第二十三修）', state: licenseUiState(),
+    }));
+  }
   const st = licenseState();
   if (!LICENSE.ok || !nonce) {
     return res.end(JSON.stringify({ ok: false, nonce, why: nonce ? st.why : '缺少 nonce（头显必须给随机数）', state: st }));
@@ -1043,6 +1184,11 @@ function loadGuard() {
     console.log('[cast-pc] ✓ 头显配置由 EXE 内置目录下发（换电脑不用配置游戏目录）');
   }
   // ★ 授权（License）：本机 Ke + license 落盘文件 + 到期状态。兜底 0 天 ⇒ 这里不合法就是停放行。
+  //   ★ 第二十三修：默认**不再**加载、不再联网续期 —— 授权验证已关闭（加 `--license` 才恢复）。
+  if (!LICENSE_ENABLED) {
+    console.log('[cast-pc] 授权验证：**已关闭**（第二十三修 · 默认）—— 不校验授权、不联网续期；加 --license 可恢复旧行为');
+    console.log('==================================================');
+  } else {
   loadLicense();
   const ls = licenseState();
   console.log(`[cast-pc] 设备指纹 dev=${ls.devShort}…（hostname=${ls.host}） 授权服务器=${ls.base}`);
@@ -1056,6 +1202,7 @@ function loadGuard() {
   }
   console.log('==================================================');
   startLicenseWatch();
+  }
 }
 
 function saveGuard() {
@@ -1121,6 +1268,8 @@ function handleLaunchRequest(req, res) {
       allow: r.allow, voucher: r.voucher, ttl: r.ttl, exp: r.entry.exp || null,
       why: r.reason, reason: r.reason,
       session: SESSION_ID, server: Date.now(),
+      // ★ 第二十三修：告诉头显「本机还需不需要授权校验」（兼容旧版头显：它不认这个字段就照旧拿 off:true 判断）
+      licenseRequired: LICENSE_ENABLED,
     }));
   });
 }
@@ -1155,8 +1304,248 @@ function handleMasterAllow(req, res) {
       //   两种拦分开提示（见 src/main.js 的 applyVRGate）。
       round: roundSnapshot(),
       license: licenseSummary(),
+      licenseRequired: LICENSE_ENABLED,   // ★ 第二十三修：同 /api/launch/request（仅供诊断）
     }));
   });
+}
+
+// ————————————————— 服务器清单 · 运行态（第二十四修）—————————————————
+/**
+ * 清掉清单缓存 —— 需求里的「关闭游戏和下次启动前把旧时间的配置清理掉」就落在这里。
+ *
+ * <p>三个调用点（顺序 = 优先级）：
+ *   ① 启动**无条件先清**（主防线：被平台 kill / 断电时 before-quit 根本不会跑，
+ *      不清就会把上一局的配置留到下一局）；
+ *   ② 本局结束 roundSet(false) 清一遍（清完立刻重拉一份给下一局）；
+ *   ③ before-quit 再清一遍（辅助，平台 kill 时不会执行）。
+ *
+ * @param {string} reason 进日志与 /api/info（现场对账：这份旧配置凭什么被清的）
+ */
+function manifestClear(reason) {
+  const why = String(reason || '');
+  let had = false;
+  for (const dir of [MANIFEST_DIR, MANIFEST_TMP]) {
+    try {
+      if (fs.existsSync(dir)) { fs.rmSync(dir, { recursive: true, force: true }); had = true; }
+    } catch (e) {
+      console.warn(`[cast-pc] 清单缓存清理失败（${dir}）：${e.message}`);
+    }
+  }
+  MANIFEST.ok = false;
+  MANIFEST.ver = ''; MANIFEST.builtAt = 0; MANIFEST.fetchedAt = 0;
+  MANIFEST.count = 0; MANIFEST.bytes = 0; MANIFEST.fp = ''; MANIFEST.sessionFp = '';
+  MANIFEST.tries = 0; MANIFEST.lastErr = '';
+  MANIFEST.why = MANIFEST_ON ? '已清理，待拉取' : '已关闭（本地配置模式）';
+  MANIFEST.clearedAt = Date.now();
+  MANIFEST.clearedWhy = why;
+  console.log(`[cast-pc] 清单缓存已清理（${why}）：${MANIFEST_DIR}${had ? '' : '（本来就不存在）'}`);
+  pushStatus();
+}
+
+/**
+ * 清单里的相对路径是否允许落盘 / 是否归清单管。
+ *
+ * <p>**没有商量余地**：服务器返回的路径必须先过这道闸 —— 否则一份被改过的清单
+ * （或打错的发布脚本）就能往磁盘任意位置写文件（`../` / 绝对路径 / `C:` 前缀）。
+ * 允许范围严格等于 CONFIG_MANIFEST（src/content/ 整目录 + src/core/userConfig.js）。
+ *
+ * @param {string} rel
+ * @return {boolean}
+ */
+function manifestPathOk(rel) {
+  const p = String(rel || '').split('\\').join('/');
+  if (!p || p.startsWith('/') || p.includes('..') || /^[a-zA-Z]:/.test(p)) return false;
+  return CONFIG_MANIFEST.some((item) => (item.endsWith('/') ? p.startsWith(item) : p === item));
+}
+
+/** 带超时的 JSON GET。清单站点可能是 http（自测）也可能是 https（正式），故两套模块都认。 */
+function manifestHttpGet(url) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https:') ? https : http;
+    const req = mod.get(url, (r) => {
+      let buf = '';
+      r.setEncoding('utf8');
+      r.on('data', (c) => {
+        buf += c;
+        if (buf.length > MANIFEST_MAX_BYTES) req.destroy(new Error('清单响应体过大，已放弃'));
+      });
+      r.on('end', () => {
+        try { resolve({ status: r.statusCode, body: JSON.parse(buf) }); }
+        catch (e) { reject(new Error(`清单响应不是 JSON（HTTP ${r.statusCode}）`)); }
+      });
+    });
+    req.setTimeout(MANIFEST_TIMEOUT_MS, () => req.destroy(new Error(`清单请求超时（${MANIFEST_TIMEOUT_MS}ms）`)));
+    req.on('error', reject);
+  });
+}
+
+/**
+ * 拉一份清单并**整包替换**本地缓存。失败一律 throw —— 重试策略由 manifestEnsure 决定。
+ *
+ * <p>为什么「先落临时目录 + 原子替换」：拉到一半断网时若直接往 MANIFEST_DIR 里写，
+ * 会留下「一半新一半旧」的配置 —— 那种状态最难查（缺哪个文件取决于是哪一步断的）。
+ *
+ * @return {Promise<boolean>} 恒为 true（失败走 throw）
+ */
+async function manifestFetch() {
+  const base = String(MANIFEST_BASE || '').replace(/\/+$/, '');
+  const url = `${base}/api/manifest?key=${encodeURIComponent(MANIFEST_KEY)}&ver=${encodeURIComponent(MANIFEST_VER)}`;
+  MANIFEST.tries += 1;
+  const r = await manifestHttpGet(url);
+  const body = r.body || {};
+  if (r.status !== 200 || !body.ok) {
+    // 把现场最容易踩的两种失败直接写进 why（少一次「HTTP 404 是什么鬼」的排查）：
+    //   404 = 服务器上根本没有 /api/manifest（旧版 server.js / 没部署 content）；
+    //   403 = 两端密钥不一致。
+    const hint = r.status === 404 ? '（服务器上没有 /api/manifest —— 多半是还没部署新版 server.js + content/）'
+      : (r.status === 403 || body.why === 'badKey' ? '（清单密钥两端不一致：服务器 cfg.manifestKey vs EXE --manifest-key）' : '');
+    throw new Error(String(body.why || body.error || body.reason || `HTTP ${r.status}`) + hint);
+  }
+  const files = Array.isArray(body.files) ? body.files : [];
+  if (!files.length) throw new Error('清单为空（服务器还没发布内容？先跑 sync-content.js）');
+
+  fs.rmSync(MANIFEST_TMP, { recursive: true, force: true });
+  const fpLines = [];
+  let bytes = 0;
+  for (const f of files) {
+    const rel = String(f.path || '').split('\\').join('/');
+    if (!manifestPathOk(rel)) throw new Error(`清单含越界路径，整份拒绝：${rel}`);
+    const buf = Buffer.from(f.content == null ? '' : String(f.content), 'utf8');
+    const sha = crypto.createHash('sha256').update(buf).digest('hex');
+    if (f.sha256 && String(f.sha256).toLowerCase() !== sha) throw new Error(`清单内文件自校验失败：${rel}`);
+    const abs = path.join(MANIFEST_TMP, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, buf);
+    bytes += buf.length;
+    fpLines.push(`${rel}|${sha}|${buf.length}`);
+  }
+  const fp = crypto.createHash('sha256').update(fpLines.join('\n')).digest('hex').slice(0, 16);
+  const ver = String(body.ver || MANIFEST_VER);
+  fs.writeFileSync(path.join(MANIFEST_TMP, 'meta.json'), JSON.stringify({
+    ver, builtAt: Number(body.builtAt) || 0, fetchedAt: Date.now(),
+    count: files.length, bytes, fp, base, server: String(body.server || ''),
+  }, null, 2));
+
+  fs.rmSync(MANIFEST_DIR, { recursive: true, force: true });
+  fs.renameSync(MANIFEST_TMP, MANIFEST_DIR);   // 原子替换：要么整份新的，要么还是空的
+
+  const prevFp = MANIFEST.sessionFp;
+  MANIFEST.ok = true;
+  MANIFEST.why = '就绪';
+  MANIFEST.ver = ver;
+  MANIFEST.builtAt = Number(body.builtAt) || 0;
+  MANIFEST.fetchedAt = Date.now();
+  MANIFEST.count = files.length;
+  MANIFEST.bytes = bytes;
+  MANIFEST.fp = fp;
+  MANIFEST.sessionFp = fp;
+  MANIFEST.lastErr = '';
+  console.log(`[cast-pc] ✓ 服务器清单就绪 ver=${ver} ${files.length} 个文件 ${bytes}B fp=${fp}（${base}）`);
+  // 内容变了 ⇒ 换局号 ⇒ 头显下次问配置时整包重下（否则头显会一直用上一版缓存）。
+  if (prevFp && prevFp !== fp) rotateSession(`服务器清单内容变化 ${prevFp} → ${fp}`);
+  pushStatus();
+  return true;
+}
+
+/**
+ * 「确保清单就绪」—— 全 EXE 唯一的取配置入口（启动 / 本局结束后 / 头显取配置时都走它）。
+ *
+ * <p>并发去重：头显同时发多个请求时只跑一趟，别把 4 次重试 ×N 份打给服务器。
+ * <p>失败**不回落本地旧文件**（与头显侧「只认下发、不回落 assets」同一口径）；
+ * 自测 / 应急请显式加 `--local-content`。
+ *
+ * @param {string} reason 进日志
+ * @return {Promise<boolean>} 是否就绪
+ */
+async function manifestEnsure(reason) {
+  if (!MANIFEST_ON) return false;
+  if (MANIFEST.ok) return true;
+  if (manifestInflight) return manifestInflight;
+  manifestInflight = (async () => {
+    let lastErr = '';
+    for (let i = 0; i < MANIFEST_RETRY_MS.length; i += 1) {
+      if (MANIFEST_RETRY_MS[i]) await new Promise((r2) => setTimeout(r2, MANIFEST_RETRY_MS[i]));
+      try {
+        return await manifestFetch();
+      } catch (e) {
+        lastErr = (e && e.message) || String(e);
+        // 每次失败都就地更新 why：现场排障看 /api/info 时不该只看到「已清理，待拉取」这种中间态。
+        MANIFEST.lastErr = lastErr;
+        MANIFEST.why = `拉取中（第 ${i + 1}/${MANIFEST_RETRY_MS.length} 次失败：${lastErr}）`;
+        console.warn(`[cast-pc] 清单拉取第 ${i + 1}/${MANIFEST_RETRY_MS.length} 次失败（${reason}）：${lastErr}`);
+      }
+    }
+    MANIFEST.ok = false;
+    MANIFEST.lastErr = lastErr;
+    MANIFEST.why = '拉取失败：' + lastErr;
+    console.warn(`[cast-pc] ✖ 服务器清单不可用（${reason}）：${MANIFEST.why}`);
+    pushStatus();
+    return false;
+  })();
+  try { return await manifestInflight; } finally { manifestInflight = null; }
+}
+
+/** 该相对路径是否归清单管（= 不许回落游戏目录）。@param {string} rel @return {boolean} */
+function manifestManages(rel) {
+  return manifestPathOk(String(rel || '').split(path.sep).join('/'));
+}
+
+/**
+ * 取某个下发项的**磁盘基目录**（第二十四修按前缀分流）：
+ * 清单管辖的（src/content/**、userConfig.js）走 userData/manifest/，其余仍走游戏目录。
+ * @param {string} rel
+ * @return {string}
+ */
+function configBaseOf(rel) {
+  return manifestManages(rel) ? MANIFEST_DIR : (CONFIG_ROOT || '');
+}
+
+/** /api/info 与界面状态里的清单摘要（现场排障第一眼看这里）。@return {object} */
+function manifestSummary() {
+  return {
+    on: MANIFEST.on, ok: MANIFEST.ok, why: MANIFEST.why,
+    ver: MANIFEST.ver, wantVer: MANIFEST_VER, base: MANIFEST_BASE, dir: MANIFEST_DIR,
+    builtAt: MANIFEST.builtAt, fetchedAt: MANIFEST.fetchedAt,
+    count: MANIFEST.count, bytes: MANIFEST.bytes, fp: MANIFEST.fp,
+    tries: MANIFEST.tries, lastErr: MANIFEST.lastErr,
+    clearedAt: MANIFEST.clearedAt, clearedWhy: MANIFEST.clearedWhy,
+  };
+}
+
+/**
+ * 清单管辖路径的静态服务（`/src/content/**`、`/src/core/userConfig.js`）。
+ *
+ * <p>两条分支泾渭分明：
+ *   · 清单模式：**只**从 userData/manifest/ 出文件；清单没到位就 404（绝不回落游戏目录）；
+ *   · `--local-content`：原样交回 handleStatic（应急：现场断网时用本地配置跑）。
+ */
+function handleManifestStatic(req, res, pathname) {
+  if (!MANIFEST_ON) return handleStatic(req, res, pathname);
+  let rel;
+  try { rel = decodeURIComponent(pathname).replace(/^\/+/, ''); } catch (e) { res.writeHead(400); res.end('400'); return; }
+  const notFound = (msg) => {
+    res.writeHead(404, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(msg);
+  };
+  if (!MANIFEST.ok) {
+    return notFound('404 —— 服务器清单未就绪，配置不下发（本地旧文件一律不作为回落）。\n'
+      + `  why: ${MANIFEST.why || '未知'}\n`
+      + '  排障：本 EXE 的 /api/info → manifest 字段；服务器 GET /api/health → content 字段。\n');
+  }
+  const file = path.resolve(MANIFEST_DIR, rel);
+  if (!file.startsWith(MANIFEST_DIR) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    return notFound(`404 —— 清单里没有这个文件：${rel}\n  （清单 ver=${MANIFEST.ver}，共 ${MANIFEST.count} 个文件）\n`);
+  }
+  if (req.method === 'HEAD') {
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' });
+    res.end();
+    return;
+  }
+  sendFile(res, file);
 }
 
 // ——————————————————————— 配置下发（GET /api/config/dump） ———————————————————————
@@ -1171,7 +1560,13 @@ function handleMasterAllow(req, res) {
  * @throws  {Error} 游戏目录未配置 / 清单展开后为空
  */
 function buildConfigDump() {
-  if (!CONFIG_ROOT) throw new Error('未配置游戏目录，且 EXE 内也没有内置配置（在本窗口「游戏目录」处设置后重启 EXE）');
+  // ★ 第二十四修：清单模式下的配置来自 userData/manifest/（不再需要 CONFIG_ROOT）——
+  //   走到这里说明 handleConfigDump 已经确保清单就绪，故只校验「本地配置模式」那种情形。
+  if (!CONFIG_ROOT && !(MANIFEST_ON && MANIFEST.ok)) {
+    throw new Error(MANIFEST_ON
+      ? '服务器清单不可用（' + (MANIFEST.why || '未知') + '）—— 配置只认清单，不回落本地'
+      : '未配置游戏目录，且 EXE 内也没有内置配置（在本窗口「游戏目录」处设置后重启 EXE）');
+  }
   const out = [];
   const push = (abs, rel) => {
     const ext = path.extname(rel).toLowerCase();
@@ -1187,7 +1582,8 @@ function buildConfigDump() {
     });
   };
   const walk = (rel) => {
-    const abs = path.join(CONFIG_ROOT, rel);
+    // ★ 第二十四修：按前缀分流 —— src/content/** 与 userConfig.js 走清单缓存，其余仍走 CONFIG_ROOT
+    const abs = path.join(configBaseOf(rel), rel);
     if (!fs.existsSync(abs)) { console.warn(`[cast-pc] 下发清单项不存在，已跳过：${rel}`); return; }
     if (fs.statSync(abs).isDirectory()) {
       for (const n of fs.readdirSync(abs).sort()) walk(path.join(rel, n));
@@ -1200,7 +1596,8 @@ function buildConfigDump() {
   return out;
 }
 
-function handleConfigDump(req, res) {
+// ★ 第二十四修：改成 async —— 取配置前必须先把服务器清单拿到手（失败就明确拒绝，见下）。
+async function handleConfigDump(req, res) {
   const ip = clientIp(req);
   const q = (() => { try { return new URL(req.url, 'https://x').searchParams; } catch (e) { return new URLSearchParams(''); } })();
   const json = (obj) => {
@@ -1221,6 +1618,17 @@ function handleConfigDump(req, res) {
     console.log(`[cast-pc] 配置下发 DENY dev=${entry.dev || '(空)'} ip=${ip} why=${entry.why}`);
     return json({ allow: false, session: SESSION_ID, why: entry.why });
   }
+  // ★ 第二十四修：清单是配置的**唯一来源** —— 没到位就先拉一次（并发去重、含重试，最长 ~17s），
+  //   拉不到就明确失败：头显会看到原因，而不是「拿到一份旧配置接着玩」。
+  const ready = await manifestEnsure('配置下发');
+  if (!ready) {
+    const why = '配置下发失败：' + (MANIFEST.why || '清单不可用')
+      + '（配置只认服务器清单，已停用本地回落；应急可加 --local-content 用本地游戏目录）';
+    guardPush({ at: Date.now(), ip, dev: entry.dev, allow: false, why });
+    console.log(`[cast-pc] ${why}`);
+    return json({ allow: false, session: SESSION_ID, why });
+  }
+
   let files;
   try {
     files = buildConfigDump();
@@ -1254,7 +1662,27 @@ function readJsonBody(req, limit, cb) {
 }
 
 /** 授权状态摘要（廉价版：不枚举网卡算指纹，可高频调用）。 */
+/**
+ * ★ 第二十五修：给「界面」的 license 状态。
+ *
+ * <p>关闭授权验证时**必须带 `off:true`** —— 接收端窗口靠这个字段把整个
+ * 「授权（本机直播端）」面板隐掉。原来 `license:get` 直接回 `licenseState()`，
+ * 它没有 `off` ⇒ 面板一直露着，现场看到的是「未激活（未加载）剩余 - 天｜
+ * 授权服务器 https://webvr123.site｜激活码…｜设备指纹 69b2f1d457bd…（DESKTOP-…）」
+ * —— 既像是出了故障，又把服务器地址与本机指纹摆在窗口/大屏上。
+ *
+ * @return {object} 关闭时 = 廉价摘要（含 off）；开启时 = 完整状态（界面要显示剩余天数/指纹）
+ */
+function licenseUiState() {
+  return LICENSE_ENABLED ? licenseState() : licenseSummary();
+}
+
 function licenseSummary() {
+  // ★ 第二十三修：关闭时回一个「永远有效」的摘要 —— 页面侧 PCVR 门禁读的就是 license.ok，
+  //   这里给 ok:true 才不会把「不校验」误判成「校验失败」。
+  if (!LICENSE_ENABLED) {
+    return { ok: true, mode: 'off', why: '授权验证已关闭（第二十三修）', daysLeft: null, off: true };
+  }
   return {
     ok: LICENSE.ok, mode: LICENSE.mode, why: LICENSE.why,
     daysLeft: (LICENSE.payload && LICENSE.payload.exp)
@@ -1317,6 +1745,14 @@ function roundSet(on, why) {
   if (next !== ROUND.armed) {
     ROUND.armed = next;
     if (next) { ROUND.at = Date.now(); ROUND.seq += 1; }
+    // ★ 第二十四修：**本局结束**时把「上一次的清单」清掉（旧时间的配置不留到下一局），
+    //   清完立刻重拉一份给下一局用；内容指纹变了就换局号 ⇒ 头显整包重下（见 rotateSession）。
+    if (!next && MANIFEST_ON) {
+      manifestClear('本局结束（' + why + '）');
+      manifestEnsure('本局结束后重拉').then((ok) => {
+        if (!ok) console.warn('[cast-pc] 本局结束后重拉清单失败（下一局开局前会自动再试）：' + MANIFEST.why);
+      });
+    }
     console.log(`[cast-pc] 本局放行 ` + (next ? '已开启 → 头显将出现「进入 VR」' : '已结束 → 头显收尾') + `（` + why + `）`);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('round:changed', { ...roundSnapshot(), why });
@@ -1331,9 +1767,47 @@ function roundSet(on, why) {
 function handleRoundEnd(req, res) {
   readJsonBody(req, 2048, (body) => {
     const why = String((body && body.why) || '本局结束').slice(0, 80);
+    const wasArmed = ROUND.armed;      // 「本局平台真的开过」—— 只有这种局才该上报
     const r = roundSet(false, '画面侧上报：' + why);
+    // ★ 本局结束 → 上报平台（CMD 7，实测这才是平台的「游戏结束」信号；CMD 6 从没出现过）。
+    //   判据用 wasArmed：没开过的空局不乱报，免得平台收到一条莫名其妙的结算。
+    if (wasArmed && !hasFlag('no-game-result')) {
+      const b = body || {};
+      sendPlatformGameResult({
+        level: Number(b.lvl) || 0,
+        maxLevel: Number(b.maxLvl) || 0,
+        gameTime: ROUND.at ? (Date.now() - ROUND.at) / 1000 : 0,
+      }, '画面侧：' + why);
+    }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ ok: true, round: r }));
+  });
+}
+
+/**
+ * POST /api/platform/game-result —— **现场自测**：手工触发一次 CMD 7 上报。
+ *
+ * 为什么要它：验「平台收到 CMD 7 会不会弹结算」不该每次都打满一整局（原版那次是 15 分钟）。
+ * 在平台**已经点了「开始游戏」**的那一局里，用浏览器/curl 打一下这个端点，平台界面上应该
+ * 立刻出现结算（平台日志里能看到 `cmd = 7` → `==PostGameResult==` → `游戏结束 场次ID:N`）。
+ *
+ * 字段都可选，缺省按原版实测样本发 0：
+ *   {"score":0,"kill":0,"dead":0,"level":0,"maxLevel":0,"gameTime":0,"result":0}
+ */
+function handleManualGameResult(req, res) {
+  readJsonBody(req, 2048, (body) => {
+    const b = body || {};
+    const ok = sendPlatformGameResult({
+      score: Number(b.score) || 0, kill: Number(b.kill) || 0, dead: Number(b.dead) || 0,
+      level: Number(b.level) || 0, maxLevel: Number(b.maxLevel) || 0,
+      gameTime: Number(b.gameTime) || 0, result: Number(b.result) || 0,
+    }, '手工触发（/api/platform/game-result）');
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    // dest 一并回给调用方：现场最怕「发出去了但没人收」——直接看目标地址就知道发对没有
+    res.end(JSON.stringify({
+      ok, results: PLATFORM_CH.results, why: PLATFORM_CH.lastResultWhy,
+      dest: platformTargets().map((t) => `${t}:${GAME_CH_ACK_PORT}`),
+    }));
   });
 }
 
@@ -1514,6 +1988,17 @@ const PC_FRAME_REGISTER = 0x01;    // 本机 → 平台：注册
 const PC_FRAME_CLOSE_ACK = 0x02;   // 本机 → 平台：closeGame 确认
 const PC_FRAME_GAME_START = 0x05;  // 平台 → 本机：开始游戏（GameStart）
 const PC_FRAME_CLOSE_GAME = 0x10;  // 平台 → 本机：关闭游戏（CloseGame）
+/**
+ * ★ 2026-09-24 实测：**本局结束**要发给平台的是 **CMD 7 GameStatistics**（`0x07` + UTF-8 JSON，
+ *   无长度前缀、无结尾符），**不是** CMD 6 GameEnd —— 平台侧 DebugLog 双证（原版游戏那一局）：
+ *     `===ReceiveCall==IP==…,cmd = 7` → `收到客户端发来的消息啦7,` → `OnReceiveResultMsg, str = {…}`
+ *     → `==PostGameResult=={…}` → `游戏计时已暂停: 15:15.24` → `游戏结束 场次ID:15 结算类型:正常结算`
+ *     → `收到结算消息，游戏已暂停:`
+ *   而平台**不会**因此关游戏（实测那次 kill + SendCloseGameToGame 是在 82 秒之后、由人点
+ *   「结束游戏」触发的：`关闭游戏=128`）。
+ *   ⇒ 这正是「告知平台本局结束、但别关游戏」的正解。
+ */
+const PC_FRAME_GAME_RESULT = 0x07; // 本机 → 平台：本局结束 / 战绩上报
 /** 实测确认帧（与抓包逐字节一致，见 auto_client_v3.py 的 GAMESTART_ACK，118 字节） */
 const GAME_START_ACK = {
   difficulty: 0, gameIntensity: 0, video: 0, guide: 0,
@@ -1522,9 +2007,138 @@ const GAME_START_ACK = {
 const PLATFORM_CH = {
   enabled: false, bound: false, frames: 0, machines: 0,
   lastStartAt: 0, lastStartFrom: null, lastCloseAt: 0, why: '未启用（EXE 不是被平台拉起的）',
+  platformIp: null,    // 平台启动参数里带的平台 IP（--platform / argv[1] 第 3 段）；没带就是 null
+  lastFromIp: null,    // ★ 平台自己发帧过来的源 IP —— 上行帧的目标就是它（见 platformTargets()）
+  results: 0, lastResultAt: 0, lastResultWhy: null,   // CMD 7 上报计数 / 最近一次（现场排障看这个）
 };
 /** 供 /api/info 显示（现场排障第一眼看这个） */
 function platformChannelSnapshot() { return { ...PLATFORM_CH }; }
+
+// 游戏通道的 socket 与平台 IP：升到模块级，好让「本局结束上报」这类异步动作也能发帧
+let platformSock = null;
+let platformPlatIp = null;
+
+/**
+ * 目标地址过滤：回环 / 未指定一律视为**不可用**。
+ *
+ * ★ 2026-09-24 第二次现场定案（平台日志原文 `127.0.0.1这个外来IP想连接`）：
+ *   平台对上行帧做**来源 IP 白名单**校验，`127.0.0.1` 不在白名单里 —— 只要*目标*是回环，
+ *   内核就会把**源地址**也选成 127.0.0.1，平台收到后直接丢弃，只在 DebugLog 留那一句，
+ *   `cmd = 7` 一个字节都进不去（界面上自然什么都不弹、计时照跑）。
+ *
+ *   注意：这值有两个来源，**都得过滤** ——
+ *     (a) 没拿到平台 IP 时的兜底（老代码就是 `[platIp, '127.0.0.1']`，等于必然踩）；
+ *     (b) 平台**自己**给被拉起的游戏传的启动参数就是 `plstformIP = 127.0.0.1`
+ *         （见平台日志 `=StartGame==gamePath==...plstformIP = 127.0.0.1`），照抄它就等于自己踩。
+ *   过滤掉之后自然落到本机网卡地址：源 IP = 192.168.31.228，正好在平台 Machines 表里。
+ */
+function usableTarget(ip) {
+  const s = String(ip || '').trim();
+  if (!s) return null;
+  if (s.startsWith('127.') || s === '0.0.0.0' || s === '::1') return null;
+  return s;
+}
+
+/**
+ * 游戏通道的目标地址（按证据强度选**一个**；**绝不要**用 127.0.0.1，理由见 usableTarget）。
+ */
+function platformTargets() {
+  const from = usableTarget(PLATFORM_CH.lastFromIp);   // ① 平台发帧过来的源 IP：最可靠
+  if (from) return [from];
+  const arg = usableTarget(platformPlatIp);            // ② 平台启动参数（argv[1] 第 3 段 / --platform）
+  if (arg) return [arg];
+  const ip = usableTarget(primaryLanIp());             // ③ 本机默认路由网卡地址
+  return ip ? [ip] : [];
+}
+
+/** 往游戏通道发一帧（`cmd` + 可选载荷）。`destIp` 给定时只用它（应答帧走这里）。 */
+function sendPlatformFrame(cmd, payloadBuf, destIp) {
+  if (!platformSock) return;
+  const head = Buffer.from([cmd & 0xff]);
+  const frame = (payloadBuf && payloadBuf.length) ? Buffer.concat([head, payloadBuf]) : head;
+  const targets = destIp ? [destIp] : platformTargets();
+  if (!targets.length) { console.warn('[cast-pc] 游戏通道没有可用目标（取不到平台地址、也取不到网卡地址）→ 没发'); return; }
+  for (const t of targets) {
+    try {
+      platformSock.send(frame, 0, frame.length, GAME_CH_ACK_PORT, t, (err) => {
+        if (err) console.warn(`[cast-pc] 游戏通道发送失败 → ${t}:${GAME_CH_ACK_PORT}:`, err.message);
+      });
+    } catch (e) { console.warn('[cast-pc] 游戏通道发送异常：', e.message); }
+  }
+}
+
+/**
+ * 组一帧 CMD 7 的载荷。字段逐字照抄原版实测样本（全 0 时正好 398 字节）：
+ *
+ *   {"gameid":0,"instid":0,"shopid":0,"pos_playerid":null,"result":0,"scoreMul":0,"score":0,
+ *    "mode":0,"time":0,"kill":0,"dead":0,"headshot":0,"meminfos":null,
+ *    "gameData":"{\"gameIntensity\":0,\"result\":0,\"gameTime\":900,\"curProgress\":1,
+ *    \"maxProgress\":6,\"playerData\":[{\"pos\":1,\"score\":0,\"total_kill\":0,\"total_die\":0,
+ *    \"total_killhead\":0,\"hitRate\":0,\"killHeadRate\":0,\"estimate\":0}]}"}
+ *
+ * 三条硬约束（原版实测 + 平台日志对得上）：
+ *   ① `gameData` 必须是**字符串化的 JSON**，不是嵌套对象 —— 平台是原样透传的
+ *      （`PostGameResult` 里 gameData 仍是被转义的字符串）；
+ *   ② `gameid` / `instid` / `shopid` 原版也全发 0，平台自己按本局会话补成
+ *      `"gameid":128,"instid":15,"shopid":1`（见 `==PostGameResult==`）⇒ 我们照发 0，不用猜；
+ *   ③ `pos_playerid` 原版发 null，平台补成 `""`；`poslist` / `battleteamid` / `teamsIds` 同样由平台补。
+ *
+ * `result` 的取值语义平台没公开（原版那一局是 0，平台记成「结算类型:正常结算」）⇒ 默认 0。
+ */
+function buildGameResultPayload(opts) {
+  const o = opts || {};
+  const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+  const result = num(o.result, 0);
+  const level = num(o.level, 0);          // 0 基的关卡下标
+  const maxLevel = num(o.maxLevel, 0);
+  const gameData = {
+    gameIntensity: 0,
+    result,
+    gameTime: Math.max(0, Math.round(num(o.gameTime, 0))),
+    curProgress: level + 1,
+    maxProgress: maxLevel > 0 ? maxLevel : (level + 1),
+    playerData: [{
+      pos: 1,
+      score: num(o.score, 0),
+      total_kill: num(o.kill, 0),
+      total_die: num(o.dead, 0),
+      total_killhead: 0,
+      hitRate: 0,
+      killHeadRate: 0,
+      estimate: 0,
+    }],
+  };
+  return {
+    gameid: 0, instid: 0, shopid: 0, pos_playerid: null,
+    result, scoreMul: 0, score: num(o.score, 0), mode: 0, time: 0,
+    kill: num(o.kill, 0), dead: num(o.dead, 0), headshot: 0, meminfos: null,
+    gameData: JSON.stringify(gameData),
+  };
+}
+
+/**
+ * ★ 本局结束 → 上报平台（CMD 7）。成功返回 true。
+ *
+ * 触发点：画面侧 `POST /api/round/end`（见 handleRoundEnd），或现场自测 `POST /api/platform/game-result`。
+ * 开关：`--no-game-result`（默认开）。
+ */
+function sendPlatformGameResult(opts, why) {
+  if (hasFlag('no-game-result')) { PLATFORM_CH.lastResultWhy = '被 --no-game-result 关闭'; return false; }
+  if (!PLATFORM_CH.enabled || !platformSock) {
+    PLATFORM_CH.lastResultWhy = '游戏通道未启用（EXE 不是被平台拉起的）→ 没发';
+    return false;
+  }
+  const payload = buildGameResultPayload(opts);
+  const buf = Buffer.from(JSON.stringify(payload), 'utf8');
+  sendPlatformFrame(PC_FRAME_GAME_RESULT, buf, null);
+  PLATFORM_CH.results += 1;
+  PLATFORM_CH.lastResultAt = Date.now();
+  PLATFORM_CH.lastResultWhy = why || '本局结束';
+  const tg = platformTargets();
+  console.log(`[cast-pc] → 游戏通道 CMD 7 本局结束上报（${buf.length} 字节 → ${tg.join(', ') || '(无目标)'}:${GAME_CH_ACK_PORT}，${PLATFORM_CH.lastResultWhy}）`);
+  console.log('[cast-pc]   载荷=' + Buffer.from(buf).toString('utf8'));
+  return true;
+}
 
 function startPlatformGameChannel() {
   if (hasFlag('no-game-channel')) { PLATFORM_CH.why = '被 --no-game-channel 关闭'; return; }
@@ -1539,18 +2153,11 @@ function startPlatformGameChannel() {
     return;
   }
   PLATFORM_CH.enabled = true;
-  const sendFrame = (cmd, payloadBuf, destIp) => {
-    const head = Buffer.from([cmd & 0xff]);
-    const frame = (payloadBuf && payloadBuf.length) ? Buffer.concat([head, payloadBuf]) : head;
-    const targets = destIp ? [destIp] : [platIp, '127.0.0.1'].filter(Boolean);
-    for (const t of targets) {
-      try {
-        sock.send(frame, 0, frame.length, GAME_CH_ACK_PORT, t, (err) => {
-          if (err) console.warn(`[cast-pc] 游戏通道发送失败 → ${t}:${GAME_CH_ACK_PORT}:`, err.message);
-        });
-      } catch (e) { console.warn('[cast-pc] 游戏通道发送异常：', e.message); }
-    }
-  };
+  platformSock = sock;          // 供 sendPlatformGameResult 复用同一个 socket（源端口 51124）
+  platformPlatIp = platIp;
+  PLATFORM_CH.platformIp = platIp;
+  // 细节已在模块级的 sendPlatformFrame 里（同一个实现，抽出去是为了让异步的「本局结束上报」也能发）
+  const sendFrame = (cmd, payloadBuf, destIp) => sendPlatformFrame(cmd, payloadBuf, destIp);
   sock.on('error', (e) => {
     PLATFORM_CH.why = 'socket 错误：' + e.message;
     console.warn('[cast-pc] 平台游戏通道错误：', e.message);
@@ -1558,6 +2165,9 @@ function startPlatformGameChannel() {
   sock.on('message', (buf, rinfo) => {
     try {
       PLATFORM_CH.frames++;
+      // ★ 2026-09-24：本端口（51124）实测只被**平台**使用（真实游戏也是只从平台收），
+      //   所以收到谁就记谁 —— 之后的上行帧据此发回去，不靠猜、更不发 127.0.0.1。
+      PLATFORM_CH.lastFromIp = rinfo.address;
       const b0 = buf[0];
       const hex = '0x' + b0.toString(16).padStart(2, '0');
       if (b0 === PC_FRAME_GAME_START) {
@@ -1597,11 +2207,13 @@ function startPlatformGameChannel() {
   });
   sock.bind(GAME_CH_PORT, '0.0.0.0', () => {
     PLATFORM_CH.bound = true;
-    PLATFORM_CH.why = `已监听 UDP ${GAME_CH_PORT}` + (platIp ? `（平台 ${platIp}:${GAME_CH_ACK_PORT}）` : '（没有平台 IP，只被动接收）');
+    // 显示**真正会发去**的地址（不是启动参数里那个 —— 它可能是回环，已由 usableTarget 过滤）
+    const regTo = platformTargets();
+    PLATFORM_CH.why = `已监听 UDP ${GAME_CH_PORT}` + (regTo.length ? `（上报目标 ${regTo.join(', ')}:${GAME_CH_ACK_PORT}）` : '（取不到目标地址，只被动接收）');
     console.log(`[cast-pc] 平台游戏通道已监听 UDP ${GAME_CH_PORT}；`
-      + (platIp
-        ? `将以 0x01 向 ${platIp}:${GAME_CH_ACK_PORT} 注册（源端口 51124，与真实游戏一致），等平台回机位表`
-        : '本次没拿到平台 IP（EXE 不是被平台拉起的）→ 只被动等平台下发 GameStart'));
+      + (regTo.length
+        ? `将以 0x01 向 ${regTo.join(', ')}:${GAME_CH_ACK_PORT} 注册（源端口 51124，与真实游戏一致），等平台回机位表`
+        : '拿不到可用目标地址（平台没下发过帧、启动参数也只有回环/为空）→ 只被动等平台下发 GameStart'));
     // 注册 0x01：真实游戏是 start 之后约 4 秒注册；这里 0/1.5/3/4.5s 各发一次，抗 UDP 丢包
     [0, 1500, 3000, 4500].forEach((d) => setTimeout(() => {
       if (!PLATFORM_CH.enabled) return;
@@ -1610,3 +2222,4 @@ function startPlatformGameChannel() {
     }, d));
   });
 }
+

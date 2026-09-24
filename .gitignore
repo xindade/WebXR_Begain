@@ -9,3 +9,7 @@ npm-debug.log*
 
 # 构建产物（APK / 安装包体积过大，改为本地或网盘分发）
 release/
+
+# Python 字节码缓存（tools/cap-round.py 跑一次就会生成）
+__pycache__/
+*.pyc

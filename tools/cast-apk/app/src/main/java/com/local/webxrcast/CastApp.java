@@ -48,6 +48,10 @@ public class CastApp extends Application {
         //   还是崩在启动路径上（2026-09-19 实测就卡在这个歧义上）。
         try { PageForensics.init(this); } catch (Throwable ignore) { /* 留痕失败不影响启动 */ }
         PageForensics.line("APK", "CastApp.onCreate（Application 级：早于任何 Activity）");
+        // ★ 第二十七修：入口停用状态的「进程启动自愈」（见 EntryLock）。
+        //   只要有「页面仍在 XR」的新鲜证据就保持停用，否则一律恢复 —— 保证平台的下一次
+        //   「启动游戏」不会被上一局留下的停用状态挡住（这是本机制最关键的一道安全网）。
+        try { EntryLock.onProcessStart(this); } catch (Throwable e) { Log.w(TAG, "入口停用自愈失败: " + e); }
         final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
             try {

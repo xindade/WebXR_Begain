@@ -14,6 +14,10 @@
     <!-- Android 13+ 展示前台服务通知需要；未授予也不影响服务运行（通知不显示而已） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- ★ 第二十七修：开机广播 → 无条件恢复「平台入口」（见 EntryLock / BootReceiver）。
+         场地收工关机时若正好留着一局的「入口停用」状态，开机即恢复，保证平台下次能拉起我们。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <!-- ★ 2026-09-19 第十修「本局结束 → 退出策略」需要：
          · KILL_BACKGROUND_PROCESSES：本局结束后关掉浏览器进程（只对**后台**进程有效，
            所以我们先把平台客户端顶到前台，再杀 —— 顺序见 MainActivity.restoreClientAndCloseBrowser）。
@@ -89,6 +93,40 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- ★ 第二十八修「人工恢复入口」：停用期间**不再启用**（见 RecoverActivity / EntryLock 类注释）：
+             平台在 `-n …/.MainActivity` 被拒后会退化成隐式 MAIN/LAUNCHER（p27 留痕 14:59:17 实测），
+             于是「谁启用谁就是新的靶子」⇒ 本局在 VR 里时**包内零入口**；人工恢复改走
+             `http://<头显IP>:8080/api/entry/unlock` / 重启头显（实现与清单项保留，enabled=false）。
+             ⚠ 它必须是一个**独立 Activity**（不能用 activity-alias）：目标 Activity 被停用时 alias 也起不来。 -->
+        <activity
+            android:name=".RecoverActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ★ 第二十七修「死人开关」：停用平台入口期间每收到一条新鲜 XR 打点就续期 60s；
+             进程被系统回收（LMK）后由它把进程拉起来并恢复平台入口（见 EntryLock.onFuse）。 -->
+        <receiver
+            android:name=".EntryFuseReceiver"
+            android:exported="false" />
+
+        <!-- ★ 第二十七修：开机 / 覆盖安装 → 无条件恢复平台入口（见 BootReceiver）。
+             MY_PACKAGE_REPLACED 是必须的：组件使能状态在「覆盖安装」后会被保留。 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

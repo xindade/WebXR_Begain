@@ -43,6 +43,19 @@
                         white-space: nowrap; display: inline-block; vertical-align: bottom; }
     #cfgbox .gb { color: #ff6b6b; }
 
+    /* ★ 第二十四修：服务器清单（配置的唯一来源）。配置不再从游戏目录磁盘读 ——
+       每次启动从服务器拉一份；关闭游戏 / 启动前 / 退出时把旧配置清掉。
+       现场排障看这一行：ver + 文件数 + 「上次清旧配置是什么时候」。 */
+    #mftbox { flex: 0 0 auto; padding: 8px 14px; background: #131a13;
+              border-bottom: 1px solid #2c2c3a; font-size: 12px; line-height: 1.7;
+              display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #mftbox .mft-ok  { color: #51cf66; font-weight: 700; }
+    #mftbox .mft-warn{ color: #ffa94d; font-weight: 700; }
+    #mftbox .mft-bad { color: #ff6b6b; font-weight: 700; }
+    #mftbox .dim { color: #888; }
+    #mftbox code { background: #23232e; padding: 1px 6px; border-radius: 4px;
+                   color: #ffd43b; font-family: Consolas, monospace; font-size: 11px; }
+
     /* 授权（License）：本机是「直播端」，它自己必须先被授权。
        ★ 兜底 0 天 ⇒ 这里一旦不是「有效」，头显一律启动不了。所以这一栏要一眼能看明白，
          并且把「剩余天数」「一键续期」「填激活码」都放在最显眼处。 */
@@ -57,6 +70,20 @@
                     font-family: Consolas, "Courier New", monospace; text-transform: uppercase; width: 190px; }
     #licbox #licDays { font-weight: 700; }
     #licbox .hint { color: #888; }
+    /* ★ 第二十三修：授权验证已关闭（默认）→ 整个授权面板不出现。
+       类由 renderer.js 在收到 license.mode='off' 时加到 body 上。 */
+    body.no-lic #licbox { display: none !important; }
+
+    /* ★ 第二十五修：**诊断行默认不显示**。
+       现场窗口（尤其大屏）上不该出现服务器地址、共享密钥、设备号这些东西。
+       它们**仍然在工作**，只是不显示；排障时用启动参数 `--panels` 显示完整面板（= body.diag）。
+         · #platline 平台拉起参数（含 --room/--game 等诊断信息）
+         · #mftDiag  服务器清单的**来源地址** / 拉取时间 / 上次清旧配置时间
+         · #guardbox 启动授权（密钥 webxr-cast、局号、设备白名单）
+       授权面板（#licbox）由 body.no-lic 控制：授权验证关闭时整行不出现。 */
+    body:not(.diag) #platline,
+    body:not(.diag) #mftDiag,
+    body:not(.diag) #guardbox { display: none !important; }
 
     #stage { flex: 1 1 auto; position: relative; background: #000;
              display: flex; align-items: center; justify-content: center; min-height: 0; overflow: hidden; }
@@ -153,6 +180,14 @@
       <input id="cfgRoot" type="text" placeholder="例如 D:\Games\WebXR_Begain（需含 src/content；留空 = 用 EXE 内置配置）" />
       <button id="cfgApply" class="sec">应用</button>
       <span id="cfgStatus" class="dim">（未配置）</span>
+    </div>
+    <!-- ★ 第二十四修：服务器清单状态（每次启动拉；关闭游戏 + 启动前 + 退出清旧配置） -->
+    <div id="mftbox">
+      <span>服务器清单：</span>
+      <b id="mftState" class="mft-bad">读取中…</b>
+      <span id="mftInfo" class="dim">…</span>
+      <!-- ★ 第二十五修：来源地址与时间戳只在诊断模式（--panels）显示 -->
+      <span id="mftDiag" class="dim"></span>
     </div>
     <div id="licbox">
       <span>授权（本机直播端）：</span>

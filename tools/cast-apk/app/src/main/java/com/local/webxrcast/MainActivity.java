@@ -225,8 +225,19 @@ public class MainActivity extends AppCompatActivity {
     private Boolean passThrough = null;
 
     private boolean computeRelaunchFallback() {
-        if (!platformLike()) return false;
         if (!sLaunched || !pageAliveForLaunch()) return false;                 // ② 没有活着的游戏页
+        boolean like = platformLike();
+        // ★ 第二十六修：进程**刚被平台 kill 又拉起来**时，与平台游戏通道的握手还没跑完
+        //   （sVRPlusLink 是本进程新建的，isConnected() 还是 false）⇒ 只认通道状态会把
+        //   免打扰判据废掉，然后建 2D 窗口把 VR 里的玩家挤出去。
+        //   放宽一档：上一进程留下「页面当时正在 XR 会话里」的证据时，本次按平台重拉处理
+        //   （页面在 VR 里、人又正好这时从桌面点图标 —— 现实中不会发生）。
+        if (!like && PagePresence.aliveNow() && PagePresence.lastXr()) {
+            PageForensics.line("APK", "平台重拉兜底（第二十六修）：平台通道尚未握手，但上一进程留下"
+                    + "「页面正在 XR」的证据（" + PagePresence.describe() + "）→ 视为平台重拉");
+            like = true;
+        }
+        if (!like) return false;
         PageForensics.line("APK", "平台驱动兜底命中：平台会话在线 + 游戏页仍在 + 无 launcher referrer "
                 + "→ 视为平台重拉（平台的 am start 有时不带 -d 却带 LAUNCHER，与人工点击同形）");
         return true;
@@ -376,6 +387,42 @@ public class MainActivity extends AppCompatActivity {
         // 本页不产生任何窗口 ⇒ PICO 的 XRShell 不会为它建 2D 面板 ⇒ 不会把浏览器里的
         // XR 沉浸式会话挤掉（实测 18:24:04：平台重拉 → 253ms 后 visibility:hidden → 会话结束 →
         // 玩家被打回 2D 预览界面、本局作废）。窗口建立后就改不动主题了，只能在这里。
+        // ★ 第二十六修（2026-09-24）：先把**上一进程**留下的「游戏页还在打点」证据接回来。
+        //   为什么必须在这里（super.onCreate 之前）：下面的 computePassThrough 已经要用了。
+        //   现场形态：平台「启动游戏」= kill → copyfile → am start，且客户端每 20.004s 重发一次；
+        //   那一记 kill（am force-stop 本包名）一旦真的生效，本进程里 sLaunched / lastPageHitMs
+        //   全是空的 → 免打扰判据失效 → 建「等待直播端启动…」提示页（2D 窗口）→ PICO 的 XRShell
+        //   弹「退出PICO浏览器」并把正在 VR 里的玩家挤出去（用户 2026-09-24 报的正是这个）。
+        //   证据来源与判据见 PagePresence 类注释。
+        try {
+            PageForensics.init(getApplicationContext());   // 幂等；下面几行要写留痕
+            final String pgDesc = PagePresence.describe();
+            final boolean pgAlive = PagePresence.aliveNow();
+            PageForensics.line("APK", "跨进程页面在场判据(" + PagePresence.BUILD_NOTE + ")：" + pgDesc
+                    + "；本进程 sLaunched=" + sLaunched + " pid=" + android.os.Process.myPid());
+            if (!sLaunched && pgAlive) {
+                sLaunched = true;
+                autoLaunched = true;
+                sLaunchedAt = PagePresence.lastHitAt();
+                PageForensics.line("APK", "本进程是**新进程**（pid=" + android.os.Process.myPid()
+                        + "，上一进程已被平台 kill）但上一进程已证明游戏页仍在跑 → 视为「已拉起」"
+                        + "：本次走免打扰路径，绝不建窗口、绝不重开浏览器");
+            }
+            // 直播模式（?cast=1）同样是跨进程状态：本局收尾时「动不动浏览器」靠它（见
+            // restoreClientAndCloseBrowser）。丢掉的后果是收尾去动推流源。
+            if (!sPcConfigured) {
+                String pcSaved = getSharedPreferences("cast", MODE_PRIVATE).getString("pc", null);
+                if (pcSaved != null && !pcSaved.isEmpty()) {
+                    sPcConfigured = true;
+                    PageForensics.line("APK", "跨进程恢复：本机此前配置过直播端 " + pcSaved
+                            + " → 视为直播模式（本局收尾不动浏览器）");
+                }
+            }
+        } catch (Throwable e) {
+            PageForensics.line("APK", "跨进程页面在场判据读取失败（按「不存在」处理）："
+                    + e.getClass().getSimpleName() + " " + e.getMessage());
+        }
+
         passThrough = computePassThrough(getIntent());
         if (passThrough) {
             setTheme(R.style.Theme_WebXRCast_Passthrough);
@@ -441,6 +488,12 @@ public class MainActivity extends AppCompatActivity {
         // ★ 第十七修：把「直播端下发的轻量配置」覆盖层挂到本地服务上（进程级，随 sServer 复用）。
         //   清单来自上一次成功下发时落盘的 session.json。本机若还没有（从没被授权过），这里就是空集
         //   ⇒ 对受管路径一律 404 ⇒ 游戏连关卡定义都读不到 = 硬门禁，而**不是**静默回落 assets。
+        // ★ 第二十四修：**下次启动前先清掉旧时间的配置**（= 上一次下发的那份覆盖层）。
+        //   ⚠ 只在**非免打扰路径**做：passThrough = 「平台重拉且游戏页仍活」，那一刻删文件会把
+        //   正在跑的游戏页资源删掉（硬约束 52 / 35 的「把玩家踢出 VR」链条）。
+        //   清完由下面的 mountOverlayToServer() 挂上空覆盖层；放行时 fetchExeConfig 发现局号不符 → 整包重下。
+        if (!passThrough) clearOverlayCache("APK 启动（下次启动前清理旧配置）");
+
         mountOverlayToServer();
 
         // 2) 平台经 am start -d <IP> 直推地址：仅建 UDP 控制桥（cmd 1/3/4/5），不进游戏 URL、
@@ -510,9 +563,24 @@ public class MainActivity extends AppCompatActivity {
             // ★ 待机页唤醒（见 reviveClosedPage）：平台关过一局后页面是保留的，
             //   这里不补一条本地 cmd3 的话，平台这句「开始」对游戏就不产生任何效果。
             reviveClosedPage();
-            // ★ 四修：过去这里是「moveTaskToBack + finish」，谁也没把浏览器顶上来 ——
-            //   玩家看到的就是「平台启动了，但没有任何网页弹出来」（第 3 次的形态）。
-            yieldToBrowser("平台重复拉起：游戏页仍在（零界面分支）");
+            // ★ 第二十六修：**页面正在 XR 会话里时，一个 startActivity / 顶前台动作都不发**。
+            //   玩家此刻正在 VR 里 ⇒ 浏览器就是那个前台应用，不存在「谁把它压在下面」的问题；
+            //   而任何多余的前台动作都可能在 PICO 上触发 XRShell 的「除浏览器之外还有 2D 应用想占前台」
+            //   → 弹「退出PICO浏览器」并把 XR 沉浸式会话挤掉（docs/tech/VR+平台版本号实现.md §22.3）。
+            //   这条路径只需 finish：本页用的是 NoDisplay 主题，本身不产生任何窗口。
+            if (pageInXrNow()) {
+                PageForensics.line("APK", "免打扰路径：页面正在 XR 会话中（xr=1）→ 不做任何 startActivity/"
+                        + "顶前台动作，只 finish 本页（第二十六修）");
+                finish();
+            } else {
+                // ★ 四修：过去这里是「moveTaskToBack + finish」，谁也没把浏览器顶上来 ——
+                //   玩家看到的就是「平台启动了，但没有任何网页弹出来」（第 3 次的形态）。
+                yieldToBrowser("平台重复拉起：游戏页仍在（零界面分支）");
+            }
+            // ★ 第二十六修：免打扰路径「什么都不做」的前提是页面真的还在打点；
+            //   5 秒后复核一次，若本进程启动至今 0 条页面请求，说明手里这份「在场证据」是过期的
+            //   （页面其实已经没了）→ 走到那时才允许重开浏览器。
+            schedulePassThroughVerify();
             return;
         }
         // ── 4-pre) ★ 第十五修 LaunchGuard：不是「平台客户端拉起 + 直播端放行」就一律拒绝 ──
@@ -539,6 +607,21 @@ public class MainActivity extends AppCompatActivity {
     private void initGameUi() {
         if (gameUiInited) return;   // 幂等：缓存命中同步放行、回调重复触发，都只初始化一次
         gameUiInited = true;
+        // ★ 第二十六修：本页一旦建出可见界面，就是一个**2D 窗口**。若此刻跨进程记录说游戏页仍在跑
+        //   （玩家很可能正在 VR 里），这个窗口就是 PICO 弹「退出PICO浏览器」并挤掉 XR 会话的元凶 ——
+        //   留一条明确的证据，下一轮读留痕即可判定「弹窗是我们造成的」还是「平台客户端造成的」。
+        try {
+            if (PagePresence.aliveNow()) {
+                PageForensics.line("APK", "⚠ 即将建可见界面，而跨进程记录称游戏页仍在跑（"
+                        + PagePresence.describe() + "）—— 若玩家正在 VR 里，本窗口会挤掉 XR 会话");
+            }
+            // ★ 第二十七修：本页若是在「平台入口已停用」的状态下被拉起来的，说明这一次 am start
+            //   没被拦下（平台换了组件名 / 锁没落到系统里 / 被 force-stop 之后又重启）—— 明确留痕。
+            if (EntryLock.isLocked(this)) {
+                PageForensics.line("APK", "⚠ 本页在「平台入口已停用」状态下仍被拉起（"
+                        + EntryLock.describe(this) + "）→ 说明这一次 am start 没被拦下");
+            }
+        } catch (Throwable ignore) { /* 诊断失败不影响建界面 */ }
         // ── 4) 以下为「真要把游戏开起来」的路径：建界面 ──
         setContentView(R.layout.activity_main);
 
@@ -612,6 +695,19 @@ public class MainActivity extends AppCompatActivity {
                     PageForensics.line("APK", "配置页：跳过直播端校验（应急）=" + on
                             + (on ? " → 之后只要求平台客户端拉起" : " → 恢复硬闸门（要求 EXE 放行）"));
                 });
+            }
+            // ★ 第二十七修：平台重拉防护（见 EntryLock）—— 现场开关 + 状态。
+            //   默认开：本局在 VR 期间让系统直接拒绝平台那一次 am start（防 20s 重拉弹窗）。
+            //   关掉即回到第二十六修行为（不再拦，但会重新出现「退出PICO浏览器」弹窗）。
+            android.widget.CheckBox cbEntry = findViewById(R.id.cbEntryLock);
+            if (cbEntry != null) {
+                cbEntry.setChecked(EntryLock.switchOn(this));
+                cbEntry.setOnCheckedChangeListener((v, on) -> EntryLock.setSwitch(this, on));
+            }
+            android.widget.TextView tvEntry = findViewById(R.id.tvEntryLock);
+            if (tvEntry != null) {
+                tvEntry.setText("平台入口：" + EntryLock.describe(this));
+                tvEntry.setTextColor(EntryLock.isLocked(this) ? 0xFFD8A657 : 0xFF7FD18A);
             }
             // ★ 第十七修：密钥输入框改为**只读**。它现在两端固定，改它没有任何意义，只会制造不一致：
             //   而本配置页在门禁**之内**（进得去才改得动）⇒ 一旦不一致，现场无法自救。
@@ -1230,6 +1326,38 @@ public class MainActivity extends AppCompatActivity {
      * 而覆盖层清单是刚下发/刚读盘的 —— 不重挂就会出现「下发了但服务还在用旧清单」的鬼状态。
      * 两种路径都要覆盖到：① 刚下发完就启动；② 重启 Activity 后复用已在跑的服务。
      */
+    /**
+     * ★ 第二十四修（2026-09-24）：清掉「旧时间的配置」= 上一次从直播端下发的覆盖层（filesDir/game-overlay）。
+     *
+     * <p>需求：不再做加密狗式授权校验，改成「每次启动从服务器拉清单」，并在**关闭游戏**与
+     * **下次启动前**把旧时间的配置清掉。PC 侧那一半在 cast-pc/main.js（拉清单 + 启动/关局/退出清缓存），
+     * 头显这一半就是本方法：把本机那份旧覆盖层连同**局号**一起作废 —— 局号一没，下次放行时
+     * fetchExeConfig 必然判定「换局」，于是整包重下（拿到的是 PC 刚从服务器拉到的新配置）。
+     *
+     * <p>⚠ 时机必须掐准（硬约束 52 / 35）：
+     *   · 启动（非免打扰路径）—— 服务还没对外服务，安全；
+     *   · 本局结束（且直播模式下**本轮真的结束**）—— 页面已 about:blank 收工，安全；
+     *   · 平台「重拉且游戏页仍活」（免打扰路径）／直播模式下本轮未结束 —— **绝不调用**：
+     *     那一刻删文件就等于把正在跑的游戏页资源删掉，正是会把玩家踢出 VR 的那条链。
+     */
+    static void clearOverlayCache(String why) {
+        try {
+            android.content.Context app = CastApp.APP;
+            if (app == null) { PageForensics.line("APK", "旧配置清理跳过：没有 Context（" + why + "）"); return; }
+            java.io.File dir = new java.io.File(app.getFilesDir(), OVERLAY_DIR);
+            final boolean had = dir.exists();
+            deleteRecursively(dir);
+            try {
+                app.getSharedPreferences("cast", MODE_PRIVATE).edit().remove(OVERLAY_SESSION_KEY).apply();
+            } catch (Throwable ignore) { /* 局号作废失败也不致命：下次下发仍会整包覆盖 */ }
+            if (sServer != null) sServer.setOverlay(null, null);   // 进程级服务同步解绑，避免还用旧清单
+            sOverlayCount = 0L;
+            PageForensics.line("APK", "旧配置已清理（" + why + "）：覆盖层 " + (had ? "已清空" : "（本来就没有）")
+                    + " + 局号作废 → 下次放行时整包重下 " + dir.getAbsolutePath());
+        } catch (Throwable e) {
+            PageForensics.line("APK", "旧配置清理失败（" + why + "）：" + e);
+        }
+    }
     private void mountOverlayToServer() {
         try {
             java.io.File dir = new java.io.File(getFilesDir(), OVERLAY_DIR);
@@ -1574,6 +1702,15 @@ public class MainActivity extends AppCompatActivity {
         if (f.code != 200) {
             return new LicenseVerify.Verdict(LicenseVerify.KIND_RETRY, "取授权信息失败：HTTP " + f.code);
         }
+        // ★ 第二十三修：直播端**已关闭授权验证**（/api/license/current 回 off:true）→ 直接通过。
+        //   需求方决定不再做加密狗式服务器授权校验（改为「每次启动从服务器拉清单」口径）。
+        //   ⚠ 必须显式识别：否则会走进 LicenseVerify 报「license 格式非法」→ 头显拒启动，
+        //      现象是「明明是正版却进不去」。字段级判据（不看其它字段），不依赖 JSON 库。
+        if (f.body != null && java.util.regex.Pattern.compile("\"off\"\\s*:\\s*true")
+                .matcher(f.body).find()) {
+            PageForensics.line("APK", "LicenseGuard：直播端已关闭授权验证（第二十三修）→ 跳过校验直接通过");
+            return new LicenseVerify.Verdict(LicenseVerify.KIND_OK, "直播端已关闭授权验证（第二十三修）");
+        }
         LicenseVerify.Verdict v = LicenseVerify.evaluate(f.body, nonce, LICENSE_PUBKEY_B64,
                 System.currentTimeMillis(), LICENSE_SKEW_MS);
         PageForensics.line("APK", "LicenseGuard：校验结论 kind=" + v.kind + "（0=OK 1=DENY 2=旧版 3=重试）"
@@ -1884,6 +2021,17 @@ public class MainActivity extends AppCompatActivity {
             String sip = readSetupPlatformIp();
             if (sip != null) setControlHost(sip);       // 平台不带 -d 时的兜底（同 onCreate）
         }
+        // ★ 第二十六修：平台重拉 + 本局仍在跑 ⇒ 本页若还是**可见窗口**（配置页 / 提示页），
+        //   必须立刻收掉自己。它一旦被顶到前面，PICO 就会弹「退出PICO浏览器」并挤掉 XR 会话 ——
+        //   这正是「平台每 20s 重发一次启动」在玩家已经进 VR 之后的破坏方式。
+        //   （页面还活着时我们要的语义是「零打扰」，不是「把配置页端上来」。）
+        if (platformDriven && autoLaunched && sLaunched && pageAliveForLaunch()) {
+            PageForensics.line("APK", "onNewIntent：平台重拉 + 本局仍在跑（age=" + gamePageAgeMs()
+                    + "ms state=" + pageState() + " XR=" + pageInXrNow()
+                    + "）→ 收起本页，绝不让 2D 面板顶到前面");
+            yieldToBrowser("平台重拉：本局仍在跑（onNewIntent 收页）");
+            return;
+        }
         maybeLaunch();
     }
 
@@ -2103,11 +2251,25 @@ public class MainActivity extends AppCompatActivity {
                     + "ms 但 cs=1 → 视为「活着但被冻结」，不重开浏览器（防整页重载）");
             return true;
         }
+        // ③ ★ 第二十六修：本进程刚重启（被平台 kill）时，上面两条的进程内计数全是空的 ——
+        //    上一进程留下的「页面在场」记录是唯一证据，判据见 PagePresence。
+        if (PagePresence.aliveNow()) {
+            PageForensics.line("APK", "pageAliveForLaunch：本进程无页面请求，但跨进程记录称页面仍在（"
+                    + PagePresence.describe() + "）→ 视为活着（不重开浏览器）");
+            return true;
+        }
         return false;
     }
 
     /** 待机页最多被无条件信任多久（保险丝，防「页面真没了」时永远不重开） */
     private static final long IDLE_TRUST_MS = 10 * 60 * 1000L;
+
+    /**
+     * ★ 第二十九修：免打扰复核里「页面还活着」的**新鲜度**要求。
+     * 页面只要活着就每秒打点 ⇒ 8s 足够；把「有记录」当成「还活着」会让上一局的死页把下一局整局吞掉
+     * （2026-09-24 15:47 现场：`age=23173ms` 仍被判成「页面在打点 → 零打扰结束」）。
+     */
+    private static final long PAGE_FRESH_MS = 8000L;
 
     /** 页面最近一次上报的游戏状态（每秒轮询带上来的 ?st=），未知返回 "?" */
     private String pageState() {
@@ -2117,6 +2279,71 @@ public class MainActivity extends AppCompatActivity {
     /** 页面是否处于「本局已结束」待机态（?cs=1：平台关闭后页面保留未卸载） */
     private boolean pageClosed() {
         return sServer != null && sServer.lastPageClosed();
+    }
+
+    /**
+     * 页面此刻是否在 **XR 沉浸式会话**里（第二十六修）。两路取或：
+     *   · 本进程最新一条页面轮询带上来的 ?xr=1（最准）；
+     *   · 上一进程（可能已被平台 kill）留下的记录 —— 进程刚重启时它是唯一的证据。
+     *
+     * <p>用途：玩家已经在 VR 里时，APK 侧**一个前台动作都不能发**（见 onCreate 免打扰分支）。
+     */
+    private boolean pageInXrNow() {
+        try {
+            if (sServer != null && sServer.lastPageXr()) return true;
+        } catch (Throwable ignore) { /* 下一路 */ }
+        return PagePresence.lastXr();
+    }
+
+    /**
+     * 免打扰路径的**兜底复核**（第二十六修）：finish 后 5 秒看一眼「本进程到底有没有收到过页面请求」。
+     *
+     * <p>为什么需要：这一版的免打扰判据多了一条**跨进程**证据（PagePresence）。它可能过期
+     * （上一进程死后浏览器被关掉/页面被系统回收），那时若什么都不做，玩家看到的就是
+     * 「平台点启动，头显上什么都没有」。页面活着时每秒都会打点，所以「5 秒 0 条请求」
+     * 是页面确实不在的可靠判据。
+     *
+     * <p>两步走（次序很重要）：**先只顶浏览器前台、不导航** —— 页面只是被冻结在后台时，顶上来就恢复打点，
+     * 一次重载都不用；再等 3s 仍 0 条，才承认「页面真没了」并允许整页重开（重开=导航=预加载重来+丢 XR 会话，
+     * 所以必须放在最后一步）。
+     */
+    private void schedulePassThroughVerify() {
+        new android.os.Handler(getMainLooper()).postDelayed(() -> {
+            try {
+                long hit = (sServer != null) ? sServer.lastPageHitMs() : 0L;
+                // ★ 第二十九修：判据由「有记录」改成「**新鲜**」（±8s）——见 PAGE_FRESH_MS 注释。
+                if (hit != 0L && System.currentTimeMillis() - hit < PAGE_FRESH_MS) {
+                    PageForensics.line("APK", "免打扰路径复核：页面在打点（age=" + gamePageAgeMs()
+                            + "ms state=" + pageState() + " XR=" + pageInXrNow() + "）→ 本次重拉零打扰结束");
+                    return;
+                }
+                // ⚠ 两步走，且第一步**绝不导航** —— 整页重载 = 预加载重来 + 丢 XR 会话，
+                //   所以先用「只顶前台」这一手（拿不到 launcher intent 时它自己会退化成什么都不做）：
+                //   页面只是被冻结在后台时，顶上来它就会立刻恢复打点，一次重载都不用。
+                PageForensics.line("APK", "免打扰路径复核：本进程启动后 5s 内 0 条页面请求"
+                        + "（跨进程记录可能已过期）→ 先把浏览器顶到前台（不导航）再看一轮");
+                boolean brought = bringBrowserToFront();
+                new android.os.Handler(getMainLooper()).postDelayed(() -> {
+                    try {
+                        long hit2 = (sServer != null) ? sServer.lastPageHitMs() : 0L;
+                        if (hit2 != 0L && System.currentTimeMillis() - hit2 < PAGE_FRESH_MS) {
+                            PageForensics.line("APK", "免打扰路径复核：顶前台后页面已恢复打点（age="
+                                    + gamePageAgeMs() + "ms XR=" + pageInXrNow() + "）→ 不重载页面");
+                        } else {
+                            PageForensics.line("APK", "免打扰路径复核：顶前台=" + brought
+                                    + " 后仍 0 条页面请求 → 页面确实不在了，允许重开浏览器（整页重载）");
+                            forceRelaunchBrowser("免打扰路径复核：顶前台后仍无页面请求");
+                        }
+                    } catch (Throwable e2) {
+                        PageForensics.line("APK", "免打扰路径复核(第二轮)失败（忽略）："
+                                + e2.getClass().getSimpleName() + " " + e2.getMessage());
+                    }
+                }, 3000);
+            } catch (Throwable e) {
+                PageForensics.line("APK", "免打扰路径复核失败（忽略）："
+                        + e.getClass().getSimpleName() + " " + e.getMessage());
+            }
+        }, 5000);
     }
 
     /** 记录一次「没有拉起浏览器」的早退原因 —— 这类静默早退正是前几轮排查最大的黑洞。 */
@@ -2545,6 +2772,9 @@ public class MainActivity extends AppCompatActivity {
     static void scheduleClientRestore(Context ctx, String why, long delayMs) {
         final Context app = (ctx != null) ? ctx.getApplicationContext() : CastApp.APP;
         if (app == null) { PageForensics.line("APK", "退出策略跳过：没有可用的 Context"); return; }
+        // ★ 第二十七修：本局结束 → **立刻**恢复「平台入口」（见 EntryLock）。
+        //   停在「停用」状态上，平台的下一次「启动游戏」会被系统直接拒绝。
+        try { EntryLock.release(app, "本局结束（" + why + "）"); } catch (Throwable ignore) { }
         // ★ 第二十修：**平台关游戏**这一路立刻执行（原因见 RESTORE_FAST_MS 的注释）。
         //   ⚠ 页面自己上报的 game-end 不受影响 —— 那条要留给结算画面走完（RESTORE_DELAY_ON_GAME_END）。
         final long delay = (why != null && why.contains("closeGame")) ? RESTORE_FAST_MS : delayMs;
@@ -2572,6 +2802,14 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
             sRestoreAt = 0;
+            // ★ 第二十四修：本局结束 → 把「旧时间的配置」清掉（与「下次启动前清」一前一后两道）。
+            //   直播模式下**只有本轮真的结束**才清（sCastRoundOver=false 时页面还在跑、覆盖层正在用，
+            //   删它正是硬约束 52 / 35 里会把玩家踢出 VR 的那种时机）。
+            if (!sPcConfigured || GameServer.sCastRoundOver) {
+                clearOverlayCache("本局结束（" + why + "）");
+            } else {
+                PageForensics.line("APK", "旧配置清理跳过：直播模式且本轮未结束（页面仍在跑，覆盖层正在用）");
+            }
             restoreClientAndCloseBrowser(app, why);
         }, delay);
     }
@@ -2592,6 +2830,11 @@ public class MainActivity extends AppCompatActivity {
         final boolean castRoundOver = GameServer.sCastRoundOver;
         PageForensics.line("APK", "退出策略执行（" + why + "）：唤醒客户端=" + wantClient
                 + " 关闭浏览器=" + wantKill + " 直播模式=" + castMode + " 本轮结束=" + castRoundOver);
+        // ★ 第二十九修：本局真的结束 ⇒ **当场作废跨进程在场记录**。
+        //   否则下一局平台的 am start 会被「判定页面仍在（上一局最后一条打点还带着 xr=true）→
+        //   不重开浏览器」吞掉：2026-09-24 15:47 现场实测，第二场就是这么起不来的
+        //   （留痕：`上一进程最后打点 18s 前 state=playing xr=true → alive=true` → `不重开浏览器`）。
+        PagePresence.markRoundOver("本局结束（" + why + "）");
         if (castMode && castRoundOver) {
             GameServer.sCastRoundOver = false;
             // ★ 第十九修（2026-09-23 晚，用户第四次实测）：「只关浏览器」是**错的** ——
@@ -2908,7 +3151,12 @@ public class MainActivity extends AppCompatActivity {
         // 此时一律当作「存活」，避免把自己的加载期误判成失联而重开浏览器（那会打断加载）。
         if (sLaunchedAt > 0 && System.currentTimeMillis() - sLaunchedAt < 15000) return true;
         long age = gamePageAgeMs();
-        return age >= 0 && age < 5000;
+        if (age >= 0 && age < 5000) return true;
+        // ★ 第二十六修：本进程可能刚被平台 kill→am start 重启（8080 还没人来打过点），
+        //   此时**上一进程**写下的「页面仍在打点 / 页面正在 XR」是唯一能证明页面还活着的证据。
+        //   见 PagePresence。宁可多认一次「活着」（有 schedulePassThroughVerify 兜底），
+        //   也不要把活着的页面误判成失联 —— 那会让我们建 2D 窗口、把玩家挤出 VR。
+        return PagePresence.aliveNow();
     }
 
     /**
@@ -2996,6 +3244,9 @@ public class MainActivity extends AppCompatActivity {
                     catch (Exception e) { android.util.Log.w("CastMain", "心跳：8080 重绑失败 " + e.getMessage()); }
                 }
                 CastService.start(app);   // 幂等：服务已在跑则忽略
+                // ★ 第二十七修：停用了平台入口就盯住「本局还在不在跑」——
+                //   页面打点停了（浏览器没了 / 页面被卸载）立刻恢复，绝不让停用状态留下来（见 EntryLock）。
+                try { EntryLock.tickRound(app); } catch (Throwable ignore) { /* 诊断失败不影响心跳 */ }
                 // 平台通常「先 copyfile 下发 setup.xml，再 am start」，但两个动作间隔可能只有几毫秒；
                 // 这里每 5s 复查一次，晚到的 setup.xml 也能被追加成平台候选地址（无需重启桥接）。
                 try {

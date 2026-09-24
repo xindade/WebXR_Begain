@@ -123,6 +123,36 @@
             android:textColor="#dfe4ea"
             android:textSize="13sp" />
 
+        <!-- ★ 第二十七修：平台重拉防护（见 EntryLock.java）。
+             平台客户端每 20.004s 重发一次整套启动，第二次 am start 往往正好砸在玩家已经在 VR 里的时候 ——
+             只要我们的 Activity 被拉起（哪怕 Theme.NoDisplay + 立刻 finish），PICO 也会给它建一个 2D 面板，
+             浏览器失去焦点 ⇒ XR 会话结束 + 系统弹窗「退出PICO浏览器」。
+             勾上（默认）：本局在 VR 期间把「平台入口」组件临时停用，平台那一次 am start 会在包管理器层被拒；
+             退出 VR / 本局结束 / 页面没了 / 开机 / 点「恢复入口」图标都会自动恢复。 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="平台重拉防护（第二十七修）："
+            android:textColor="#8a8a94"
+            android:textSize="12sp" />
+
+        <CheckBox
+            android:id="@+id/cbEntryLock"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="true"
+            android:text="本局在 VR 中临时停用「平台入口」（防 20s 重拉弹窗）"
+            android:textColor="#dfe4ea"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tvEntryLock"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#7fd18a"
+            android:textSize="11sp"
+            android:text="平台入口：检测中…" />
+
         <!-- ★ 第十一修：把平台客户端「从后台顶到前台」属于后台启动 Activity，Android 10+ 默认
              静默丢弃；持有 SYSTEM_ALERT_WINDOW 是被明文豁免的。此按钮跳系统设置授予一次即可。 -->
         <Button

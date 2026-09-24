@@ -81,6 +81,16 @@ public class GameServer extends NanoHTTPD {
     private volatile String lastPageState = "?";
     /** 页面是否处于「本局已结束」待机态（?cs=1）。见 MainActivity.reviveClosedPage */
     private volatile boolean lastPageClosed = false;
+    /**
+     * ★ 第二十六修：页面是否正处在 **XR 沉浸式会话**里（?xr=1）。
+     *
+     * <p>用途：平台每 20s 重发一次「启动游戏」（含 am start）时，如果玩家已经在 VR 里，
+     * 我们**一个 startActivity / 顶前台动作都不能发** —— 浏览器此刻就是那个前台应用，
+     * 根本不存在「谁把它压在下面」的问题；任何多余的前台动作都可能在 PICO 上触发 XRShell 的
+     * 「除浏览器之外还有 2D 应用想占前台」→ 弹「退出PICO浏览器」并挤掉 XR 会话。
+     * 见 MainActivity 的免打扰分支（inXrNow）。
+     */
+    private volatile boolean lastPageXr = false;
 
     private static final Map<String, String> MIME = new HashMap<>();
     static {
@@ -175,6 +185,16 @@ public class GameServer extends NanoHTTPD {
             return guardApi();
         }
 
+        // ★ 第二十七修：平台入口停用状态的查询 / 现场操作（见 EntryLock）。
+        //   ⚠ 与 /api/guard 同理，必须排在下面通用 /api 代理**之前**，否则会被转发到 PC（404）。
+        //     GET /api/entry                 → 状态 JSON（locked / 开关 / 页面证据）
+        //     GET /api/entry/unlock          → 立刻恢复平台入口（现场自救，等价于「本局结束」那一路）
+        //     GET /api/entry/lock            → 立刻停用（仅排查用；正常由页面 ?xr=1 自动触发）
+        //     GET /api/entry?on=0|1          → 改配置开关（0 = 关掉本机制并立刻恢复）
+        if (uri.startsWith("/api/entry")) {
+            return entryApi(session, uri);
+        }
+
         // 信令/帧代理：页面始终请求同源 /api/*，由本服务转发到 PC
         if (uri.startsWith("/api/")) {
             return proxyApi(session, uri);
@@ -261,6 +281,40 @@ public class GameServer extends NanoHTTPD {
         return cors(newFixedLengthResponse(Response.Status.OK, "application/json", json));
     }
 
+    // ───────────────── ★ 第二十七修：平台入口停用状态（/api/entry） ─────────────────
+    /**
+     * 平台入口（MainActivity）的临时停用状态 —— 现场不连 adb 也能看、也能操作。
+     * 用途：① 联调时确认「本局在 VR 里 → 入口真的被停用了」；
+     *       ② 万一停用状态因为某种意外留了下来（现场「启动游戏拉不起来」），
+     *          用 `http://<头显IP>:8080/api/entry/unlock` 一条 URL 就能恢复。
+     */
+    private Response entryApi(IHTTPSession session, String uri) {
+        try {
+            Map<String, String> q = session.getParms();
+            String on = (q != null) ? q.get("on") : null;
+            if (on != null && !on.isEmpty()) {
+                EntryLock.setSwitch(CastApp.APP, !"0".equals(on));
+            }
+            if (uri.equals("/api/entry/unlock")) {
+                EntryLock.release(CastApp.APP, "本机 /api/entry/unlock（现场操作）");
+            } else if (uri.equals("/api/entry/lock")) {
+                EntryLock.holdForXr(CastApp.APP, "本机 /api/entry/lock（现场排查）");
+            }
+            String json = "{\"ok\":true"
+                    + ",\"locked\":" + EntryLock.isLocked(CastApp.APP)
+                    + ",\"switch\":" + EntryLock.switchOn(CastApp.APP)
+                    + ",\"lockedAt\":" + EntryLock.lockedAt(CastApp.APP)
+                    + ",\"note\":" + JSONObject.quote(EntryLock.BUILD_NOTE)
+                    + ",\"describe\":" + JSONObject.quote(EntryLock.describe(CastApp.APP))
+                    + ",\"page\":" + JSONObject.quote(PagePresence.describe())
+                    + "}";
+            return cors(newFixedLengthResponse(Response.Status.OK, "application/json", json));
+        } catch (Throwable e) {
+            return cors(newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain",
+                    e.getClass().getSimpleName() + ": " + e.getMessage()));
+        }
+    }
+
     // ───────────────── VR+ 平台桥接（/api/vrplus/*） ─────────────────
     // 游戏页（PICO 浏览器，origin=http://localhost:8080）与 GameServer 同源，
     // 这些端点无 CORS 问题；协议细节见 VRPlusLink.java。
@@ -308,8 +362,18 @@ public class GameServer extends NanoHTTPD {
                     String st = q.get("st");
                     lastPageState = (st == null) ? "?" : st;
                     lastPageClosed = "1".equals(q.get("cs"));
+                    lastPageXr = "1".equals(q.get("xr"));
                     PageForensics.state(pct, lastPageState,
-                            "1".equals(q.get("pd")), "1".equals(q.get("xr")), lastPageClosed);
+                            "1".equals(q.get("pd")), lastPageXr, lastPageClosed);
+                    // ★ 第二十六修：把「页面还在」的证据写进 SharedPreferences（跨进程）。
+                    //   平台那套启动里带 kill（am force-stop 本包名）—— 一旦生效，新进程里
+                    //   lastPageHitMs / sLaunched 全是空的，免打扰判据会失效 → 建 2D 窗口 →
+                    //   PICO 弹「退出PICO浏览器」把玩家挤出 VR。见 PagePresence 类注释。
+                    PagePresence.note(lastPageState, lastPageXr, lastPageClosed);
+                    // ★ 第二十七修：页面在 XR 里 → 把「平台入口」临时停用（平台每 20s 重发的那一次
+                    //   am start 会被系统直接拒绝，不产生 2D 面板/闪屏/弹窗）；退出 VR 立刻恢复。
+                    //   安全网（死人开关 / 进程启动自愈 / 心跳复核 / 开机 / 人工恢复入口）见 EntryLock。
+                    EntryLock.onPageXr(CastApp.APP, lastPageXr);
                 }
             } catch (Throwable ignore) { /* 诊断失败绝不影响协议 */ }
             // 拉取平台下行命令（游戏侧轮询；平台可能远程下发 关闭游戏 等控制）
@@ -355,6 +419,9 @@ public class GameServer extends NanoHTTPD {
     /** 页面是否处于「本局已结束」待机态（?cs=1） */
     public boolean lastPageClosed() { return lastPageClosed; }
 
+    /** ★ 第二十六修：页面是否在 XR 沉浸式会话里（?xr=1）。见字段注释。 */
+    public boolean lastPageXr() { return lastPageXr; }
+
     // ───────────────── 「游戏页死亡留痕」(/api/page/*) ─────────────────
     // 页面 origin = http://localhost:8080，与本站点同源 → 无 CORS/PNA 问题。
     //   POST /api/page/dead      ← 页面即将消失前用 sendBeacon 发的死因（body 自由格式，一行 JSON）
@@ -368,6 +435,8 @@ public class GameServer extends NanoHTTPD {
         //   否则人一打开留痕页，就等于替已经死掉的游戏页「续命」，失联判定永远不成立。
         if (!uri.equals("/api/page/forensics")) {
             lastPageHitMs = System.currentTimeMillis();
+            // ★ 第二十六修：同步刷新跨进程记录（状态字段不变，只把「心跳时刻」推新）。
+            PagePresence.touch();
         }
         Method method = session.getMethod();
         if (uri.equals("/api/page/forensics")) {
@@ -412,8 +481,17 @@ public class GameServer extends NanoHTTPD {
             if (t.length() > 600) t = t.substring(0, 600);   // 单条限长：防止异常风暴把文件刷爆
             if (uri.equals("/api/page/dead")) {
                 PageForensics.line("PAGE-DEAD", t);
+                // ★ 第二十九修：sendBeacon 报死 = 这一页**马上就不在了**（浏览器被杀 / 页面卸载）。
+                //   必须当场作废跨进程在场记录，否则下一局平台启动会被判成「页面还在 → 不重开浏览器」
+                //   而整局吞掉（2026-09-24 15:47 现场实测）。
+                PagePresence.markRoundOver("页面上报死因（sendBeacon）");
             } else if (uri.equals("/api/page/event")) {
                 PageForensics.line("PAGE", t);
+                // ★ 第二十九修：`DEAD:*`（beforeunload / pagehide / platform-gone / cast-round-over）
+                //   都是「本页这一局到此为止」的信号 ⇒ 一并作废在场记录。
+                if (t.contains("\"DEAD:") || t.contains("DEAD:")) {
+                    PagePresence.markRoundOver("页面生命周期事件（本局收工）");
+                }
                 // ★ 第十修：页面自己报「本局结束」→ 交给「退出策略」（唤醒平台客户端 / 关浏览器）。
                 notifyGameEndIfAny(t);
             } else {

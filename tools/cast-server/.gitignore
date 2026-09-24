@@ -2,6 +2,11 @@
 secrets/
 data/
 
+# ★ 第二十四修：内容清单的发布产物（由 sync-content.js 从项目 src/ 生成）——
+# 不入库：它是**从项目源码派生**的副本，入库会出现「改了两边不一致」。
+# 服务器部署时必须跑一次：node sync-content.js --ver <版本号>
+content/
+
 # 跨语言验证工具生成的样本（每次跑 xlang/gen.js 都会变）
 xlang/license.txt
 xlang/license_tampered.txt

@@ -14,6 +14,7 @@
  *   POST /api/admin/activation    生成激活码 ┘
  *   GET  /api/health              健康检查（无需鉴权）
  *   GET  /api/pubkey              签发公钥 + 指纹（无需鉴权；两端硬编码用）
+ *   GET  /api/manifest            内容清单（共享密钥；EXE 每次启动拉取，见下方「内容清单」段）
  *   GET  /admin                   管理后台页面（Basic Auth）
  *
  * 启动
@@ -58,6 +59,12 @@ const cfg = {
   activateRatePerMin: 10,
   /** 单 IP 每分钟最大续期次数 —— 必须与激活分开计数，否则正常续期会被激活限流误伤 */
   renewRatePerMin: 60,
+  /** ★ 第二十四修：内容清单共享密钥（EXE 侧默认值必须逐字一致；生产建议用 config.json / MANIFEST_KEY 覆盖） */
+  manifestKey: process.env.MANIFEST_KEY || 'webxr-manifest',
+  /** 单 IP 每分钟最大清单拉取次数（每次开局一次，正常远低于它） */
+  manifestRatePerMin: 120,
+  /** 清单整包上限（字节）：内容都是文本，正常几十 KB；超了说明发布错了目录 */
+  maxManifestBytes: 2 * 1024 * 1024,
   /** 管理员 Basic Auth —— 未设置则自动生成并落盘 */
   adminUser: process.env.ADMIN_USER || '',
   adminPass: process.env.ADMIN_PASS || '',
@@ -69,6 +76,8 @@ try {
 }
 if (process.env.ADMIN_USER) cfg.adminUser = process.env.ADMIN_USER;
 if (process.env.ADMIN_PASS) cfg.adminPass = process.env.ADMIN_PASS;
+// ★ 第二十四修：内容清单密钥也允许环境变量覆盖（部署脚本里 exported 更省事）
+if (process.env.MANIFEST_KEY) cfg.manifestKey = process.env.MANIFEST_KEY;
 
 const TTL_MS = cfg.ttlDays * 24 * 60 * 60 * 1000;
 
@@ -434,6 +443,142 @@ function handlePubKey(req, res) {
   });
 }
 
+// ---------------------------------------------------------------- 内容清单（第二十四修）
+
+/**
+ * ★ 第二十四修（2026-09-24）：`GET /api/manifest` —— 「每次启动从服务器拉清单」的服务端。
+ *
+ * <p>需求方的口径（2026-09-24 确认）：**不再做加密狗式授权校验**（那套仍在 /api/license/*，客户端已用
+ * `--license` 开关降级为可选），改成「EXE 每次启动从本接口拉一份配置清单」，并在**关闭游戏**与
+ * **下次启动前**把旧时间的配置清掉。
+ *
+ * <p>与旧「加密狗」的区别（这条决定了实现方式）：
+ *   · 不绑机器、不要激活码、不需要 Ke/proof —— 只用一个**共享密钥**（cfg.manifestKey）防「同网段乱拉」；
+ *   · 强度定位诚实：这是「配置集中管理 + 版本一致 + 不留旧配置」，**不是**防破解。要防破解得回到
+ *     Ks 签名那套（见 docs/tech/08-授权服务器与License方案.md）。
+ *
+ * <p>请求：`GET /api/manifest?key=<共享密钥>&ver=<客户端期望的内容版本>`
+ * <p>响应：`{ ok, ver, builtAt, count, bytes, server, files:[{path,sha256,size,content}] }`
+ *   · `path` 是**项目相对路径**（如 `src/content/levels.js`），客户端按它落盘到自己的缓存目录；
+ *   · `sha256` 是 `content` 的 UTF-8 字节哈希，客户端**逐项校验**，不符即整体拒用；
+ *   · `ver` **只按精确匹配**，没有就 404 `noContentVersion`，**绝不回落 current** ——
+ *     否则会出「客户端 2.0 + 内容 1.0」的崩溃事故（见 docs/内容授权门禁设计.md §9）。
+ *
+ * <p>内容源：`<本目录>/content/<ver>/`，由 `node sync-content.js --ver <版本>` 从项目里发布。
+ */
+const CONTENT_DIR = process.env.CONTENT_DIR ? path.resolve(process.env.CONTENT_DIR) : path.join(ROOT, 'content');
+
+/** 定长比较（清单密钥用；与 checkBasicAuth 同一手法，避免时序侧信道） */
+function keyEq(a, b) {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+
+/** 读 content/manifest.json（发布索引）：{ versions:[], current, updatedAt }。缺文件 = 还没发布过。 */
+function readContentIndex() {
+  try {
+    const o = JSON.parse(fs.readFileSync(path.join(CONTENT_DIR, 'manifest.json'), 'utf8'));
+    return {
+      versions: Array.isArray(o.versions) ? o.versions.map(String) : [],
+      current: String(o.current || ''),
+      updatedAt: Number(o.updatedAt || 0),
+    };
+  } catch (e) {
+    return { versions: [], current: '', updatedAt: 0 };
+  }
+}
+
+/** /api/health 用：内容侧一眼可见（现场排查「服务器到底有没有内容」） */
+function contentIndexSummary() {
+  const idx = readContentIndex();
+  return { dir: CONTENT_DIR, current: idx.current, versions: idx.versions, updatedAt: idx.updatedAt };
+}
+
+/** 把一个版本目录整棵树读成清单项（path 用项目相对路径，正斜杠；ver.json 是发布元数据，不进清单） */
+function readContentTree(dir) {
+  const files = [];
+  let bytes = 0;
+  const walk = (rel) => {
+    const abs = path.join(dir, rel);
+    const st = fs.statSync(abs);
+    if (st.isDirectory()) {
+      for (const n of fs.readdirSync(abs).sort()) walk(path.join(rel, n));
+      return;
+    }
+    const buf = fs.readFileSync(abs);
+    bytes += buf.length;
+    if (bytes > cfg.maxManifestBytes) throw new Error('内容包超过上限 ' + cfg.maxManifestBytes + 'B');
+    files.push({
+      path: rel.split(path.sep).join('/'),
+      sha256: crypto.createHash('sha256').update(buf).digest('hex'),
+      size: buf.length,
+      content: buf.toString('utf8'),
+    });
+  };
+  for (const n of fs.readdirSync(dir).sort()) {
+    if (n === 'ver.json') continue;
+    walk(n);
+  }
+  return { files, bytes };
+}
+
+function handleManifest(req, res, url) {
+  if (req.method !== 'GET') return json(res, 405, { ok: false, reason: 'method' });
+  const ip = clientIp(req);
+  if (rateLimited('mft|' + ip, cfg.manifestRatePerMin)) {
+    return json(res, 429, { ok: false, reason: 'rateLimit', detail: '清单拉取过于频繁' });
+  }
+  if (!keyEq(url.searchParams.get('key') || '', cfg.manifestKey)) {
+    log('清单 403：密钥不对 ip=' + ip);
+    return json(res, 403, {
+      ok: false, reason: 'badKey',
+      detail: '清单密钥不对：EXE 的 --manifest-key / MANIFEST_KEY 必须与服务器 cfg.manifestKey 一致',
+    });
+  }
+  const idx = readContentIndex();
+  const want = String(url.searchParams.get('ver') || '');
+  const ver = want || idx.current;
+  if (!ver) {
+    return json(res, 404, {
+      ok: false, reason: 'noContent',
+      detail: '服务器还没发布任何内容版本（先在项目里跑 node sync-content.js --ver 1.0.0）',
+    });
+  }
+  if (!/^[0-9A-Za-z._-]{1,32}$/.test(ver)) return json(res, 400, { ok: false, reason: 'badParam', detail: 'ver 不合法' });
+  const dir = path.join(CONTENT_DIR, ver);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    log('清单 404：没有内容版本 ' + ver + '（现有：' + (idx.versions.join(', ') || '无') + '）');
+    return json(res, 404, {
+      ok: false, reason: 'noContentVersion',
+      detail: '服务器没有内容版本 ' + ver + '（版本必须精确匹配，不回落 current）',
+      versions: idx.versions,
+    });
+  }
+  let tree;
+  try {
+    tree = readContentTree(dir);
+  } catch (e) {
+    log('!! 内容树读取失败 ver=' + ver + ' : ' + (e && e.message ? e.message : e));
+    return json(res, 500, { ok: false, reason: 'badContent', detail: String((e && e.message) || e) });
+  }
+  if (!tree.files.length) return json(res, 404, { ok: false, reason: 'noContent', detail: '内容版本 ' + ver + ' 是空目录' });
+  let verMeta = {};
+  try {
+    verMeta = JSON.parse(fs.readFileSync(path.join(dir, 'ver.json'), 'utf8'));
+  } catch (e) { /* ver.json 可选（只有 sync-content.js 会写） */ }
+  log('清单下发 ver=' + ver + ' 文件=' + tree.files.length + ' 共 ' + tree.bytes + 'B ip=' + ip);
+  return json(res, 200, {
+    ok: true,
+    ver,
+    builtAt: Number(verMeta.builtAt || 0),
+    count: tree.files.length,
+    bytes: tree.bytes,
+    server: Date.now(),
+    files: tree.files,
+  });
+}
+
 // ---------------------------------------------------------------- 路由
 
 const server = http.createServer(async (req, res) => {
@@ -447,6 +592,7 @@ const server = http.createServer(async (req, res) => {
         ok: true, server: Date.now(), store: store.kind, uptime: Math.floor(process.uptime()),
         licenses: store.licenses.list().length, revoked: store.licenses.revokedList().length,
         ttlDays: cfg.ttlDays, renewWindowDays: cfg.renewWindowDays, node: process.version,
+        content: contentIndexSummary(),   // ★ 第二十四修：内容清单索引（versions / current）
       });
     }
 
@@ -513,6 +659,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/pubkey') return handlePubKey(req, res);
+
+    // ★ 第二十四修：内容清单（EXE 每次启动来这里换配置；共享密钥，见「内容清单」段）
+    if (p === '/api/manifest') return handleManifest(req, res, url);
 
     if (p === '/admin' || p === '/admin.html') {
       if (!requireAdmin(req, res)) return;

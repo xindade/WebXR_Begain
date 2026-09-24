@@ -394,10 +394,16 @@ APK 工程要点：
 
 | 改动位置 | 是否需重打包 | 说明 |
 |---|---|---|
-| 游戏 `src/**`、`index.html` | ❌ 不需要 | PC 的 `GAME_ROOT` 实时托管 + APK `proxyStatic` 实时取；PICO 刷新（必要时清缓存）即生效 |
-| APK 内置资源 `assets/game/**` | ✅ 需重打 APK | 仅在「PC 未托管 / 未发现 PC」的本地游玩场景才用到，但为一致性建议同步 |
+| 游戏 `src/**`、`index.html`、`mirror.html` | ✅ **需重打 APK** | 头显**只认包内** `assets/game/**`（`GameServer` 静态资源**本地优先**，`:248 assets.open()`；PC 代理**只在包内缺文件时**才兜底，见 `GameServer.proxyStatic` 的注释）。`build-apk.ps1` 的 2.5 / 2.55 步会自动把 `src/**` 与根级页面同步进包 —— 忘了重打就是「跑了旧页面」 |
+| APK 内置重资源 `assets/game/{Model,Sky,music,vendor,assets}/**` | ✅ 需重打 APK | 同上（必须进包） |
+| 受管配置 `src/content/**`、`src/core/userConfig.js` | ❌ 不需要 | 头显每局从 PC 取（授权过的覆盖层）；**文件缺失时不回落 assets**，故不是「打一次就够」 |
 | `tools/cast-apk/**/*.java` | ✅ 需重打 APK | 例如改 `getCastUrl()` |
 | `tools/cast-pc/**` | ✅ 需重打 EXE | 主进程/预加载/渲染进程代码都在 `app.asar` 内 |
+
+> ⚠ **2026-09-24 更正**：本表原来把「游戏 `src/**`」写成「❌ 不需要（PC 实时托管 + APK `proxyStatic` 实时取）」
+> —— 那是**第二十二修（档１）之前**的旧形态。档１ 之后 PC 端**不再托管游戏整站**
+> （打开 `http://<PC>:8443/` 只有说明性 404），头显一律吃包内 `assets/game`。
+> 与 `docs/cast-architecture.md` 第八节一致。照旧表走会得到「改了页面但头显跑的还是旧的」。
 
 ---
 
@@ -871,3 +877,245 @@ foreach ($rel in @('index.html', 'mirror.html')) { Copy-Item (Join-Path $projRoo
 - 改了 `src/**` 与根级 `index.html`，且改了 `GameServer.java` ⇒ **APK 必须重打**。
 - 改了 `tools/cast-pc/**` ⇒ **EXE 必须重打**。
 - 受管配置未变 ⇒ 无需重新授权；平台通道协议未变。
+
+---
+
+---
+
+## 附录 G · 2026-09-24 第二十三 / 二十四修实现记录（界面裁剪 + 授权关闭 + 服务器清单）
+
+### G.1 界面裁剪（第二十三修）
+
+- **船血条**：`src/ui/hud.js` 里给 `hpWrap` 补 `this.hpWrap.id = 'hud-hp';`（必须在 `style.cssText` 之前），
+  `index.html` 把 `#hud-hp` 加进 `body.release` 的 `display: none !important` 选择器组。
+  ⇒ 正式包隐藏，调试包保留（VR 里看左手腕面板 `src/vr/wrist-ui.js`）。
+- **镜像标签 / 选关上方绿色长条**：`index.html` + `src/main.js`（正式包裁剪口径 `RELEASE_UI`，`?devui=1` 旁路）。
+- 这两处都改在**页面侧**（`src/` + 根级 `index.html`）⇒ 仅需重打 APK。
+
+### G.2 授权默认关闭（第二十三修）
+
+- `tools/cast-pc/main.js`：`const LICENSE_ENABLED = hasFlag('license');` —— 打包版默认**关**。
+  关闭时：`licenseGate()` 一律放行、界面不显示授权面板、`/api/info` 报 `license.mode='off'`。
+- 头显侧读到 `off` 即跳过 `LicenseVerify`；`licenseRequired:false` 随 `/api/master/allow` 与
+  `/api/launch/request` 一起回去（仅供诊断）。
+- ⚠ 只改默认值，**不删** `licenseGate()` 与 `/api/license/*`（见 `docs/tech/08` 附录）。
+
+### G.3 服务器侧：`GET /api/manifest`（第二十四修）
+
+`tools/cast-server/server.js` 新增段「内容清单」：
+
+| 新增 | 说明 |
+|---|---|
+| `cfg.manifestKey` | 默认 `'webxr-manifest'`，环境变量 `MANIFEST_KEY` 覆盖 |
+| `cfg.manifestRatePerMin` / `maxManifestBytes` | `120` / `2MB` |
+| `CONTENT_DIR` | 发布根，默认 `tools/cast-server/content`（env 可覆盖） |
+| `keyEq()` / `readContentIndex()` / `contentIndexSummary()` / `readContentTree()` / `handleManifest()` | 鉴权与读盘 |
+| 路由 `p === '/api/manifest'` | 排在 `/api/pubkey` 之后 |
+| `/api/health` → `content` | `{ dir, current, versions, updatedAt }` |
+
+**判定口径**：`key` 不符 → 403 `badKey`；`ver` 指定但不存在 → 404 `noContentVersion`（带 `versions`）；
+**缺省 `ver` 才用 `current`** —— 一回落现场就查不出「发了新版却在跑旧版」。
+
+`tools/cast-server/sync-content.js`（新建）：`node sync-content.js --ver 1.0.0`，
+整目录重建 `content/<ver>/` + `ver.json`（含 `listSha256`）+ `content/manifest.json`。
+`MANIFEST_ITEMS` 必须与 EXE 的 `CONFIG_MANIFEST` **逐字一致**（`src/content/` + `src/core/userConfig.js`）。
+`content/` 已进 `.gitignore`：**发布产物不入库**，部署后必须手动跑一次。
+
+### G.4 PC EXE 侧（第二十四修）
+
+`tools/cast-pc/main.js` 新增（`LICENSE_ENABLED` 之后）：
+
+- 常量：`MANIFEST_BASE / MANIFEST_KEY / MANIFEST_VER / MANIFEST_DIR / MANIFEST_TMP / MANIFEST_META /
+  MANIFEST_TIMEOUT_MS(8000) / MANIFEST_RETRY_MS([0,2000,5000,10000]) / MANIFEST_MAX_BYTES(4MB) / MANIFEST_ON / MANIFEST`。
+  `MANIFEST_ON`：打包版 true、开发版 false，`--manifest` 强开、`--local-content` 强关。
+- `SESSION_ID` 由 `const` 改 `let`，新增 `rotateSession(why)`（内容指纹变化时换局号 ⇒ 头显整包重下）。
+- 函数段「服务器清单 · 运行态」：`manifestClear / manifestPathOk / manifestHttpGet / manifestFetch /
+  manifestEnsure(并发去重) / manifestManages / configBaseOf / manifestSummary / handleManifestStatic`。
+- 启动时序（`loadGuard()` 之后）：`manifestClear('启动前…')` → `manifestEnsure('启动')`。
+- 路由：`manifestManages(pathname)` → `handleManifestStatic()`，**必须排在 `handleStatic` 兜底之前**。
+- `roundSet(false)`：`manifestClear` + `manifestEnsure`。
+- `buildConfigDump()`：guard 改为 `if (!CONFIG_ROOT && !(MANIFEST_ON && MANIFEST.ok))`；
+  `walk()` 里 `path.join(configBaseOf(rel), rel)`（清单管辖的走缓存，其余走游戏目录）。
+- `handleConfigDump` 改 `async`，凭据校验后 `await manifestEnsure('配置下发')`。
+- `app.on('before-quit')` 清一遍（辅助）。
+- `/api/info` 加 `manifest: manifestSummary()`；`pushStatus()` 也带 `manifest`。
+
+接收端界面：`renderer/index.html` 加 `#mftbox`（`#mftState`/`#mftInfo`/`#mftClear` + `.mft-ok/.mft-warn/.mft-bad`），
+`renderer/renderer.js` 加 `renderManifest(mf)`，在 `pollInfo()` 里 `renderManifest(info.manifest)`。
+
+### G.5 头显侧（第二十四修）
+
+`MainActivity.java` 新增 `static void clearOverlayCache(String why)`：删 `filesDir/game-overlay` +
+`sp.remove("overlaySession")` + `sServer.setOverlay(null,null)` + `sOverlayCount=0`。两处调用：
+
+1. `onCreate` 的 `mountOverlayToServer()` **之前**，条件 `if (!passThrough)`；
+2. `scheduleClientRestore` 回调里、`restoreClientAndCloseBrowser()` **之前**，
+   条件 `if (!sPcConfigured || GameServer.sCastRoundOver)`（否则只打留痕）。
+
+⚠ `passThrough` 例外必须保留：平台重拉且游戏页仍活着时删文件 = 把玩家当场踢出 VR。
+
+### G.6 本轮验证
+
+- 正例/反例/本局结束重拉/打包版四项本机实跑全过，数据见 `docs/tech/09-服务器清单与旧配置清理.md` §7。
+- `node --check`：`tools/cast-pc/main.js`、`tools/cast-pc/renderer/renderer.js` 通过。
+- APK `BUILD SUCCESSFUL`（126.97 MB）；EXE `npm run dist` 产出 Setup 97.09 MB。
+
+### G.7 本轮重打包边界
+
+- 改 `src/**`、根级 `index.html`、`MainActivity.java` ⇒ **APK 重打**。
+- 改 `tools/cast-pc/**`（含 `main.js` 与 `renderer/`）⇒ **EXE 重打**。
+- 只改 `src/content/**` / `src/core/userConfig.js` ⇒ 都不重打，但要 `sync-content.js` + 部署。
+- 平台通道协议、`applicationId`（`com.GoodNet.DeepmindHacker`）与签名均未变 ⇒ 平台侧无需改动。
+
+---
+
+### G.8 第二十五修（接收端窗口：诊断行默认不显示）
+
+- `tools/cast-pc/renderer/index.html`：
+  - 新增 `body:not(.diag) #platline, body:not(.diag) #mftDiag, body:not(.diag) #guardbox { display:none !important; }`；
+  - 清单行拆成 `#mftInfo`（常显：失败原因）+ `#mftDiag`（仅诊断：来源地址 / 拉取时间 / 上次清旧配置），
+    原来的 `#mftClear` 并进 `#mftDiag`。
+- `tools/cast-pc/renderer/renderer.js`：
+  - 新增模块级 `diagMode`（= `info.panels`），`pollInfo()` 里翻转时补渲染 `renderManifest` / `refreshGuard` / `refreshLicense`；
+  - `renderManifest()`：诊断关着时 `diag.textContent = ''` 并 **return（不写 DOM）**；
+  - `renderGuard()`：`if (!diagMode) return;` —— 密钥 / 局号 / 白名单根本不进 DOM；
+  - `renderLicense()`：判据从 `s.off` 放宽到 `s.off || s.mode === 'off'`；
+  - 顺带修正 `mf.verExpect` → `mf.wantVer`（原来一直显示「期望版本 ?」，因为字段名写错）。
+- `tools/cast-pc/main.js`：新增 `licenseUiState()`（关闭时返回含 `off:true` 的 `licenseSummary()`），
+  `license:get` 与 `license:set` 的 `state:` 全部改走它 —— 这是「授权行不显示」真正生效的那一步。
+- 验证（CDP 读 DOM，打包版实跑）：`--panels` → `body="no-lic diag"`，三行可见、密钥在 DOM；
+  默认 → `body="no-cfg no-lic"`，三行 `display:none`，**DOM 里搜不到 `webvr123`、`guardSecret` 仍是占位 `…`**。
+
+### G.9 第二十六修（头显「平台二次拉起」不再打断 VR）
+
+- `PagePresence.java`（新）：把「页面最后一条请求的时刻 / `st` / `xr` / `cs`」写进 SharedPreferences
+  （写盘节流 0.7s、`commit()` 落盘），跨 `force-stop` 存活；`aliveNow()` = 6s 内打过点，
+  或 90s 内打过点且当时在 XR 会话里。
+- `GameServer.java`：新增 `lastPageXr`（`?xr=1`）；`/api/vrplus/inbox` 解析处 `PagePresence.note(...)`，
+  `/api/page/*` 处 `PagePresence.touch()`。
+- `MainActivity.java`：
+  - `onCreate` 最前面（`super.onCreate` 之前）读回跨进程记录 → `!sLaunched && aliveNow()` 时置
+    `sLaunched/sLaunchedAt`（免打扰判据在**新进程**里也成立）；顺带从 `cast.pc` 恢复 `sPcConfigured`；
+  - `isGamePageAlive()` / `pageAliveForLaunch()` 末尾补跨进程判据；`computeRelaunchFallback()` 用
+    「上一进程留下 XR 证据」给「平台通道还没握手」的新进程兜底；
+  - 免打扰分支：`pageInXrNow()` ⇒ **不发任何 `startActivity`，只 `finish()`**；否则维持 `yieldToBrowser()`；
+  - 新增 `schedulePassThroughVerify()`：finish 后 5s，若本进程 0 条页面请求 → `forceRelaunchBrowser()`；
+  - `onNewIntent`：`platformDriven && autoLaunched && sLaunched && pageAliveForLaunch()` ⇒
+    `yieldToBrowser("平台重拉：本局仍在跑（onNewIntent 收页）")` 并 return。
+- `PageForensics.BUILD_TAG` → `2026-09-24-p26-xr-safe-relaunch`。
+- `src/game/game.js`：`_confirmThenGone` 由 1 轮改成 2 轮复核（各 2.5s）。
+- 现象与定性（PICO 那个「退出PICO浏览器」弹窗 = 2D 应用抢前台）见 `docs/cast-architecture.md` 附录 F；
+  平台侧的根本解见 `docs/平台对接需求（对平台方）.md` 第 8 条。
+
+**重打包边界**：只动 APK 侧（`PagePresence.java` / `GameServer.java` / `MainActivity.java` / `src/game/game.js`）
+⇒ **只需重打 APK**；EXE 与服务器都不用动。
+
+### G.10 第二十七修（2026-09-24）：本局在 VR 中临时停用「平台入口」
+
+- 背景：第二十六修（G.9）把「免打扰」做到极限（`NoDisplay` + 不建窗口 + 不发任何前台动作 + 只 `finish()`），
+  现场仍然弹窗。留痕证明**「Activity 被创建」本身就是触发条件**：
+  14:02:18.241 `免打扰路径：…只 finish 本页` → 14:02:18.330 `xr-end`（相隔 **89ms**）
+  ⇒ PICO 会为任何一次被创建的 Activity 建 2D 面板/起始窗口并顶到最前，浏览器失焦 ⇒ XR 会话结束。
+- 做法：`EntryLock.java`。页面轮询 `?xr=1` ⇒ 把 `com.local.webxrcast.MainActivity` 置为
+  `COMPONENT_ENABLED_STATE_DISABLED`（`DONT_KILL_APP`）⇒ 平台那一次 `am start` 在包管理器层就失败；
+  `?xr=0` / 本局结束 / 页面打点停止 20s / 进程启动自愈 / 死人开关 60s / 开机与覆盖安装 / 人工恢复入口
+  ⇒ 恢复（共 7 道网）。
+- 人工恢复入口：**第二十八修已改成「停用期间不启用 `RecoverActivity`」**（见 G.11）——恢复走
+  `http://<头显IP>:8080/api/entry/unlock`（`/api/entry` 查状态），或重启头显。
+- 配置页：`cbEntryLock`（默认勾选，可一键回到第二十六修行为）+ `tvEntryLock` 状态行。
+- 现象/定性/安全网/验收的完整记录见 `docs/cast-architecture.md` 附录 G。
+
+**重打包边界**：只动 APK 侧（`EntryLock.java` / `RecoverActivity.java` / `EntryFuseReceiver.java` /
+`BootReceiver.java` / `AndroidManifest.xml` / `GameServer.java` / `MainActivity.java` / `CastApp.java` /
+`activity_main.xml`）⇒ **只需重打 APK**；EXE 与服务器都不用动。
+
+### G.11 第二十八修（2026-09-24）：把「包内入口数」打到 0（补上 G.10 的漏口）
+
+- 背景：G.10 把 `MainActivity` 停用了，却**顺手启用了 `RecoverActivity`**（为了让现场能从应用列表自救）。
+  p27 现场留痕（14:59）证明这恰好成了**新的靶子**：
+  `14:59:08.737 ★ 平台入口已临时停用` → `14:59:17.418 ⚠ 平台的 am start 落到了「恢复入口」上`（= 平台用的是
+  **不带 `-n` 的隐式 intent**，或直接 `getLaunchIntentForPackage`）→ `14:59:17.618 xr-end`（**200ms** 后掉会话）。
+  ⇒ 平台在显式组件被拒后会退化到隐式 MAIN/LAUNCHER，**只要包内还剩任何一个可被解析的 Activity，弹窗就还在**。
+- 做法：`EntryLock.holdForXr()` 由 `apply(a, false, true)` 改为 `apply(a, false, false)`
+  ⇒ **入口与恢复入口同时停用**；不变式收紧为「页面在 XR 会话里」⇔「包内 MAIN/LAUNCHER 入口数 = 0」。
+- 留痕标记：`第二十八修-包内零入口`；build 标记 `2026-09-24-p28-zero-entry`。
+- 恢复路径不变（六道自动：`?xr=0` / 本局结束 / 页面打点停 20s / 进程启动自愈 / 死人开关 60s / 开机与覆盖安装），
+  人工恢复改走**非 Activity 通道**：`http://<头显IP>:8080/api/entry/unlock` 或重启头显。
+- 已知代价：本局在 VR 里时头显应用列表里**没有本游戏图标**（刻意为之：平台同样点不到）。出 VR 秒级恢复。
+- 平台侧影响：VR 期间那次 `am start` 会**解析失败**（`Error: Activity not started, unable to resolve Intent`
+  / `ActivityNotFoundException`）⇒ 见 `docs/平台对接需求（对平台方）.md` 第 4、8 条。
+- 完整现象/定性/验收见 `docs/cast-architecture.md` 附录 H。
+
+**重打包边界**：只动 APK 侧（`EntryLock.java` / `AndroidManifest.xml` / `PageForensics.java`）⇒ **只需重打 APK**。
+
+### G.12 第二十九修（2026-09-24）：本局结束即作废「页面在场记录」（第二场起不来的收口）
+
+- 现象（p28 现场）：进 VR 不再弹窗 ✔，但**每次的第二场都起不来**，只有第一场正常。
+- 留痕判决：`15:47:02.583 上一进程最后打点 18s 前 state=playing xr=true → alive=true` →
+  `15:47:02.599 平台重复拉起：判定游戏页仍在 → 免打扰路径：不重开浏览器`（第二场被整局吞掉）；
+  5s 复核也失效（`页面在打点（age=23173ms）`）—— 它的判据是「有记录」而不是「刚才有请求」。
+- 根因：第二十六修那条「90s 内有打点且 `xr=1` 也算活着」是为**平台 kill 我们之后重启**设计的，
+  前提是**这一局还在跑**；而第一场结束时页面是**在 XR 里被杀**的，记录就永远带着 `xr=true`，
+  第二场的启动（20~40s 后）落在窗口内 ⇒ 死页被判成活页。
+- 改动：`PagePresence.markRoundOver()` / `isRoundOver()`（页面再次打点即撤销标记）+ 三个触发点
+  （退出策略 / `/api/page/dead` / 生命周期事件里的 `DEAD:`）；`ALIVE_XR_MS` 90s→45s；
+  免打扰复核判据收紧为 `PAGE_FRESH_MS = 8000`。
+- 完整记录见 `docs/cast-architecture.md` 附录 I。
+
+**重打包边界**：只动 APK 侧（`PagePresence.java` / `MainActivity.java` / `GameServer.java` / `PageForensics.java`）
+⇒ **只需重打 APK**；EXE 与服务器都不用动。
+
+---
+
+## 附录 H · 2026-09-24 第三十修实现记录（本局结束上报 = **CMD 7**）
+
+### H.1 结论
+
+实测结案：平台的「游戏结束」是 **CMD 7 `GameStatistics`**，**不是** CMD 6 `GameEnd`（CMD 6 从未出现）。
+平台收到 CMD 7 会**弹结算、不关游戏** ⇒ 正是「上报本局结束、但别关游戏」的正解。
+完整证据见 `docs/cast-architecture.md` 附录 J 与 `docs/tech/05-游戏打包方式（EXE与APK）.md` 末节。
+
+### H.2 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `tools/cast-pc/main.js` | 新增 `PC_FRAME_GAME_RESULT = 0x07`；socket 升到模块级（`platformSock` / `platformPlatIp`）并抽出 `sendPlatformFrame()`；新增 `buildGameResultPayload()` / `sendPlatformGameResult()`；`handleRoundEnd` 里 `wasArmed` 才发 |
+| 同文件 | 新增现场自测端点 `POST /api/platform/game-result`（`handleManualGameResult`）；`PLATFORM_CH` 增 `results` / `lastResultAt` / `lastResultWhy` |
+| `src/game/game.js` | `_tellMasterRoundEnd()` 的 body 多带 `lvl` / `maxLvl` / `score`，供 PC 端填 `curProgress` / `maxProgress` / `score` |
+
+三种不发的情形（都会写进 `gameChannel.lastResultWhy`）：`--no-game-result` 关闭 / 游戏通道未启用
+（EXE 不是被平台拉起的）/ 本局没被平台开过（`wasArmed === false`，防空局乱报）。
+
+### H.3 载荷（与抓包逐字节比对通过）
+
+`buildGameResultPayload({level:0,maxLevel:6,gameTime:900})` 与 `round.pcap` 里那 **397 字节完全相等**；
+连同首字节 `0x07` 共 398 字节。字段与样例见 `docs/cast-architecture.md` 附录 J.2。
+
+### H.4 本轮验证（本机实跑）
+
+- 用桩 `electron` 加载真实 `main.js`：`sendPlatformFrame` / `buildGameResultPayload` / `sendPlatformGameResult`
+  均为模块级 `function`（修复了一次「函数被插进 `startPlatformGameChannel()` 体内」的作用域事故）；
+- `startPlatformGameChannel()` 不再抛 TDZ `ReferenceError`；
+- `sendPlatformGameResult()` 返回 `true`，实际发帧 398 字节；
+- ⚠ 教训：这类作用域/时序错误 **`node --check` 查不出来**，必须真加载一次。
+
+### H.5 本轮重打包边界
+
+`tools/cast-pc/main.js` ⇒ **EXE 重打**；`src/game/game.js` ⇒ **页面重打**；APK、服务端不动。
+
+### H.6 ★ 修正：上行帧的源 IP 必须是本机网卡地址（2026-09-24 现场定案）
+
+H.4 验的是「发得出去」，**没验发去哪** —— 现场第一次轻量验证就是这么失效的：
+脚本报 `ok:true / results:1`、PC 端确实发了 397 字节，平台却毫无反应。
+
+| 项 | 内容 |
+|---|---|
+| 根因 | 老 `sendFrame()` 无平台 IP 时兜底 `[platIp, '127.0.0.1']`。目标是回环 ⇒ **源地址**也成 `127.0.0.1` ⇒ 平台按「外来 IP」丢弃（`DebugLog`：`127.0.0.1这个外来IP想连接`） |
+| 证据 | 同一份 `DebugLog` 里 `cmd = 5` 有 3 次（回发用 `rinfo.address`，正常）、`cmd = 7` 有 0 次 |
+| 修正 | 新增 `usableTarget()` + `platformTargets()`：① `lastFromIp` ② 启动参数 ③ 本机默认路由网卡地址，**绝不用回环** |
+| 连带 | `0x01` 注册帧同样受益；`PLATFORM_CH` 增 `platformIp` / `lastFromIp`；自测端点响应增 `dest` |
+| 教训 | 「发出去了」≠「发对地方了」。凡是**异步**（无 `rinfo` 可依）发帧，都必须能回答「目标从哪来」 |
+
+**★ 2026-09-24 现场复测：通过 ✔** —— 修好后重打 EXE，平台界面**立刻出现结算按钮**、且**不关游戏**。
+（旁证口径：`127.0.0.1这个外来IP想连接` 平台自身回环流量也会触发，故决定性证据是 `cmd = 7` 0 次 / `cmd = 5` 3 次。）
+重打包边界：仅 `tools/cast-pc/main.js` ⇒ **EXE 重打**（页面 / APK / 服务端不动）。

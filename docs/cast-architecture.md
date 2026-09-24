@@ -769,3 +769,408 @@ restoreClientAndCloseBrowser() castMode && castRoundOver 分支：
   正确拒绝。
 - APK 解包核对：`assets/game/index.html` 含 `#enter-vr-rapid`/`#enter-vr-power`，
   `src/core/constants.js` 含 `LOADOUTS`，与项目根哈希一致（证明 2.55 同步生效）。
+
+---
+
+---
+
+# 附录 E · 2026-09-24 第二十三 / 二十四修（界面裁剪 + 授权关闭 + 服务器清单）
+
+## E.1 三件事，一句话各一件
+
+| 修 | 需求 | 落地 |
+|---|---|---|
+| 二十三 | 「apk 上还有镜像的标签和选关上面的一个绿色长条，需要隐藏或清理一下」 | `index.html` 的 `body.release` 选择器组 + `src/main.js`；绿色长条经确认 = 右上角 2D **船血条** `#hud-hp`（`src/ui/hud.js`） |
+| 二十三 | 「服务器验证不想做加密狗授权验证了，需要把这个功能隐藏起来」 | `LICENSE_ENABLED = hasFlag('license')`（默认关）；`/api/info` 报 `mode:'off'`，头显据此跳过校验 |
+| 二十四 | 「换成每次启动从服务器上拉清单，关闭游戏和下次启动前会将旧时间的配置清理」 | 新增 `GET /api/manifest` + `sync-content.js` + EXE 的 `userData/manifest` 缓存 + 三处清理 + 头显 `clearOverlayCache()` |
+
+## E.2 清单链路（第二十四修）
+
+```
+项目源 src/content/** + src/core/userConfig.js
+   └─ node tools/cast-server/sync-content.js --ver 1.0.0
+        └─ tools/cast-server/content/<ver>/（.gitignore 的发布产物）
+             └─ GET /api/manifest?key=&ver=  （共享密钥，不做 Ke / proof）
+                  └─ PC EXE：userData/manifest/（不进 GAME_ROOT）
+                       ├─ /src/content/**         只从这份缓存出
+                       ├─ /api/config/dump        只从这份缓存打包
+                       └─ 拿不到 ⇒ 404 / allow:false（**绝不回落本地**）
+                            └─ 头显 overlay（既有通道，协议未改）
+```
+
+**清理的四个时机**：① EXE 启动**无条件先清**（主防线，平台 `kill` 时不走 `before-quit`）
+② 本局结束 `roundSet(false)` 清 + 立刻重拉 ③ `before-quit` ④ 头显启动 / 本局结束 `clearOverlayCache()`。
+
+## E.3 为什么「启动先清」是主防线（与第二十修的闭合）
+
+第二十修定案：**平台关局 = `kill` + `closeGame` 并发**。`kill` 意味着 `before-quit` 不会执行 ——
+如果旧配置只能靠退出时清，那「两次启动之间」这一段就是裸露的。
+所以本轮的清理被放到**启动路径的最前面**（`loadGuard()` 之后、拉取之前），它不依赖任何优雅退出。
+
+## E.4 本轮验证（2026-09-24，本机实跑）
+
+- 正例（真服务器 + 本地发布 `1.0.0`）：`/api/info.manifest` → `ok=true count=7 bytes=68939 fp=ae06e1354398aeb2 tries=1`；
+  `/src/content/levels.js` → 200；`/api/config/dump` → `allow=true count=7`，7 个文件与项目源**逐字一致**；
+  `userData/manifest/src/content/` 6 个文件 + `meta.json`。
+- 反例（服务器不可达 + **预置上一局残留旧配置**）：启动 3 秒后残留**已被清空**；
+  `/src/content/levels.js` → **404**（不回落）；25 秒后 `manifest.ok=false, why="拉取失败：connect ECONNREFUSED …", tries=4`。
+- 本局结束：`POST /api/round/end` → 缓存清 + 4 秒内重拉；`clearedWhy="本局结束（画面侧上报：…）"`。
+- **打包版**（`dist/win-unpacked`）实跑：`manifest.on=true`（正式包默认开）、`ok=true`、静态取配置 200。
+- `node --check` 覆盖 `tools/cast-pc/main.js` 与 `renderer/renderer.js`；APK `BUILD SUCCESSFUL`（126.97 MB）。
+
+## E.5 重打包边界
+
+- 改 `src/ui/hud.js`、`index.html`、`src/main.js`、`MainActivity.java` ⇒ **APK 重打**。
+- 改 `tools/cast-pc/**` ⇒ **EXE 重打**（`asar:true`，渲染层也在包内）。
+- 只改 `src/content/**` / `userConfig.js` ⇒ **都不用重打**，但要 `sync-content.js` + 部署。
+- 详细实现记录见 `docs/cast-implementation-and-packaging.md` 附录 G；完整口径见
+  `docs/tech/09-服务器清单与旧配置清理.md`。
+
+---
+
+# 附录 F · 2026-09-24 第二十六修（头显「平台二次拉起」不再打断 VR）
+
+## F.1 现场现象与定性
+
+用户原话：
+
+> 头显客户端那里会启动两次游戏中间间隔 20 秒左右，也就是启动成功后客户端那边还是会再启动一次，
+> 这个时候如果已经点了开始游戏，头显页在 VR 里面了，就会出现一个退出浏览器的弹窗。
+
+- **「启动两次、间隔 20s」不是我们或多点了一次**：平台客户端每 **20.004s** 重发一次整套启动
+  （`kill`（`am force-stop` 本包名）→ `copyfile(setup.xml)` →
+  `am start -n com.GoodNet.DeepmindHacker/.MainActivity -d <PC_IP>`），周期见 castlog6 实测与
+  `docs/tech/VR+平台版本号实现.md`。
+- **那个弹窗不是我们弹的**：它是 PICO XRShell 的**系统弹窗**（标题「退出PICO浏览器」、
+  正文「你需要退出当前应用才能继续操作」、按钮「取消 / 退出并继续」），出现条件是
+  **除浏览器之外还有 2D 应用想占前台**（immersive 会话期间）。定性见
+  `docs/tech/VR+平台版本号实现.md` §22.3。
+- ⇒ 我们能控制的只有一件事：**在那一刻绝不让本 APK 产生窗口、绝不发任何前台动作**。
+
+## F.2 为什么「免打扰」路径在二次拉起时会失效（本修要修的就是这个）
+
+第九 / 十五修做的 `computePassThrough`（`平台驱动 + 已拉起过 + 页面仍活` → 换 `NoDisplay` 主题、
+不建界面、立刻 finish）方向是对的，但它有两个**只在进程存活时**成立的前提：
+
+| 判据 | 存在哪 | 进程被平台 `kill` 之后 |
+|---|---|---|
+| `sLaunched` / `sLaunchedAt` | `MainActivity` 静态字段 | **空** |
+| `GameServer.lastPageHitMs`（页面心跳） | `GameServer` 实例字段（8080 服务随进程一起死） | **空** |
+
+于是「平台 kill 掉我们 → 紧接着 `am start` 拉起新进程」这一条链路里：新进程判据全空 →
+`computePassThrough` 返回 false → 走完整 `guardPass()` 门禁 → 建「正在等待直播端启动…」提示页
+（**一个 2D 窗口**）⇒ 玩家正在 VR 里，**弹窗当场出现 + XR 沉浸式会话被挤掉**。
+玩家还没进 VR 时同一个动作是无害的（本来就在 2D），这正是「只在 VR 里才看到弹窗」的原因。
+
+## F.3 本轮改动
+
+| # | 改动 | 文件 | 为什么 |
+|---|---|---|---|
+| 1 | 新增 `PagePresence`：把「页面最后一条请求的时刻 / 状态 / 是否在 XR / 是否待机」写进 **SharedPreferences**（跨进程） | `PagePresence.java`（新） | 新进程唯一能证明「游戏页还在跑」的证据 |
+| 2 | 页面每次轮询（`/api/vrplus/inbox?…&xr=&cs=`）与 `/api/page/*` 都刷新这份记录；`GameServer` 新增 `lastPageXr` | `GameServer.java` | 记录要新鲜才有用（写盘节流 0.7s；用 `commit()` 防 `force-stop` 丢证据） |
+| 3 | `onCreate` 最前面（`super.onCreate` 之前）读回该记录：`!sLaunched && PagePresence.aliveNow()` ⇒ 置 `sLaunched/sLaunchedAt` | `MainActivity.java` | 让免打扰判据在**新进程**里也成立，走不到 `guardPass()` 那条建窗口的路 |
+| 4 | `isGamePageAlive()` / `pageAliveForLaunch()` 末尾补跨进程判据；`computeRelaunchFallback()` 在「平台通道还没握手」时用「上一进程留下 XR 证据」兜底 | 同上 | 判据三处收口，避免任何一处把活着的页面判成失联 |
+| 5 | 免打扰分支：**页面在 XR 会话里 → 一个 `startActivity`/顶前台动作都不发**，只 `finish()` | 同上 | 玩家在 VR 里时浏览器就是前台应用，没有「谁被压在下面」的问题；多余的前台动作正是弹窗的触发条件 |
+| 6 | 新增 `schedulePassThroughVerify()`：5s 后看「本进程到底有没有收到过页面请求」 | 同上 | 第 3 条放宽了判据，必须有兜底：页面真没了时只在此刻才允许重开浏览器（重开=整页重载，不能提前做） |
+| 7 | `onNewIntent`：平台重拉 + 本局仍在跑 ⇒ 立刻收起本页 | 同上 | `singleTask` 下本 Activity 还活着（配置页/提示页）时重拉不会走 `onCreate`，那块 2D 面板同样会顶到前面 |
+| 8 | 页面的「判死复核」由 1 轮改成 **2 轮**（各 2.5s） | `src/game/game.js` `_confirmThenGone` | 单轮复核可能恰好落在「APK 正在重启、8080 还没绑上」的窗口里 → 误判「APK 真死」→ 直播模式下 `dispose` 推流 + `about:blank` + 结束 XR 会话 |
+| 9 | `initGameUi()` 里补一条诊断：**即将建可见界面**而跨进程记录称游戏页仍在跑时明确留痕 | `MainActivity.java` | 下一轮读留痕即可判定「弹窗是我们的窗口造成的」还是「平台客户端造成」 |
+
+## F.4 判据与边界（别把它改坏）
+
+- `PagePresence.aliveNow()`：**6s 内打过点** → 活着；**90s 内打过点且当时 `xr=1`** → 也活着
+  （XR 会话只可能由一个活着的页面持有）；其余一律 false。
+- 误判代价不对称：把「已死」当成「活着」→ 什么都不显示（有 5s 兜底复核）；
+  把「活着」当成「已死」→ 建 2D 窗口 → 玩家被弹出 VR + 系统弹窗。**故判据一律偏保守**。
+- 直播模式（`?cast=1`）同样是跨进程状态，`onCreate` 里从 `cast.pc` 恢复 `sPcConfigured`
+  （否则收尾策略会去动推流源）。
+- 平台侧的根本解仍是「不要每 20s 重发整套启动」，已写进 `docs/平台对接需求（对平台方）.md` 第 8 条。
+
+## F.5 重打包边界与验收
+
+- 改 `PagePresence.java` / `GameServer.java` / `MainActivity.java` / `src/game/game.js` ⇒ **APK 重打**；EXE 不受影响。
+- 验收：平台「启动游戏 → 开始游戏 → 进 VR」之后**什么都不做等 60s**，应看到
+  ① 不出现「退出PICO浏览器」弹窗；② 玩家仍在 VR 里；③ 留痕出现
+  `跨进程页面在场判据(第二十六修-跨进程页面在场)` 与 `免打扰路径：页面正在 XR 会话中（xr=1）…`。
+- 若仍然弹窗，而留痕里**没有**任何 APK 事件 —— 说明那一刻想占前台的是**平台客户端自己**，
+  这条只能由平台方改（`docs/tech/VR+平台版本号实现.md` §22.3 的结论）。
+
+---
+
+# 附录 G · 2026-09-24 第二十七修（本局在 VR 中「临时停用平台入口」）
+
+## G.1 第二十六修为什么不够（现场留痕的判决）
+
+第二十六修（附录 F）把「免打扰」做到了极限：`Theme.NoDisplay`、不 `setContentView`、不建任何窗口、
+不发任何 `startActivity` / 顶前台动作，只 `finish()` 自己。2026-09-24 14:02 那一局
+（build=`…-p26-xr-safe-relaunch`）的留痕显示**还是被弹窗打断了**：
+
+| 时刻 | 留痕 | 判读 |
+|---|---|---|
+| 14:02:11.621 | `{"ev":"xr-start", … ,"xr":true}` | 玩家已进 VR（开场影片播放中） |
+| 14:02:18.241 | `免打扰路径：页面正在 XR 会话中（xr=1）→ 不做任何 startActivity/顶前台动作，只 finish 本页` | 平台第 2 次 `am start` 到达，我们**按设计什么都没做** |
+| 14:02:18.330 | `{"ev":"xr-end","st":"intro","byPlayer":false,"idle":false,"vis":"visible"}` | **89ms 后 XR 会话仍然结束**（页面自己还是 `visible`） |
+| 14:02:18.644 | `{"ev":"visibility:hidden"}` | 浏览器被挤到后台，此后**再没回到前台** |
+
+⇒ 与 `computePassThrough()` 注释里 18:24:04 那次的结论一致，并被本轮再次证实：
+**只要我们的 Activity 被创建（哪怕 NoDisplay + 立刻 finish），PICO 的系统仍会为它建一个
+2D 面板/起始窗口并顶到最前** ⇒ 浏览器失去焦点 ⇒ XR 会话结束 ⇒ 玩家被弹出 VR + 系统弹窗
+「退出PICO浏览器」。
+
+**我们可控的部分至此已用尽**（不建窗口 + 不发前台动作都做到了）。
+剩下的唯一客户端解法是：**不让这一次 `am start` 落到我们身上**。
+
+## G.2 做法：把「平台入口」临时停用
+
+新增 `EntryLock.java`（配 `RecoverActivity` / `EntryFuseReceiver` / `BootReceiver`）：
+
+- 页面每次轮询 `/api/vrplus/inbox?…&xr=1`（≈1s 一次）⇒ `EntryLock.onPageXr(true)` →
+  `holdForXr()`：把**平台入口组件** `com.local.webxrcast.MainActivity` 置为
+  `COMPONENT_ENABLED_STATE_DISABLED`（`DONT_KILL_APP`，不杀进程、不影响 8080 与平台通道）。
+  此后平台那一次 `am start -n …/.MainActivity` 在**包管理器层**就解析失败 ——
+  不产生 ActivityRecord、不产生面板/闪屏/弹窗。
+- `?xr=0`（退出 VR）⇒ `release()`：立刻恢复。
+  不变量：**「入口停用」当且仅当「页面正在 XR 会话里」**。
+
+| # | 改动 | 文件 |
+|---|---|---|
+| 1 | 新增「停用/恢复平台入口组件」+ 死人开关 + 进程启动自愈 + 心跳复核 | `EntryLock.java`（新） |
+| 2 | 页面轮询里的 `xr` 直接驱动停用/恢复 | `GameServer.java`（`vrplusApi` 收口处调用 `EntryLock.onPageXr`） |
+| 3 | 进程启动即自愈（没有「页面仍在 XR」的新鲜证据就恢复） | `CastApp.java` |
+| 4 | 本局结束（`scheduleClientRestore` 收口）立刻恢复；心跳线程每 5s 复核一次 | `MainActivity.java` |
+| 5 | 现场接口：`/api/entry`（状态）/ `/api/entry/unlock` / `/api/entry/lock` / `?on=0|1` | `GameServer.java`（`entryApi`） |
+| 6 | 配置页开关 `cbEntryLock`（默认开）+ 状态行 `tvEntryLock` | `activity_main.xml` / `MainActivity.initGameUi` |
+| 7 | 人工恢复入口（停用期间才启用，应用列表里那个图标就是它） | `RecoverActivity.java`（新）+ Manifest |
+| 8 | 死人开关接收端 / 开机与覆盖安装恢复 | `EntryFuseReceiver.java`、`BootReceiver.java`（新）+ Manifest |
+| 9 | 留痕版本标记 | `PageForensics.BUILD_TAG = 2026-09-24-p27-entry-lock` |
+
+## G.3 七道恢复安全网（任何一条命中都会恢复）
+
+| # | 触发 | 实现 |
+|---|---|---|
+| 1 | 页面退出 VR（`?xr=0`） | `GameServer` 轮询 → `EntryLock.release` |
+| 2 | 本局结束（平台 `0x10 closeGame` / 页面 `game-end`） | `MainActivity.scheduleClientRestore` 开头 |
+| 3 | 页面打点停止 20s（浏览器没了 / 页面被卸载） | 心跳线程每 5s → `EntryLock.tickRound` |
+| 4 | **进程一起动就自愈**（没有新鲜 XR 证据） | `CastApp.onCreate` → `EntryLock.onProcessStart` |
+| 5 | **死人开关**：停用期间每收到一条新鲜 XR 打点就续期 60s；60s 内没有新打点 → 无条件恢复 | `EntryLock.rearmFuse` / `EntryFuseReceiver` |
+| 6 | 开机 / 覆盖安装（`MY_PACKAGE_REPLACED` 是必须的：组件使能状态会被覆盖安装保留） | `BootReceiver` |
+| 7 | **人工恢复入口**：停用期间应用列表里的图标变成 `RecoverActivity`，点一下恢复并打开配置页 | `RecoverActivity` |
+| ★ | 现场接口 | `http://<头显IP>:8080/api/entry/unlock`（恢复）/ `/api/entry`（查状态） |
+
+- 第 5 条专门覆盖「进程被系统回收（LMK）」：闹钟属于系统，进程被杀不会丢；
+  只有 `am force-stop` 会连闹钟一起取消 —— 那种情形由第 6、7 条兜住。
+- 任何时刻应用列表里**恰好有一个可点的入口**：
+  正常态 → `MainActivity`（配置页）；停用态 → `RecoverActivity`（恢复入口，点完自动打开配置页）。
+
+## G.4 边界与误判代价
+
+- 本机制**只拦平台那一次 `am start`**，不拦任何别的启动方式；也不影响 8080、VR+ 桥、推流。
+- 若换了本版**仍然弹窗**：说明那一刻想占前台的是**平台客户端自己**
+  （`com.GoodNet.LauncherClient`），游戏侧无法修复 —— 交平台方
+  （`docs/平台对接需求（对平台方）.md` 第 8 条）。
+- 若平台用的其实是**不带 `-n` 的隐式 intent**（`-a MAIN -c LAUNCHER`）：**第二十八修起这条已被堵死** ——
+  停用期间 `RecoverActivity` 也一起停用，包内 MAIN/LAUNCHER 入口数为 0，平台那一次解析必然失败。
+  （第二十七修曾用它当「人工恢复入口」，p27 现场留痕 14:59:17 证明那恰好是**新的靶子** —— 见附录 H。）
+- 配置页 `cbEntryLock`（默认勾选）可一键回到第二十六修行为，不用重打包。
+
+## G.5 重打包边界与验收
+
+- 改 `EntryLock` / `RecoverActivity` / `EntryFuseReceiver` / `BootReceiver` / `MainActivity` /
+  `GameServer` / `CastApp` / `AndroidManifest` / `activity_main.xml` ⇒ **APK 重打**；EXE 与服务器都不动。
+- 验收：
+  1. 平台「启动游戏 → 开始游戏 → 进 VR」，**什么都不做等 60s**：① 不弹窗；② 仍在 VR 里；
+     ③ 留痕出现 `★ 平台入口已临时停用（页面在 XR 沉浸式会话里（?xr=1））`，
+     且**没有**新的 `MainActivity.onCreate 进入`（= 平台那次 `am start` 真的落空了）。
+  2. 退出 VR / 平台「结束游戏」后：留痕出现 `平台入口已恢复（…）`，然后再点一次平台「启动游戏」
+     必须能正常把游戏拉起来（**不能停用不放**）。
+  3. 现场自救（第二十八修口径）：电脑浏览器打开 `http://<头显IP>:8080/api/entry/unlock` → 恢复；
+     ⚠ 停用期间应用列表里**没有**本游戏图标（刻意为之，见附录 H）。
+
+# 附录 H · 2026-09-24 第二十八修（本局在 VR 中「包内零入口」）
+
+## H.1 第二十七修为什么还不够（p27 现场留痕的判决）
+
+第二十七修把 `MainActivity` 停用了，但为了让现场能自救，**顺手启用了 `RecoverActivity`**
+（应用列表里那个图标）。p27 实测（build=…-p27-entry-lock）留痕：
+
+```
+14:59:08.737 [APK] ★ 平台入口已临时停用（页面在 XR 沉浸式会话里（?xr=1））…
+14:59:17.418 [APK] ⚠ 平台的 am start 落到了「恢复入口」上 → 说明平台用的是不带 -n 的隐式 intent
+14:59:17.618 [PAGE] xr-end st=intro byPlayer=false idle=false vis=visible      ← 200ms 后 XR 又掉了
+```
+
+平台那一次启动在 `-n …/.MainActivity` 被拒之后会**退化成隐式 MAIN/LAUNCHER**（或客户端直接调
+`getLaunchIntentForPackage`），于是解析到当时**唯一启用**的 `RecoverActivity`；哪怕它按 referrer 判出
+「这次是平台拉的」并立刻 finish、不建窗口，**「Activity 被创建」这一件事本身**仍然挤掉了 XR 会话
+（与附录 F / G.1 的结论同源）。
+
+⇒ **「包内还剩一个可被隐式意图解析的入口」= 弹窗还在。** 换靶子不解决问题。
+
+## H.2 做法：把「入口数」打到 0
+
+`EntryLock.holdForXr()` 的落地动作：
+
+- 第二十七修：`apply(a, false, true)`（`MainActivity` 停用 + `RecoverActivity` 启用）；
+- **第二十八修：`apply(a, false, false)`（两者都停用）。**
+
+不变式收紧为：**「页面在 XR 会话里」⇔「包内 MAIN/LAUNCHER 入口数 = 0」**。平台此后无论用显式组件、
+隐式 intent 还是 `getLaunchIntentForPackage`，都只会**解析失败** —— 不产生 ActivityRecord / 窗口 / 面板 / 弹窗。
+
+留痕标记 `第二十八修-包内零入口`；build 标记 `2026-09-24-p28-zero-entry`。
+
+## H.3 恢复路径（六道自动 + 一条人工）
+
+| # | 触发 | 实现 |
+|---|---|---|
+| 1 | 页面退出 VR（`?xr=0`） | 秒级恢复（正常路径） |
+| 2 | 本局结束（平台 `0x10 closeGame` / 页面 `game-end`） | `MainActivity.scheduleClientRestore` 开头恢复 |
+| 3 | 页面打点停止 20s | 心跳线程 → `EntryLock.tickRound` |
+| 4 | 进程启动（无新鲜 XR 证据） | `CastApp.onCreate` → `EntryLock.onProcessStart` |
+| 5 | 死人开关：60s 无新 XR 打点 | `AlarmManager` + `EntryFuseReceiver` |
+| 6 | 开机 / 覆盖安装 | `BootReceiver` |
+| ★ | **人工（非 Activity 通道）** | 电脑浏览器 `http://<头显IP>:8080/api/entry/unlock`；或重启头显 |
+
+**已知代价**：本局在 VR 里的这几分钟，头显应用列表里**没有本游戏图标**（刻意为之 —— 平台同样点不到）。
+出 VR 立刻恢复，故正常操作（进 VR 前选游戏、出 VR 后重启一局）不受影响。
+
+## H.4 平台侧影响与验收
+
+- VR 期间平台那次 `am start` 现在会**失败**：shell 版打印
+  `Error: Activity not started, unable to resolve Intent`；应用内 `startActivity` 抛
+  `ActivityNotFoundException` ⇒ 已并入 `docs/平台对接需求（对平台方）.md`（第 4 条 + 第 8 条）。
+- 验收：
+  1. 平台「启动游戏 → 开始游戏 → 进 VR」后**什么都不做等 90s**：① 不弹窗；② 仍在 VR 里；
+     ③ 留痕有 `★ 平台入口已临时停用（…）`，且**没有任何** `MainActivity.onCreate 进入`、
+     也没有 `⚠ 平台的 am start 落到了「恢复入口」上`。
+  2. 平台「结束游戏」或玩家退出 VR 后：留痕有 `平台入口已恢复（…）`；再点一次平台「启动游戏」必须能正常拉起。
+  3. 人工恢复演练：电脑浏览器 `http://<头显IP>:8080/api/entry/unlock` → 头显应用列表里图标立刻回来。
+
+# 附录 I · 2026-09-24 第二十九修（本局结束即作废「页面在场记录」）
+
+## I.1 现象与留痕判决（第二场起不来）
+
+第二十八修之后进 VR 不再弹窗 ✔，但现场变成**「第二场起不来，只有第一场正常」**。
+p28 留痕（15:45–15:50 连试三次，三次同样）：
+
+```
+15:46:20.840 [APK] 收到平台关闭指令 0x10 closeGame                          ← 第一场正常结束
+15:46:22.067 [PAGE] {"ev":"DEAD:pagehide"…}                                 ← 浏览器页被卸掉
+15:47:02.583 [APK] 跨进程页面在场判据：上一进程最后打点 18s 前 state=playing xr=true → alive=true
+15:47:02.599 [APK] 平台重复拉起：判定游戏页仍在 → 免打扰路径：不重开浏览器    ← ❌ 第二场被吞
+15:47:07.606 [APK] 免打扰路径复核：页面在打点（age=23173ms）→ 本次重拉零打扰结束 ← ❌ 复核也没拦住
+```
+
+平台那次 `am start` 确实到了、我们也进了 `onCreate`，但被**「以为页面还活着」**这条判据直接跳过：
+不建界面、不重开浏览器 ⇒ 头显上什么都没发生。三次尝试全部如此（15:47:02 / 15:47:22 / 15:49:13）。
+
+## I.2 根因：为「平台 kill 后重启」设计的规则，在本局结束后变成毒药
+
+- `PagePresence`（附录 F / 第二十六修）的判据是：6s 内有打点 → 活着；**90s 内有打点且当时 `xr=1`** → 也活着。
+  后一条是为「平台 kill 掉我们、新进程判据全空」的场景设计的 —— 前提是**这一局还在跑**。
+- 但第一场结束时页面是**在 XR 里被杀**的（平台 `closeGame` → 退出策略关浏览器），
+  记录里最后一条打点就永远带着 `xr=true` / `state=playing`；而第二场的启动落在 20~40s 后，
+  仍在 90s 窗口内 ⇒ `aliveNow()` 判真。
+- 免打扰的 5s 复核同样失效：它的判据是 `sServer.lastPageHitMs() != 0`（**有记录**），
+  而不是「**刚才**有请求」⇒ 上一局的死页也能过。
+
+## I.3 做法（第二十九修）
+
+| 位置 | 改动 |
+|---|---|
+| `PagePresence`（新） | 作废标记 `K_DEAD` + `markRoundOver(why)` / `isRoundOver()`；`aliveNow()` 见标记即 `false`；**页面任何一次打点都会撤掉标记**（只影响死页，不影响活页）；`ALIVE_XR_MS` 90s → 45s |
+| `MainActivity.restoreClientAndCloseBrowser()` | 退出策略开头 `markRoundOver`（本局结束的**两条路由**——平台 `0x10 closeGame` 与页面 `game-end`——都经过它） |
+| `MainActivity.schedulePassThroughVerify()` | 判据「有记录」→「**8s 内真的收到过页面请求**」（`PAGE_FRESH_MS`）；两轮都用同一判据 |
+| `GameServer` | `/api/page/dead`（sendBeacon）与 `/api/page/event` 中带 `DEAD:` 的事件 → `markRoundOver` |
+
+**语义边界**：作废标记只影响「下一局要不要按全新一局重开浏览器」，**不动** `K_HIT` / `K_XR`
+（`EntryLock.tickRound` 还要用真实打点时刻判断「页面是不是真没了」），也不影响 `EntryLock` 的
+「本局在 VR 中＝包内零入口」不变式（附录 H）。
+
+## I.4 验收
+
+1. 连打**两场以上**：第一场结束后（平台「结束游戏」或玩家退出 VR），平台再点「启动游戏」
+   → 头显浏览器**重新打开**游戏页（预加载约 10s）→ 能正常进 VR、不再弹窗。
+2. 留痕对账：出现 `页面在场记录已作废（本局结束（…））`；
+   第二场的 `跨进程页面在场判据` 应显示 `已作废=true → alive=false`，且**不再**出现
+   `不重开浏览器` 这类早退。
+3. 反向检查（不能过度作废）：页面活着且本局没结束时，平台重拉仍走免打扰路径
+   （留痕 `免打扰路径复核：页面在打点（age=…ms）→ 本次重拉零打扰结束`）。
+
+---
+
+# 附录 J · 2026-09-24 第三十修（本局结束上报：实测平台认 **CMD 7**）
+
+## J.1 一分钟结论
+
+平台的「游戏结束」信号是 **CMD 7 `GameStatistics`**（`0x07` + UTF-8 JSON，无长度前缀、无结尾符），
+**不是** CMD 6 `GameEnd` —— 后者在整场采集里**从未出现**。平台收到 CMD 7 就**弹结算、且不关游戏**。
+⇒ 这正是「告知平台本局结束、但别关游戏」的正解；本轮把它接进 PC 端。
+
+## J.2 现场证据（一局采集，原版 Unity 游戏跑出权威样本）
+
+`E:\AI_Work\WebXR_Capture\20260924-175353\`（`round.pcap` 78868B，17:53:53~18:10:34，
+游戏通道 12 帧 / 控制通道 647 帧）：
+
+| 时间 | 方向 | 内容 |
+|---|---|---|
+| 17:55:05.429 | 平台 → 本机 | `0x05` + 109B StartInfo（`gameId:128`）＝「开始游戏」 |
+| 17:55:05.444 | 本机 → 平台 | `0x05` + 118B 确认帧（`flag:1`） |
+| **18:10:20.386** | **本机 → 平台** | **`0x07` + 398B（首字节 1 + JSON 397）＝ 本局结束上报** |
+
+平台 `DebugLog\2026-09-24-17-38-22.log` 同一秒：`cmd = 7` → `OnReceiveResultMsg` →
+`==PostGameResult=={"gameid":128,"instid":15,"shopid":1,…}` → `游戏计时已暂停: 15:15.24` →
+**`游戏结束 场次ID:15 结算类型:正常结算,`**；而 `关闭游戏=128` 出现在 **82 秒之后**，
+且是**人点「结束游戏」**触发的（`====ClientSendMsg==…{"cmd":"kill","msgData":"DeepmindHacker"}`）。
+
+另两条实测细节：① `gameid`/`instid`/`shopid` 原版也全发 `0`，平台自己补成 `128/15/1`；
+② `gameData` 是**字符串化的 JSON**，平台**原样透传**（别改成嵌套对象发）。
+
+## J.3 实现位置与判据（`tools/cast-pc/main.js` §平台游戏通道）
+
+- `PC_FRAME_GAME_RESULT = 0x07`；`buildGameResultPayload(opts)` 逐字照抄原版样本
+  （`curProgress = level+1`、`maxProgress = 关卡总数`）；
+- `sendPlatformGameResult(opts, why)` 复用**注册时的同一个 socket**（源端口必须 51124）；
+- 触发点：`POST /api/round/end` → `handleRoundEnd`，**仅当本局真被平台开过**（`wasArmed`）才发；
+- 开关 `--no-game-result`；自测端点 `POST /api/platform/game-result`（不必打满一整局）；
+- 排障：`GET /api/info` → `gameChannel.results` / `lastResultAt` / `lastResultWhy`。
+
+## J.4 现场自测与验收
+
+1. 平台「启动游戏 → 开始游戏」，PC 端 `gameChannel.enabled=true`；
+2. 轻量验证：`curl -X POST http://localhost:8443/api/platform/game-result -d {}`
+   → 平台界面立刻弹结算，日志出现 `cmd = 7` / `==PostGameResult==` / `游戏结束 场次ID:N`；
+3. 完整验证：自然打完一局 → 页面 `POST /api/round/end` → PC 端自动发 CMD 7；
+4. ⚠ EXE 必须是**被平台拉起**的，否则游戏通道不启用、上报被跳过（`lastResultWhy` 会写明）。
+
+## J.5 重打包边界
+
+只动 `tools/cast-pc/main.js`（PC 端 EXE）与 `src/game/game.js`（页面多带三个字段）
+⇒ **EXE + 页面**重打；APK 与服务端不用动。
+
+## J.6 ★ 修正：上行帧必须带**非回环源 IP**（2026-09-24 现场定案）
+
+第一次现场轻量验证的结论是「发得出去、平台毫无反应」。根因是**目标地址选错**：
+
+- 老 `sendFrame()` 在没有平台 IP 时兜底 `[platIp, '127.0.0.1']` ⇒ 目标成了回环；
+- 而内核会把**源地址**也选成 `127.0.0.1`；平台对上行帧做**来源 IP 白名单**校验，直接丢弃，
+  只在 `DebugLog` 留一句 `127.0.0.1这个外来IP想连接`；
+- 于是同一份日志里 `cmd = 5`（用 `rinfo.address` 回发、源 IP 正常）有 3 次，`cmd = 7` **一次都没有**。
+
+修正：新增 `usableTarget()`（回环 / `0.0.0.0` / `::1` / 空 → 一律视为不可用）与 `platformTargets()`，
+按证据强度取**一个**目标，**绝不回退回环**：
+
+| 优先级 | 来源 |
+|---|---|
+| ① | `PLATFORM_CH.lastFromIp` —— 平台发帧过来的源 IP（收到就记） |
+| ② | 启动参数 `--platform` / `argv[1]` 第 3 段 |
+| ③ | `primaryLanIp()` —— 本机默认路由网卡地址（UDP `connect` 探出，比 `lanIPs()[0]` 可靠） |
+
+★ ② 也必须过滤：平台给被拉起游戏传的启动参数本身就是 `plstformIP = 127.0.0.1`
+（`=StartGame==gamePath==...`），照抄即踩坑。
+
+连带：`0x01` 注册帧同样走 `platformTargets()`，一起修好；`PLATFORM_CH` 增 `platformIp` / `lastFromIp`
+供 `/api/info` 排障；`POST /api/platform/game-result` 的响应增 `dest`（实际发往的地址）。
+
+**★ 2026-09-24 现场复测：通过 ✔** —— 修好后重打 EXE，平台界面**立刻出现结算按钮**、且**不关游戏**。
+（旁证口径：`127.0.0.1这个外来IP想连接` 平台自身回环流量也会触发，故决定性证据是 `cmd = 7` 0 次 / `cmd = 5` 3 次。）
+重打包边界：仅 `tools/cast-pc/main.js` ⇒ **EXE 重打**（页面 / APK / 服务端不动）。

@@ -33,6 +33,10 @@ let introEnded = false;    // 本地影片是否已播完（头显可能还在�
 let introStopTimer = 0;    // 延迟隐藏影片层的定时器
 let introHardTimer = 0;    // 硬兜底定时器（影片时长 +5s 必定收起）
 let lastInfo = null;       // 最近一次 /api/info 结果（供 updateHint 用）
+// ★ 第二十五修：诊断模式（启动参数 --panels）。关着时**不往 DOM 里写**服务器地址、
+//   共享密钥、设备号这些东西 —— display:none 只是看不见，DOM 里仍留着（大屏检修 /
+//   远程协助时就会露出来）。由 pollInfo 设置，翻转时补渲染一次。
+let diagMode = false;
 
 // ——————————————— 纯净模式（只保留游戏画面） ———————————————
 // ★ 默认开启：现场直播/大屏只要画面，地址栏、游戏目录、授权面板与日志区按 H 全部隐藏。
@@ -161,6 +165,36 @@ window.castCfg.onRoundChanged?.((r) => {
 });
 (async () => { try { renderRound(await window.castCfg.roundGet()); } catch (e) { /* 忽略 */ } })();
 
+// ——————————————— 服务器清单（第二十四修）———————————————
+// 配置的唯一来源：EXE 每次启动向服务器 `GET /api/manifest` 换一份，落 userData/manifest/。
+// 这里只显示状态 —— 「清旧配置」发生在主进程（启动前 / 本局结束 / 退出），界面只读结果。
+function renderManifest(mf) {
+  const st = el('mftState'), info = el('mftInfo'), diag = el('mftDiag');
+  if (!st || !mf) return;
+  if (!mf.on) {
+    st.className = 'mft-warn';
+    st.textContent = '已关闭（--local-content 或开发模式）';
+    if (info) info.textContent = '· 配置直接取自本地游戏目录（应急模式）';
+    if (diag) diag.textContent = '';
+    return;
+  }
+  st.className = mf.ok ? 'mft-ok' : 'mft-bad';
+  st.textContent = mf.ok
+    ? `已就绪 ver=${mf.ver || '?'}（${mf.count} 个文件 / ${Math.round((mf.bytes || 0) / 1024)}KB）`
+    : `未就绪：${mf.why || '未知'}`;
+  // ★ 第二十五修：**常显**的只有「状态本身」（就绪/未就绪 + 版本 + 文件数）与失败原因；
+  //   来源地址、各种时间戳一律挪进诊断行（body.diag = 启动参数 --panels）。
+  //   为什么：现场窗口/大屏上不该出现服务器地址（webvr123.site）这类信息。
+  if (info) info.textContent = mf.ok ? '' : (mf.lastErr ? `· ${mf.lastErr}` : '');
+  if (diag) {
+    if (!diagMode) { diag.textContent = ''; return; }   // 见上：不写进 DOM
+    diag.innerHTML = `｜来源 <code>${mf.base || '?'}</code> 期望版本 ${mf.wantVer || '?'}`
+      + (mf.ok && mf.fetchedAt ? ` · 拉取于 ${new Date(mf.fetchedAt).toLocaleTimeString()}` : '')
+      + (mf.clearedAt
+        ? ` · 上次清旧配置 ${new Date(mf.clearedAt).toLocaleTimeString()}（${mf.clearedWhy || ''}）`
+        : ' · 还没清过旧配置');
+  }
+}
 // ——————————————— 状态轮询 ———————————————
 async function pollInfo() {
   try {
@@ -196,8 +230,19 @@ async function pollInfo() {
       cs.className = 'gb';
       cs.textContent = '✗ 没有可用配置（头显会被拒绝启动）';
     }
+    // ★ 第二十四修：服务器清单状态（配置的唯一来源）
+    renderManifest(info.manifest);
     // ★ 第二十二修：运维面板（「游戏目录」）正式包默认不显示，只有 --panels 才露出来
-    if (typeof info.panels === 'boolean') document.body.classList.toggle('no-cfg', !info.panels);
+    if (typeof info.panels === 'boolean') {
+      document.body.classList.toggle('no-cfg', !info.panels);
+      document.body.classList.toggle('diag', !!info.panels);
+      if (!!info.panels !== diagMode) {
+        diagMode = !!info.panels;          // 翻转时补渲染（首次进来也会走这里）
+        renderManifest(info.manifest);
+        refreshGuard();
+        refreshLicense();
+      }
+    }
     updateHint(info);      // 画面区状态提示：没帧时明确告诉用户当前卡在哪一步
   } catch (e) {
     el('ips').textContent = '（无法连接本机服务）';
@@ -670,6 +715,12 @@ const LIC_MODES = {
 
 function renderLicense(s) {
   if (!s) return;
+  // ★ 第二十三修：授权验证已关闭 → 整个授权面板直接隐掉（不再出现任何激活码 / 续期入口）。
+  //   为什么留着代码而不删：需要回归旧硬门禁时，启动加 `--license` 即可原样复现。
+  //   ⚠ 判据要容忍两种形态：摘要里的 `off:true` 与完整状态里的 `mode:'off'`。
+  //   （原来只认 `off`，而主进程回的是没有该字段的「未加载」⇒ 这一行一直露着。）
+  if (s.off || s.mode === 'off') { document.body.classList.add('no-lic'); return; }
+  document.body.classList.remove('no-lic');
   const m = LIC_MODES[s.mode] || { text: s.mode || '未知', cls: 'lic-bad' };
   const st = el('licState');
   if (st) {
@@ -732,6 +783,8 @@ if (el('licReload')) {
 //   重置密钥只会把头显踢出去，而且头显进不了配置页 ⇒ 现场无法自救。要重新配对请用
 //   「重新配对」（清空白名单 → 重开配对窗口）。
 function renderGuard(g) {
+  // ★ 第二十五修：诊断关着时整块都不写（密钥 / 局号 / 设备白名单留在主进程里就够了）。
+  if (!diagMode) return;
   el('guardSecret').textContent = g.secret || '(未初始化)';
   el('guardAuto').checked = !!g.autoAllow;
   const ses = el('guardSession');
@@ -799,6 +852,7 @@ refreshCfg();
 refreshGuard();
 refreshLicense();
 setInterval(refreshLicense, 60000);   // 剩余天数会走，每分钟刷一次（主进程 6h 才真去联网）
+// ★ 第二十三修：上面的轮询在授权验证关闭后只是一次 IPC（renderLicense 会直接返回并隐面板），无网络请求。
 initJpeg();          // 启动即订阅 IPC 帧通道（收帧即显示，无轮询），避免等 manageJpeg 的首个 1s 周期
 pollInfo();
 log('接收端已启动；先保持本窗口运行，再到头显打开 APK（或直接打开上面地址）。', 'l-dim');

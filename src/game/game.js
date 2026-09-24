@@ -618,11 +618,24 @@ export class Game {
   async _confirmThenGone(why) {
     if (this._goneHandled || this._confirming) return;
     this._confirming = true;
-    this.log('判死复核：' + why + ' → 等 2.5s 再探一次（避免后台节流误判）');
-    await new Promise((r) => setTimeout(r, 2500));
-    const alive = await VRPlus.serverAlive();
+    // ★ 2026-09-24 第二十六修：复核**做两轮**（每轮 2.5s），而不是一轮。
+    //   现场实测：平台的「启动游戏」= kill(am force-stop 本包名) → copyfile → am start，
+    //   且客户端每 20.004s 重发一次整套；那一记 kill 一旦生效，本页的轮询会连着失败，
+    //   若此时正好轮到判死复核，单轮复核可能恰好落在「APK 正在重启、8080 还没绑上」的窗口里
+    //   → 被误判「APK 真死」→ 直播模式下就 dispose 推流 + location.replace('about:blank')
+    //   + 结束 XR 会话 = 本局当场作废（玩家表现为掉出 VR / 被弹窗）。
+    //   多花 2.5s 换掉这个误判：真死时页面资源本就挂在本地服务上，晚 2.5s 收工无任何影响。
+    this.log('判死复核：' + why + ' → 每 2.5s 探一次，连探两轮（避免撞上 APK 重启窗口）');
+    let alive = false;
+    for (let round = 1; round <= 2; round++) {
+      await new Promise((r) => setTimeout(r, 2500));
+      alive = await VRPlus.serverAlive();
+      if (this._goneHandled) { this._confirming = false; return; }
+      if (alive || round === 2) break;
+      this.log('判死复核：第 1 轮探不到 APK（可能正被平台重启）→ 2.5s 后再探一轮');
+      VRPlus.reportEvent('gone-recheck', { round: 1 });
+    }
     this._confirming = false;
-    if (this._goneHandled) return;
     if (alive) {
       this.log('判死复核：APK 其实在线 → 撤销退出（上一次是误判，游戏继续）');
       return;
@@ -673,7 +686,10 @@ export class Game {
       fetch('/api/round/end', {
         method: 'POST', cache: 'no-store', keepalive: true,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ why }),
+        // lvl / maxLvl / score 是给 PC 端上报平台用的（CMD 7 结算报文里的 curProgress /
+        //   maxProgress / score）。缺了也能发 —— PC 端会退回 0，平台照样记「正常结算」
+        //   （原版那一局的结算数据也是全 0）。
+        body: JSON.stringify({ why, lvl: this.levelIndex, maxLvl: LEVELS.length, score: this.score }),
       }).catch(() => { /* PC 不在 / 非直播场景：忽略 */ });
     } catch (e) { /* 忽略 */ }
   }

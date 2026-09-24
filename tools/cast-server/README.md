@@ -341,6 +341,7 @@ node tools\cast-server\deploy\backup-drill.js E:\webvr123-backup\license-sign.pe
 | 方法 | 路径 | 调用方 | 鉴权 |
 |---|---|---|---|
 | GET | `/api/health` | 监控 | 无 |
+| GET | `/api/manifest` | PC EXE（每次启动 / 本局结束重拉） | **共享密钥**（`key=`，默认 `webxr-manifest`，第二十四修） |
 | POST | `/api/license/activate` | EXE 首次 | 激活码 |
 | POST | `/api/license/renew` | EXE 周期 | `Ke` 签名 proof |
 | GET | `/api/license/revoked` | EXE 周期 | `Ke` 签名 proof |
@@ -468,3 +469,99 @@ cd tools/cast-server/xlang && \
 - 私钥权限保持 `600`；`data/license.db` 含客户信息，也要限制读取。
 - 服务器只监听 `127.0.0.1`，外部一律经 Caddy 的 HTTPS。
 - **备份策略**：`data/` 每天拷一次；`secrets/license-sign.pem` 离线保存且**不进任何自动化备份链路**（避免私钥落到云盘）。
+
+---
+
+---
+
+## 10. 内容清单接口（`GET /api/manifest`，第二十四修 · 2026-09-24）
+
+> 定位：**配置集中管理**，不是防破解（密钥在客户端里，见本文档 §9 与 `docs/tech/09-服务器清单与旧配置清理.md` §10）。
+
+### 10.1 发布一份内容
+
+```bash
+# 在项目根执行（会整目录重建，不是增量覆盖）
+node tools/cast-server/sync-content.js --ver 1.0.0
+
+# 产物
+tools/cast-server/content/manifest.json        { versions, current, updatedAt }
+tools/cast-server/content/1.0.0/ver.json       { ver, builtAt, count, bytes, listSha256 }
+tools/cast-server/content/1.0.0/src/content/*  ← 6 个关卡/数值文件
+tools/cast-server/content/1.0.0/src/core/userConfig.js
+```
+
+发布范围 `MANIFEST_ITEMS` 在 `sync-content.js` 里，**必须与 EXE 的 `CONFIG_MANIFEST` 逐字一致**
+（`src/content/` 整目录 + `src/core/userConfig.js`）—— 改一处就要改两处。
+
+### 10.2 ⚠ 部署（最容易漏的一步）
+
+`content/` 在 `.gitignore` 里（**发布产物不入库**）。所以服务器上 `git pull` **不会**带来内容，
+每次更新配置后必须：
+
+**① 只更新内容（改了 `src/content/**` 或 `userConfig.js`）**：
+
+```bash
+node tools/cast-server/sync-content.js --ver 1.0.1     # 建议每次改内容就递增一个版本号
+scp -r tools/cast-server/content root@webvr123.site:/opt/webvr123/
+ssh root@webvr123.site "systemctl restart webvr123"
+```
+
+**② 更新服务器代码（改了 `server.js`）—— 用一键脚本，含备份 + 重启 + 验收**：
+
+```powershell
+# 开发机（Windows）：打成更新包
+cd E:\AI_Work\WebXR_Begain_Platform
+node tools/cast-server/sync-content.js --ver 1.0.0
+tar -czf "$env:TEMP\wu.tgz" -C tools\cast-server server.js content deploy\apply-update.sh
+scp "$env:TEMP\wu.tgz" root@webvr123.site:/tmp/
+ssh root@webvr123.site "mkdir -p /tmp/wu && tar -xzf /tmp/wu.tgz -C /tmp/wu && cd /tmp/wu && sh apply-update.sh"
+```
+
+`apply-update.sh` 做四件事：备份旧 `server.js` / `content/`（带时间戳，可回滚）→ 装新 →
+`chown webvr123` + 放开读权限（`ProtectSystem=strict` 下服务只读 `/opt/webvr123`）→ 重启并打印
+`/api/health`、`/api/manifest` 两条验收；**不碰 `secrets/` 与 `data/`**。
+回滚：`cp -p /opt/webvr123/server.js.bak-<时间戳> /opt/webvr123/server.js && systemctl restart webvr123`。
+
+> 本次（2026-09-24）就是这么部署的，验收记录见 `docs/tech/09-服务器清单与旧配置清理.md` §11.1。
+
+### 10.3 接口
+
+| 方法 | 路径 | 调用方 | 鉴权 |
+|---|---|---|---|
+| GET | `/api/manifest?key=&ver=` | PC EXE（每次启动 / 本局结束重拉） | **共享密钥**（`cfg.manifestKey`，默认 `webxr-manifest`） |
+
+- `ver` 缺省 = `manifest.json` 的 `current`；**指定了就必须命中，绝不回落 `current`**。
+- 响应：`{ ok, ver, builtAt, count, bytes, server, files[] }`，
+  每个 `file = { path, sha256, size, content }`（文本内联）。
+- 请求体上限 `cfg.maxManifestBytes`（默认 2MB）、限速 `cfg.manifestRatePerMin`（默认 120/分）。
+
+### 10.4 环境变量与错误码
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `MANIFEST_KEY` | `webxr-manifest` | 覆盖 `cfg.manifestKey` |
+| `CONTENT_DIR` | `<ROOT>/content` | 发布根目录（部署后即 `/opt/webvr123/content`，一般不用设） |
+
+| HTTP | `why` | 含义 | 现场处置 |
+|---|---|---|---|
+| 403 | `badKey` | 密钥不对 | 两端 `manifestKey` / `--manifest-key` 不一致 |
+| 404 | `noContentVersion` | 该 `ver` 未发布（响应带 `versions`） | 跑 `sync-content.js`，或把 EXE `--content-ver` 改成已发布版本 |
+
+- ⚠ **systemd 单元的 `ProtectSystem=strict` 不影响本接口**：它只让 `/opt/webvr123` 对服务**只读**，而
+  `/api/manifest` 只需要**读** `content/`（实测路径：`readContentIndex()` / `readContentTree()` 全是 `readFileSync`/`readdirSync`）。
+  但**上传内容的那一步必须用 root/scp**（服务用户 `webvr123` 写不进 `/opt/webvr123`）。
+
+`/api/health` 的 `content` 字段（`{ dir, current, versions, updatedAt }`）是**服务器侧第一眼**：
+监控它就能发现「content 目录空了 / 版本没发上去」。
+
+### 10.5 自测
+
+```bash
+node tools/cast-server/sync-content.js --ver 1.0.0
+PORT=8795 HOST=127.0.0.1 DATA_DIR=/tmp/srv-test node tools/cast-server/server.js
+curl "http://127.0.0.1:8795/api/health"                                   # → content.current = 1.0.0
+curl "http://127.0.0.1:8795/api/manifest?key=webxr-manifest&ver=1.0.0"    # → ok:true count:7
+curl "http://127.0.0.1:8795/api/manifest?key=wrong"                       # → 403 badKey
+curl "http://127.0.0.1:8795/api/manifest?key=webxr-manifest&ver=9.9.9"    # → 404 noContentVersion
+```
