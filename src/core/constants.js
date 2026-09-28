@@ -102,6 +102,29 @@ export const SHOOT = {
   HIT_SLAB_DEPTH: 0.4, // 【前后】2D立绘命中板厚（米）：卡片朝相机方向正前+正后各容差；调小→收紧前后误判
 };
 
+// ===== 手柄瞄准基准自适应（设备识别 + 三轴补偿角）=====
+// 射线与子弹共用同一条瞄准基准：手柄 targetRay 空间本地 (0,0,-1) 套上「补偿欧拉角 XYZ」后转世界。
+// 该角按 PICO 4 标定（实测基准 x = -27°）；Quest / SteamVR 的 targetRay↔grip 空间约定不同
+// → 用同一个角会整体偏（射线与子弹一起偏），故按设备槽各存一份，自动识别后取对应槽。
+// 详见 docs/设备识别与瞄准角度.md（第三十三修实现 / 第三十四修收敛）。
+//   x = 俯仰 pitch（负=射线下压，正=上抬，**主要调这一个**）
+//   y = 偏航 yaw  （负=射线左偏，正=右偏）
+//   z = 翻滚 roll （⚠ 不改变方向：本地 (0,0,-1) 绕 Z 转后仍是 (0,0,-1)，只改枪管姿态，调方向请保持 0）
+// 实际生效值请改 userConfig.js 的 AIM（本文件同名键会被它覆盖）。
+// ⚠ 第三十四修：VR 内「摇杆标定工具」（热键 / 推角 / 保存）已按需求移除 —— 各槽角度现在只由
+//   本表（或 userConfig.AIM.BY_DEVICE）决定；要量新设备的角度，临时用 AIM.FORCE 试或从 git 历史取回标定工具。
+export const AIM = {
+  ENABLED: true,     // 总开关：false → 不走设备分支，恒用 SHOOT.RIGHT_PITCH_DEG（改造前行为）
+  DEVICE: null,      // null / 'auto' = 自动识别；识别不准时钉死 'pico' | 'quest' | 'steamvr' | 'unknown'（优先级最高）
+  BY_DEVICE: {
+    pico:    { x: -27, y: 0,   z: 0 },   // PICO 4 实测（本机基准），勿随意改
+    quest:   { x: 14,  y: -14, z: 0 },   // Quest / Quest 2 / 3 / Pro：2026-09-24 Quest 3 上机实测
+    steamvr: { x: -27, y: -2,  z: 0 },   // Vive / Index / WMR（占位值，待实测）
+    unknown: { x: -27, y: 0,   z: 0 },   // 兜底：识别不出设备时用
+  },
+  FORCE: null,       // 排障强制：{ x: -20 } / { x: -20, y: 3 }（可只写部分轴），优先级最高、不落盘
+};
+
 // 枪械模式（预览界面按钮切换）：preview=初始态，full=满状态（点击按钮进入游戏）
 // shotCount = 每发子弹的弹道数（player.fire 确定性扇形），cooldown = 射击冷却 ms（input.js 节流）
 export const GUN_MODES = {
@@ -138,6 +161,19 @@ export const SCATTER_BURST = {
   DIST: 9,            // 轴向距离（米）：弹头圆盘中心在枪口前方此距离处
   RADIUS: 3,          // 圆盘半径（米）
   SPREAD_DISC: true,  // 实心圆盘
+};
+
+// ===== 敌人模型加载期间的「光点」占位（第三十四修）=====
+// 为什么：GLB 下载 + Draco 解码要几百毫秒，这段期间原本会显示程序化的「彩色笑脸球」，
+//   模型一到就当场换脸，很出戏。现在只显示一个柔和的发光点：不抢戏、暗示「这里马上出现敌人」，
+//   也不与任何怪物外形冲突。
+// ⚠ 只改观感，不改玩法：命中一直走 balloon.hitRadius + 位置判定，与占位外观无关。
+//   加载**失败**（404 / 解码错）时仍回退成可见的彩色球体（现场一眼看出是资源问题）。
+export const ENEMY_DOT = {
+  MUL: 2.0,            // 光点直径 = 占位球直径(2×敌人 radius) × 本倍率 ⇒ 2.0 = 两倍大
+  CORE: 0.34,          // 实心核心直径占光点直径的比例（其余是向外渐隐的光晕；越大越像实心圆点）
+  COLOR: 0xfff2c4,     // 光点颜色（暖白；加色混合下越白越亮）
+  OPACITY: 0.85,       // 最大不透明度 0~1
 };
 
 export const BALLOON = {
@@ -1258,6 +1294,8 @@ const _OVERRIDES = [
   ['PORTAL',  PORTAL,  USER_CONFIG.PORTAL],
   ['MOVE',    MOVE,    USER_CONFIG.MOVE],
   ['SHOOT',   SHOOT,   USER_CONFIG.SHOOT],
+  ['AIM',     AIM,     USER_CONFIG.AIM],
+  ['ENEMY_DOT', ENEMY_DOT, USER_CONFIG.ENEMY_DOT],
   ['BALLOON', BALLOON, USER_CONFIG.BALLOON],
   ['GUN',     GUN,     USER_CONFIG.GUN],
   ['WAVE',    WAVE,    USER_CONFIG.WAVE],

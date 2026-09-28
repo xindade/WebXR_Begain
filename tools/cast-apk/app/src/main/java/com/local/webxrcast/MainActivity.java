@@ -316,6 +316,18 @@ public class MainActivity extends AppCompatActivity {
     private static volatile String sGuardDev = null;
     private static volatile String sGuardExp = null;
     private static volatile String sGuardVoucher = null;
+
+    // ───── ★ 第三十二修（2026-09-24）：与直播端对时 —— 本机时钟任意偏差都不再影响门禁 ─────
+    //   门禁签名里的 ts 用的是**本机绝对时钟**，而 PC 侧守 ±30s 窗口 ⇒ 时钟偏几分钟的设备会被判
+    //   「时间戳超窗」而**永远**进不来（现场：Quest 偏 281s，卡在「直播端拒绝」不再重试）。
+    //   这里**不放宽窗口**（放宽 = 削弱防重放），而是把偏移量测出来：ts = 本机时钟 + skew，
+    //   窗口判据于是恢复成它本来的语义 —— 「这个请求是不是刚发的」。
+    //   对时失败不致命：skew 保持 0 ⇒ 与加这个特性之前的行为完全一致（旧版 EXE 没有
+    //   /api/time，走的正是这条路）。
+    private static volatile long sSkewMs = 0L;        // 本机时钟 → 直播端时钟 的偏移（ms）
+    private static volatile long sSkewAtMs = 0L;      // 测出该偏移时的**本机**时钟读数
+    private static volatile String sSkewBase = null;  // 该偏移是对哪台直播端测的（换地址必须重测）
+    private static final long SKEW_TTL_MS = 120000L;  // 偏移保鲜期：晶振漂移 100ppm≈0.36s/小时，2 分钟一测绰绰有余
     private static boolean sGuardPassed = false;             // 本进程本次启动是否已通过门禁（maybeLaunch 的硬前置）
     private static final long GUARD_CACHE_MS = 10000L;       // 授权结论缓存（ms）：重拉 / 页面查询复用
     private static final int EXE_PROBE_TIMEOUT_MS = 1200;    // **单轮**探测 EXE 的连接/读取超时（ms）
@@ -1248,14 +1260,99 @@ public class MainActivity extends AppCompatActivity {
         return (e > b) ? json.substring(b, e) : null;
     }
 
+    /** 从 JSON 文本里取数字字段并转成 Long（解析不出返回 null；支持负数，供 skewMs 用）。 */
+    private static Long jsonNumFieldLong(String json, String key) {
+        String v = jsonNumField(json, key);
+        if (v == null || v.isEmpty()) return null;
+        try { return Long.valueOf(Long.parseLong(v)); } catch (Throwable e) { return null; }
+    }
+
     /** 放行条三件套（供 GameServer 的 /api/guard 与游戏页网址使用；缺一即视为没有）。 */
     public static String guardDev0() { return (sGuardDev == null) ? "" : sGuardDev; }
     public static String guardExp0() { return (sGuardExp == null) ? "" : sGuardExp; }
     public static String guardVoucher0() { return (sGuardVoucher == null) ? "" : sGuardVoucher; }
 
+    // ─────────── ★ 第三十二修：与直播端对时（把「设备时钟偏差」从这里彻底摘出去）───────────
+
+    /** 以**直播端时间轴**为基准的「现在」。签名一律用它 —— 不要再直接用 System.currentTimeMillis()。 */
+    private long guardNow() { return System.currentTimeMillis() + sSkewMs; }
+
+    /** 记下与某台直播端的时钟偏移并留痕（现场一眼看出「这台设备的表是歪的」）。 */
+    private void setSkew(long skewMs, String base, String why) {
+        boolean changedBase = (sSkewBase == null) || !base.equals(sSkewBase);
+        long before = sSkewMs;
+        sSkewMs = skewMs;
+        sSkewAtMs = System.currentTimeMillis();
+        sSkewBase = base;
+        long sec = Math.round(skewMs / 1000.0);
+        PageForensics.line("APK", "与直播端对时（" + why + "）：本机比它" + (sec >= 0 ? "慢 " : "快 ")
+                + Math.abs(sec) + "s（skewMs=" + skewMs + "，基准 " + base + "）"
+                + (changedBase ? "  ★ 本机时钟与直播端不一致（已按直播端时间签名）"
+                               : "（修正 " + (skewMs - before) + "ms）"));
+    }
+
+    /** 手上这份偏移还能用吗（同一台直播端 + 没过保鲜期）。 */
+    private boolean skewFresh(String base) {
+        return base != null && base.equals(sSkewBase)
+                && (System.currentTimeMillis() - sSkewAtMs) < SKEW_TTL_MS;
+    }
+
+    /**
+     * 与直播端对时：GET /api/time → 用「往返中点」估计，抵消掉一半单向延迟。
+     *
+     * <p>拿不到就**什么都不动**（旧版 EXE 没有这个端点 ⇒ 与加该特性之前行为一致）。本方法做网络 IO，
+     * 只能在后台线程调用（现有调用链 guardWaitLoop → probeExeAuthority / fetchExeConfig 都在后台线程）。
+     */
+    private void refreshSkewIfStale(final String base) {
+        if (base == null || skewFresh(base)) return;
+        HttpURLConnection conn = null;
+        try {
+            long t0 = System.currentTimeMillis();
+            conn = (HttpURLConnection) new URL(base + "/api/time").openConnection();
+            conn.setConnectTimeout(EXE_PROBE_TIMEOUT_MS);
+            conn.setReadTimeout(EXE_PROBE_TIMEOUT_MS);
+            conn.setRequestMethod("GET");
+            if (conn.getResponseCode() != 200) return;
+            InputStream in = conn.getInputStream();
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[512];
+            int n;
+            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            in.close();
+            long t3 = System.currentTimeMillis();
+            Long srv = jsonNumFieldLong(new String(bo.toByteArray(),
+                    java.nio.charset.StandardCharsets.UTF_8), "server");
+            if (srv == null) return;
+            setSkew(srv.longValue() - (t0 + (t3 - t0) / 2), base, "GET /api/time，RTT " + (t3 - t0) + "ms");
+        } catch (Throwable e) {
+            // 对时失败不致命：保持原偏移（首次即失败 ⇒ skew=0，与历史行为一致）
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /**
+     * ★ 第三十二修：先对时，再发签名请求；万一仍被判「时间戳超窗」，就**就地自愈再补一次**。
+     *
+     * <p>自愈用的是响应里回带的 skewMs（PC 收到请求时直接算出的偏差），比用 RTT 中点估计更准，
+     * 且不依赖「PC 已升级到带 /api/time 的版本」。多花的这一次往返只发生在首次。
+     */
     private GuardProbe probeExeAuthority(final String base) {
+        refreshSkewIfStale(base);
+        GuardProbe p = probeExeAuthorityOnce(base, guardNow());
+        if (p.isOurExe() && p.body != null && p.body.contains("时间戳超窗")) {
+            Long d = jsonNumFieldLong(p.body, "skewMs");
+            if (d != null) {
+                setSkew(sSkewMs + d.longValue(), base, "被「时间戳超窗」拒后就地自愈（偏差 " + d + "ms）");
+                p = probeExeAuthorityOnce(base, guardNow());
+            }
+        }
+        return p;
+    }
+
+    private GuardProbe probeExeAuthorityOnce(final String base, final long tsValue) {
         final String dev = guardDeviceId();
-        final String ts = String.valueOf(System.currentTimeMillis());
+        final String ts = String.valueOf(tsValue);
         final String sig = guardHmac(dev + "|" + ts);
         final GuardProbe[] out = new GuardProbe[1];
         Thread t = new Thread(() -> {
@@ -1406,7 +1503,8 @@ public class MainActivity extends AppCompatActivity {
         HttpURLConnection conn = null;
         try {
             String dev = guardDeviceId();
-            String ts = String.valueOf(System.currentTimeMillis());
+            refreshSkewIfStale(base);   // ★ 第三十二修：config/dump 与门禁同一套签名，ts 也必须是对时后的
+            String ts = String.valueOf(guardNow());
             String sig = guardHmac(dev + "|" + ts);
             String url = base + "/api/config/dump"
                     + "?dev=" + java.net.URLEncoder.encode(dev, "UTF-8")

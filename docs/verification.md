@@ -50,3 +50,22 @@
 原入口只探测一次，返回 false 后永久禁用按钮。现在监听 WebXR devicechange、窗口 focus 和页面恢复可见事件重新探测；检测为 false 或抛错时保留“重试进入 VR”，缺少 WebXR API 时显示独立提示。点击直接请求 VR 会话，自动探测不会启动会话。探测结果使用版本号并检查会话状态，避免旧结果覆盖新结果或在启动期间解锁按钮。
 
 新增 5 项测试覆盖晚连接恢复、运行时检测异常后恢复、乱序结果、会话启动期间的旧结果和无 WebXR API。新增测试先失败后通过，总计 25/25 测试通过，main.js 与 availability.js 语法检查通过。需要刷新页面加载修复；尚未完成 PICO 真机复测，此修复不代表此前 SteamVR SharedTexturesNotSupported 错误已解决。
+
+## 瞄准角固化 + 删 A/B 退出 + 加载光点占位（第三十四修，2026-09-24）
+
+用户现场实测确定 Quest 设备角度为 `x=14, y=-14, z=0`。本轮把它写死进配置，并把配套的现场工具收敛掉。
+
+- `AIM.BY_DEVICE.quest` 固化为 `14 / -14 / 0`（`constants.js` 与 `userConfig.js` 两处同值，注释注明实测日期与设备号）。
+- **删除 VR 内摇杆标定工具**：`input.js` 去掉 8 个 `_calib*` 字段、`_updateAimCalibration`、`_refreshRayAims` 与热键接线；
+  `wrist-ui.js` 去掉标定面板；`deviceProfile.js` 去掉全部标定导出与 `localStorage`（`aim-xyz:<槽>`）读写层。
+  现在角度只由 `AIM.BY_DEVICE` 决定，设备里残留的旧标定值不再生效。
+- **删除游戏内 A/B 键退出 VR**：`input.js` 的 `btnA/btnB → session.end()` 分支与 `prevAB` 字段一并移除；
+  会话退出只由外部事件触发（平台「关闭游戏」、玩家按系统键回主界面）。
+- **敌人模型加载占位改为光点**：`balloonModels.js` 新增 `showLoadDot` / `hideLoadDot`（直径 = 占位球直径 ×2、暖白、加色混合），
+  模型到位即收起；加载失败仍回退成可见的彩色球体（一眼看出是 404 / 解码问题）。
+- `tests/aim-profile.test.mjs` 重写为 8 项（新增「残留 aim-xyz 旧值不再生效」「Quest 固化角」两项回归，删掉 3 项标定测试）；
+  `tests/register.mjs` 补最小 canvas 桩。`npm test` **33/33 通过**。
+- 文档同步：`docs/设备识别与瞄准角度.md`（第 4 节改为「怎么给新设备定角度」+ 标定工具算法备查）、`docs/tech/00`、`docs/tech/01`、`docs/tech/03`。
+
+**待现场验证**：换 Quest 头显进 VR，看留痕 `[AIM] 设备槽=quest（证据=…）`，射线应与枪管指向一致（不再需要标定）；
+按 A/B 不再退出 VR；敌人出场先看到一个暖白光点，模型到位后替换成敌人。

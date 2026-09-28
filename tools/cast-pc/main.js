@@ -497,10 +497,13 @@ app.whenReady().then(() => {
     if (pathname === '/api/config/dump') return handleConfigDump(req, res);
     // ★ 授权出示：头显开局前先来这里拿 license + proof（无鉴权，但 proof 绑它当场给的 nonce）。
     if (pathname === '/api/license/current') return handleLicenseCurrent(req, res);
+    // ★ 第三十二修：对时端点。头显据此把「本机时钟偏差」减掉 → 签名时间窗不必放宽。
+    if (pathname === '/api/time') return handleTime(req, res);
     if (pathname === '/api/info') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({
         port: PORT, ips: lanIPs(),
+        server: Date.now(),   // ★ 第三十二修：本机时间（排障用；正式对时走 GET /api/time）
         gameRoot: GAME_ROOT, extCfg: EXT_CFG,
         panels: PANELS,
         // ★ 第二十一修：配置下发根（外接目录没配时 = EXE 内置目录）+ 是否在用内置配置。
@@ -1159,6 +1162,13 @@ function handleLicenseCurrent(req, res) {
 
 const GUARD = { secret: '', allowList: [], autoAllow: false, log: [] };
 
+/**
+ * 门禁签名的时间窗（毫秒）。★ 第三十二修（2026-09-24）**刻意保持 30s 不放宽**：
+ * 设备时钟偏差改由**头显侧对时**解决（见 GET /api/time 与 APK 的 refreshSkewIfStale）——
+ * 放宽窗口是削弱防重放，对时是把偏移减掉、判据语义不变。真正的门禁是白名单 + 本局放行。
+ */
+const GUARD_TS_WINDOW_MS = 30000;
+
 function loadGuard() {
   const cfg = loadConfig();
   // ★ 第十七修：固定共享密钥（见上方 GUARD_SECRET_DEFAULT 注释），已不再随机生成。
@@ -1213,6 +1223,15 @@ function saveGuard() {
   saveConfig(cfg);
 }
 
+/**
+ * ★ 第三十二修：把 entry.skewMs 规整成「可以回给设备」的值（NaN / 缺失 → null，其余取整）。
+ * 头显拿它把偏差减掉重发一次，于是**不需要**放宽时间窗。
+ */
+function skewField(entry) {
+  const v = entry && entry.skewMs;
+  return (typeof v === 'number' && Number.isFinite(v)) ? Math.round(v) : null;
+}
+
 function guardSig(dev, ts) {
   return crypto.createHmac('sha256', GUARD.secret).update(`${dev}|${ts}`).digest('hex');
 }
@@ -1251,6 +1270,27 @@ function guardPush(entry) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('guard:log', entry);
 }
 
+/**
+ * GET /api/time —— 对时端点（★ 第三十二修）。
+ *
+ * <p>为什么需要它：门禁签名的 `ts` 是**设备自己的绝对时钟**，而 guardVerify 守 ±30s 窗口。
+ * 设备时钟一歪（现场 Quest 偏 281s），它会被判「时间戳超窗」且**永远**进不来；而去放宽窗口
+ * 等于削弱防重放。正解是让设备**把偏移减掉**：ts = 设备时钟 + (本机时间 − 往返中点)，
+ * 窗口判据于是恢复成它本来的语义 —— 「这个请求是不是刚发的」。
+ *
+ * <p>刻意不鉴权、也不含任何敏感信息：只有一个毫秒时间戳（**权威时间不需要保密**，
+ * 且这个端点在门禁之前就要能被调用）。
+ */
+function handleTime(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Private-Network': 'true',
+  });
+  res.end(JSON.stringify({ server: Date.now(), session: SESSION_ID }));
+}
+
 function handleLaunchRequest(req, res) {
   const ip = clientIp(req);
   readJsonBody(req, 4096, (body) => {
@@ -1268,6 +1308,9 @@ function handleLaunchRequest(req, res) {
       allow: r.allow, voucher: r.voucher, ttl: r.ttl, exp: r.entry.exp || null,
       why: r.reason, reason: r.reason,
       session: SESSION_ID, server: Date.now(),
+      // ★ 第三十二修：把「设备时钟偏差」回给头显 —— 它据此就地自愈（补一次就过），
+      //   于是不需要放宽窗口，也不依赖它先成功调到 /api/time。
+      skewMs: skewField(r.entry),
       // ★ 第二十三修：告诉头显「本机还需不需要授权校验」（兼容旧版头显：它不认这个字段就照旧拿 off:true 判断）
       licenseRequired: LICENSE_ENABLED,
     }));
@@ -1305,6 +1348,9 @@ function handleMasterAllow(req, res) {
       round: roundSnapshot(),
       license: licenseSummary(),
       licenseRequired: LICENSE_ENABLED,   // ★ 第二十三修：同 /api/launch/request（仅供诊断）
+      // ★ 第三十二修：同 /api/launch/request —— 回本机时间与设备时钟偏差
+      server: Date.now(),
+      skewMs: skewField(r.entry),
     }));
   });
 }
@@ -1913,13 +1959,19 @@ function guardVerify(ip, body) {
   const dev = String((body && body.dev) || '');
   const ts = String((body && body.ts) || '');
   const sig = String((body && body.sig) || '');
-  const ageMs = Math.abs(Date.now() - Number(ts));
-  const entry = { at: Date.now(), ip, dev, allow: false, why: '' };
+  const nowMs = Date.now();
+  // ★ 第三十二修：把「设备时钟相对本机的偏差」一并算出来（正 = 设备时钟慢了）。
+  //   两个用途：① 拒绝原因里写清方向，现场一眼看出「是这台设备的表歪了」；
+  //   ② 回给设备（响应里的 skewMs），让它把偏差减掉重发一次 —— 于是**不必放宽窗口**。
+  const skewMs = ts ? (nowMs - Number(ts)) : null;
+  const ageMs = (skewMs === null) ? Infinity : Math.abs(skewMs);
+  const entry = { at: nowMs, ip, dev, allow: false, why: '', skewMs };
 
   if (!dev || !ts || !sig) {
     entry.why = '参数缺失（dev/ts/sig 必填）';
-  } else if (!Number.isFinite(ageMs) || ageMs > 30000) {
-    entry.why = `时间戳超窗（${Math.round(ageMs / 1000)}s > 30s）`;
+  } else if (!Number.isFinite(ageMs) || ageMs > GUARD_TS_WINDOW_MS) {
+    const dir = (skewMs > 0) ? '设备时钟慢了' : '设备时钟快了';
+    entry.why = `时间戳超窗（${Math.round(ageMs / 1000)}s > ${GUARD_TS_WINDOW_MS / 1000}s，${dir}）`;
   } else if (guardSig(dev, ts) !== sig) {
     entry.why = 'HMAC 校验失败（secret 不一致？）';
   } else if (GUARD.allowList.includes(dev)) {

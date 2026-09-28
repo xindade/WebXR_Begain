@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { BALLOON, MOVE, SHURIKEN } from '../core/constants.js';
-import { attachBalloonModel, fitToRadius, loadBalloonModel, attachDragonSegment } from './balloonModels.js';
+import { attachBalloonModel, fitToRadius, loadBalloonModel, attachDragonSegment, hideLoadDot } from './balloonModels.js';
 
 // 程序化笑脸贴图（按颜色缓存）——占位怪也复用调色板
 const _faceCache = new Map();
@@ -417,6 +417,7 @@ class Balloon {
       this._chargeOrb.material.dispose();
       this._chargeOrb = null;
     }
+    hideLoadDot(this);                                   // 光点（若还挂着）随气球一起释放材质
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();
     if (this.bodyModel) {

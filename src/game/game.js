@@ -197,7 +197,7 @@ export class Game {
     this.preloadDone = false;    // main.js 的进度条是否走完（setPreloadDone 置 true）
     this._gameEndReportedAt = 0;         // 上次上报「本局结束」的时刻（去抖，见 _reportGameEnd）
     // ★ 2026-09-23：「本轮是否真的结束」（通关 / 平台关闭 / 主控端结束）——一次性标志，
-    //   _endRound 读它并复位；玩家自己按 A/B 退出 VR 时**不是**本轮结束（那一局还能再进）。
+   //   _endRound 读它并复位；玩家中途退出 VR 回菜单时**不是**本轮结束（那一局还能再进）。
     this._roundOver = false;
     // ★ 第十二修：「平台开始 / 结束」信号的回调口（main.js 用它开关「进入 VR」按钮门禁）。
     //   默认 null = 没人监听 → _platformSignal 空操作。门禁这类**界面策略**不进游戏内核，
@@ -664,9 +664,9 @@ export class Game {
     if (this._gameEndReportedAt && now - this._gameEndReportedAt < 5000) return;
     this._gameEndReportedAt = now;
     const castMode = /[?&]cast=1/.test(location.search);
-    // roundOver = **本轮真的结束**（通关 / 平台关闭 / 主控端结束本局），区别于「玩家自己按 A/B
+    //   roundOver = **本轮真的结束**（通关 / 平台关闭 / 主控端结束本局），区别于「玩家中途退出 VR
+    //   回菜单」（那一局还在进行，只是暂时回菜单）。
     //   退出 VR」（那一局还在进行，只是暂时回菜单）。
-    //   APK 侧据此决定直播模式要不要收掉浏览器（见 GameServer.notifyGameEndIfAny）。
     VRPlus.reportEvent('game-end', {
       why, st: this.state, lvl: this.levelIndex, cast: castMode, roundOver,
     });

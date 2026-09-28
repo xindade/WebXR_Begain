@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { loadGLB } from './glbCache.js';
-import { DRAGON, DEPTH_SPRITE_MODE, DEPTH_SPRITE_TYPES, DEPTH_SPRITE_SCALE, DEPTH_SPRITE_FRAMES, DEPTH_SPRITE_SWING, DEPTH_SPRITE_HANDPAINTED, DEPTH_SPRITE_HIT_MUL } from '../core/constants.js';
+import { DRAGON, ENEMY_DOT, DEPTH_SPRITE_MODE, DEPTH_SPRITE_TYPES, DEPTH_SPRITE_SCALE, DEPTH_SPRITE_FRAMES, DEPTH_SPRITE_SWING, DEPTH_SPRITE_HANDPAINTED, DEPTH_SPRITE_HIT_MUL } from '../core/constants.js';
 import { DepthSprite } from './depthSprite.js';
 import { captureModelByUrl, loadDepthSpriteSheet, captureFrameFit } from './glbCapture.js';
 
@@ -12,7 +12,67 @@ import { captureModelByUrl, loadDepthSpriteSheet, captureFrameFit } from './glbC
 
 // DepthSprite 捕获需要的 renderer（由 game.js 构造时注入 world.renderer）
 let _renderer = null;
+
 export function setRenderer(r) { _renderer = r; }
+
+// ===== 敌人出场前的「光点」占位（第三十四修）=====
+// 为什么：GLB 下载 + Draco 解码要几百毫秒，这段期间原本直接露程序化「彩色笑脸球」，模型一到就当场换脸，很出戏。
+//   现在只在原地亮一个柔和光点（倍率/核心/颜色/透明度见 constants.js 的 ENEMY_DOT），暗示「这里马上出现敌人」。
+// ⚠ 只改观感、不改玩法：命中一直是 balloon.hitRadius + 位置判定，与占位外观无关。
+//   加载**失败**（404 / 解码错）时仍回退成可见的彩色球体 —— 现场一眼看出是资源问题，而不是「怪没出来」。
+let _dotTex = null;   // 模块级共享贴图：所有气球共用一个 128×128 径向渐变（白心→透明），避免每个怪都建一次 canvas
+
+function dotTexture() {
+  if (_dotTex) return _dotTex;
+  const S = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d');
+  const core = Math.min(0.95, Math.max(0.02, ENEMY_DOT.CORE));    // 实心核心占比（其余为向外渐隐光晕）
+  const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(core, 'rgba(255,255,255,0.92)');
+  g.addColorStop(Math.min(0.99, core + 0.25), 'rgba(255,255,255,0.22)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, S, S);
+  _dotTex = new THREE.CanvasTexture(c);
+  _dotTex.colorSpace = THREE.SRGBColorSpace;
+  return _dotTex;
+}
+
+// 在气球中心亮一个光点（直径 = 占位球直径 2*radius × ENEMY_DOT.MUL）。
+// 挂在 balloon.mesh 下：自动继承 mesh.scale（enemies.js 的 scale:3 等整体放大）与 mesh.visible（幽灵隐身时一起藏）。
+export function showLoadDot(balloon, radius) {
+  if (!balloon || !balloon.mesh) return;
+  let dot = balloon._loadDot;
+  if (!dot) {
+    const mat = new THREE.SpriteMaterial({
+      map: dotTexture(),
+      color: ENEMY_DOT.COLOR,
+      transparent: true,
+      opacity: ENEMY_DOT.OPACITY,
+      blending: THREE.AdditiveBlending,   // 发光感：与背景相加，暗场里更亮
+      depthWrite: false,                  // 透明体不写深度，避免挡住后画的模型
+    });
+    dot = new THREE.Sprite(mat);
+    dot.userData.sharedTex = true;        // 贴图是模块级共享的，销毁时勿释放
+    balloon._loadDot = dot;
+    balloon.mesh.add(dot);
+  }
+  const size = radius * 2 * ENEMY_DOT.MUL;
+  dot.scale.set(size, size, 1);
+}
+
+// 模型/立绘就位或改为回落兜底时收起光点：摘除并释放材质（共享贴图保留）
+export function hideLoadDot(balloon) {
+  const dot = balloon && balloon._loadDot;
+  if (!dot) return;
+  balloon.mesh.remove(dot);
+  dot.material?.dispose?.();
+  balloon._loadDot = null;
+}
+
 
 // ===== 各怪物模型「本地位置 / 旋转 / 缩放」微调表（手动修改入口）=====
 // 用途：GLB 模型挂到气球上后，若朝向偏了 / 想抬高、放大，改这里即可，无需碰逻辑代码。
@@ -69,12 +129,17 @@ export function fitToRadius(obj, radius) {
 // tint：通用身体(基础怪)按类型染色用；专用模型传 null 不打 tint。
 // tuningOverride：可选，覆盖 MODEL_TUNING 中该 url 的 {pos,rot,scale}（用于同一模型不同体型，如盾兵骑士 vs Boss 骑士）。
 export function attachBalloonModel(balloon, url, radius, tint = null, tuningOverride = null, extraScale = 1, typeId = null) {
-  // 下载/解码期间也必须可见，成功挂载后才隐藏占位。切关后不再操作失效实例。
-  balloon.mesh.material.visible = true;
+  // 下载/解码期间不显示程序化彩色笑脸球（太出戏）：只在原地亮一个柔和光点（见上方 showLoadDot 段）。
+  // 模型到位即收起光点；加载失败才回退成可见的彩色球体（现场一眼看出是 404/解码问题）。切关后不再操作失效实例。
+  balloon.mesh.material.visible = false;
+  showLoadDot(balloon, radius);
   const request = balloon._modelRequest = (balloon._modelRequest || 0) + 1;
   const current = () => balloon.alive && balloon._modelRequest === request;
   const fallback = () => {
-    if (current()) balloon.mesh.material.visible = true;
+    if (current()) {
+      hideLoadDot(balloon);                    // 收起光点，让位给兜底的彩色球体
+      balloon.mesh.material.visible = true;
+    }
     console.warn('[BalloonModels] 使用简化外观:', url);
   };
   // —— DepthSprite 分支（开关 + 白名单）：用 GLB 捕获的 2D 立绘替 3D GLB ——
@@ -96,6 +161,7 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
         balloon.mesh.parent.add(ds.mesh);   // 挂到 scene（与 balloon.mesh 平级）
         balloon.depthSprite = ds;
         balloon._dsScene = balloon.mesh.parent;
+        hideLoadDot(balloon);                  // 立绘就位：收起加载光点
         balloon.mesh.material.visible = false; // 隐藏程序化球体
         // 命中半径 = 立绘里「可见角色」的半高，而不是整张贴图的半幅：
         //   贴图四周是透明留边（captureGLB 固定画幅取景，留边比例随 radius 变化：可见占比 = radius/1.2），
@@ -137,6 +203,7 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
       });
 
       balloon.mesh.add(clone);
+      hideLoadDot(balloon);                    // 模型就位：收起加载光点
       balloon.mesh.material.visible = false; // 隐藏程序化球体（碰撞仍靠 position）
       balloon.bodyModel = clone;
       balloon._modelMats = modelMats;

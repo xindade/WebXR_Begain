@@ -867,11 +867,10 @@ async function enterVR(loadoutKey = null) {
 world.xr.addEventListener('sessionend', (ev) => {
   pageLog?.pauseScroll();
   const st = game.state;
-  const byPlayer = !!(ev && ev.session && ev.session._endedByPlayer);  // 玩家按 A/B
   const idle = !!game._closedIdle;                                     // 平台明说关闭 → 待机态
-  VRPlus.reportEvent('xr-end', { st, byPlayer, idle, vis: document.visibilityState });
+  VRPlus.reportEvent('xr-end', { st, idle, vis: document.visibilityState });
   mirror.close();          // 关闭镜像窗口并停用截帧
-  game.toMenu();            // B/退出 VR 后真正回到未开始状态（state='menu' 并清场，重进 VR 即从干净状态开局）
+    game.toMenu();            // 退出 VR 后（平台关闭 / 系统键回主界面）真正回到未开始状态（state='menu' 并清场，重进 VR 即从干净状态开局）
   pause.clear();
   pendingStartIndex = 0; // 复位，下次默认从第 1 关开始
   pendingLoadout = null; // 退出 VR 后不再沿用上一局的加成（下次点按钮重新选）

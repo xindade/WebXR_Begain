@@ -14,9 +14,13 @@ import { saveSettings } from '../core/settings.js';
  *   构造签名保持不变 ⇒ main.js 不需要为界面写分支。
  *
  * 【暂停机制本身保留】pause 仍会因「页面失焦 / XR 会话不可见 / 报告错误」而暂停（那是性能与安全
- *   需要，见 main.js），正式包里只是**没有可见的暂停界面** —— 恢复途径是头显右手 A 键
+ *   需要，见 main.js），正式包里只是**没有可见的暂停界面**；调试包里的恢复途径是右手 A 键
  *   （main.js 的 input.pollMenu → resumeGame）。也正因如此，main.js 在正式包里**不再**用
  *   「指针锁丢失」来暂停：那条只在桌面自测时触发，而桌面没有 A 键可恢复 = 假死。
+ *
+ * 【第三十四修】游戏内（`src/vr/input.js`）的 **A/B 键退出 VR 已按需求删除** —— 会话退出只由外部
+ *   事件触发（平台「关闭游戏」/ 系统键回主界面）。本类 3D 面板的 A/B 文案只对调试包的 pollMenu
+ *   路径有意义；正式包（devUI=false）下面板根本不建。
  */
 export class GameControls {
   constructor({ world, game, pause, settings, onSettings, onResume, onExit, monitor, devUI = false }) {

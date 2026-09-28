@@ -125,7 +125,12 @@ export function fitToRadius(obj, radius) {
 
 ### 2.5 挂载时机与手动微调
 
-气球构造是**同步**的，但 GLB 加载是**异步**的，于是采用「先建程序化球体 → 模型就绪后挂为子节点并隐藏球体」：
+气球构造是**同步**的，但 GLB 加载是**异步**的，于是采用「先亮一个加载光点 → 模型就绪后挂为子节点、收起光点」：
+
+> **第三十四修**：加载期间原来直接露程序化「彩色笑脸球」，模型一到就当场换脸，很出戏。
+> 现在改为在气球中心亮一个柔和光点（`ENEMY_DOT`：直径 = 占位球直径 ×2、暖白、加色混合、向外渐隐）。
+> 光点只是外观，命中一直走 `balloon.hitRadius` + 位置判定；**加载失败**（404 / 解码错）时仍回退成可见的彩色球体，
+> 现场一眼就能看出是资源问题，而不是「怪没出来」。
 
 ```js
 loadBalloonModel(url).then((gltfScene) => {
@@ -142,6 +147,7 @@ loadBalloonModel(url).then((gltfScene) => {
   clone.traverse((o) => { if (o.isMesh) { o.material = o.material.clone(); if (tint != null) o.material.color.setHex(tint); } });
 
   balloon.mesh.add(clone);
+  hideLoadDot(balloon);                    // 模型就位：收起加载光点
   balloon.mesh.material.visible = false;   // 隐藏程序化球体（碰撞仍靠 position）
 });
 ```
@@ -150,6 +156,7 @@ loadBalloonModel(url).then((gltfScene) => {
   模型朝向偏了/想抬高放大只改这张表，不碰逻辑代码。
 - **`tuningOverride`**：同一模型用于不同体型时（盾兵骑士 vs Boss 骑士）覆盖微调。
 - **每实例克隆材质**：否则给一个怪打受击闪白，同类型所有怪一起闪。
+- **加载占位光点**（第三十四修）：`balloonModels.js` → `showLoadDot` / `hideLoadDot`（贴图 `dotTexture()` 模块级共享 128×128 径向渐变）。
 
 ---
 

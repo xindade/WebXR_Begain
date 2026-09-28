@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import { DEFAULT_SETTINGS } from '../core/settings.js';
 import { MOVE, SHOOT, GUN_MODES, TEST, SKILL_HINT } from '../core/constants.js';
+import { describeDetection, getAimDeg, noteInputSource } from './deviceProfile.js';
 
 // 输入抽象层：一套接口同时支持
 //  - 桌面：WASD/方向键移动 + 鼠标视角(pointer lock) + 左键射击 + F 大招
 //  - VR：xr-standard 手柄，按 handedness 区分左右手（参考 vr-controller-kit skill）
-//    右手扳机=射击、右手 A/B=退出 VR、任一握柄(grip)=如来神掌
+//    右手扳机=射击、任一握柄(grip)=如来神掌（A/B 退出已在第三十四修按需求删除）
 //    摇杆 PICO 用 axes[2]/[3]，回退 [0]/[1]；PICO 前推为负值，移动时取反
 // 未来新增手部追踪只需在此扩展，不影响游戏逻辑。
 
@@ -16,6 +17,13 @@ const _locCam = new THREE.Vector3(); // 移动边界：相机(头部)世界坐�
 const _locRig = new THREE.Vector3(); // 移动边界：rig 世界坐标（复用）
 const _locOff = new THREE.Vector3(); // 移动边界：玩家现实偏移（复用）
 const TRIGGER_THRESHOLD = 0.5;
+const _aimEuler = new THREE.Euler(0, 0, 0, 'XYZ');   // 瞄准补偿角（复用对象，避免帧内 new）
+
+// 瞄准相关日志：控制台 + 页面留痕（正式包的页面日志已关，调用无副作用）
+function _logAim(msg) {
+  console.log(msg);
+  try { window.__pageLog?.log?.(msg); } catch { /* 忽略 */ }
+}
 
 export class InputManager {
   constructor(world, playerRig) {
@@ -44,7 +52,7 @@ export class InputManager {
     this._skillQueued = false;
     this._creditQueued = 0; // 测试积分待消费值（按测试键 +TEST.ADD_SCORE，由 game 消费后加分）
 
-    // handedness -> { controller, prevTrigger, prevGrip, prevAB }
+    // handedness -> { controller, prevTrigger, prevGrip }
     this._hands = { left: null, right: null };
     this._controllers = []; // 索引存储，供视觉/兜底
     this._gripHands = { left: null, right: null };
@@ -98,7 +106,6 @@ export class InputManager {
       ctrl.userData.hand = null;
       ctrl.userData.prevTrigger = false;
       ctrl.userData.prevGrip = false;
-      ctrl.userData.prevAB = false;
 
       // connected 事件里拿到 handedness，正确区分左右手（不能只靠索引）
       ctrl.addEventListener('connected', (e) => {
@@ -107,12 +114,10 @@ export class InputManager {
         ctrl.userData.inputSource = e.data;
         this._hands[hand] = ctrl;
         this._gripHands[hand] = this._grips[i];
-        // 右手射线：变红 + 绕 X 轴俯仰 RIGHT_PITCH_DEG（与子弹方向共用同一俯角）
-        const ray = ctrl.userData.rayLine;
-        if (ray) {
-          ray.material.color.setHex(hand === this.shootingHand ? SHOOT.RAY_COLOR : SHOOT.RAY_COLOR_LEFT);
-          ray.rotation.x = hand === this.shootingHand ? THREE.MathUtils.degToRad(SHOOT.RIGHT_PITCH_DEG) : 0;
-        }
+        noteInputSource(e.data);   // 记录 profiles（设备槽识别的证据②）
+        // 主手射线：变红 + 套上本设备槽的补偿角（与子弹方向共用同一角，见 deviceProfile.js）
+        this._applyRayAim(ctrl);
+        _logAim(`[AIM] ${describeDetection()}`);
       });
       ctrl.addEventListener('disconnected', () => {
         if (ctrl.userData.hand) this._hands[ctrl.userData.hand] = null;
@@ -132,6 +137,27 @@ export class InputManager {
       this.rig.add(grip);
       this._controllers.push(ctrl);
     }
+  }
+
+  // 补偿欧拉角（弧度，Euler 'XYZ'）：本设备槽的三轴角 → 复用 Euler
+  _aimEulerRad() {
+    const a = getAimDeg();
+    _aimEuler.set(
+      THREE.MathUtils.degToRad(a.x),
+      THREE.MathUtils.degToRad(a.y),
+      THREE.MathUtils.degToRad(a.z),
+    );
+    return _aimEuler;
+  }
+
+  // 把某手柄的射线刷成「本设备槽的补偿角」：主手（射击手）套角 + 变红，另一手复位为青
+  _applyRayAim(ctrl) {
+    const ray = ctrl?.userData?.rayLine;
+    if (!ray) return;
+    const shooting = ctrl.userData.hand === this.shootingHand;
+    ray.material.color.setHex(shooting ? SHOOT.RAY_COLOR : SHOOT.RAY_COLOR_LEFT);
+    if (shooting) ray.rotation.copy(this._aimEulerRad());
+    else ray.rotation.set(0, 0, 0);
   }
 
   _applyDesktopLook() {
@@ -230,12 +256,13 @@ export class InputManager {
     return out.set(0, 0, -1).applyQuaternion(_q).normalize();
   }
 
-  // 右手 AK 枪瞄准：方向 = 本地 -Z 绕 X 俯仰 RIGHT_PITCH_DEG 后转世界；与红色射线朝向一致。
+  // 右手 AK 枪瞄准：方向 = 本地 -Z 套上「本设备槽的补偿欧拉角」后转世界；与红色射线朝向一致。
   // 出生点 = 手柄世界位置沿该方向前移 SPAWN_OFFSET（模拟枪口）。写入 outPos / outDir。
+  // ⚠ 补偿角唯一来源 = deviceProfile.getAimDeg()（射线由 _applyRayAim 同样取自它）——
+  //   两者必须共用同一角，否则「射线指向」与「子弹落点」会错位。
   _rightAim(ctrl, outPos, outDir) {
-    const t = THREE.MathUtils.degToRad(SHOOT.RIGHT_PITCH_DEG);
-    // 本地方向：(0,0,-1) 绕 X 轴旋转 t → (0, sin t, -cos t)
-    outDir.set(0, Math.sin(t), -Math.cos(t));
+    const e = this._aimEulerRad();
+    outDir.set(0, 0, -1).applyEuler(e).normalize();
     ctrl.getWorldQuaternion(_q);
     outDir.applyQuaternion(_q).normalize();
     ctrl.getWorldPosition(outPos);
@@ -301,7 +328,6 @@ export class InputManager {
       const trigger = triggerVal > TRIGGER_THRESHOLD && !this._requireRelease[hand];
       const grip = gp.buttons[1]?.pressed || false;
       const btnA = gp.buttons[4]?.pressed || false; // 右:A / 左:X
-      const btnB = gp.buttons[5]?.pressed || false; // 右:B / 左:Y
 
       // 握柄按下（边缘）→ 触发选中技能（左右手均可；激光剑是左手武器，用左手 grip 最直觉）
       if (ctrl) {
@@ -321,19 +347,8 @@ export class InputManager {
         }
         if (ctrl) ctrl.userData.prevTrigger = trigger;
 
-        // A/B（边缘）→ 退出 VR
-        const ab = btnA || btnB;
-        if (ctrl) {
-          if (ab && !ctrl.userData.prevAB) {
-            // ★ 「玩家主动退出」标记（2026-09-19 六修）：main.js 的 sessionend 据此区分
-            //   · 玩家自己按 A/B → 回菜单清场（原行为）；
-            //   · 被别的应用抢前台、PICO 结束会话 → **保留本局**，只给一个「继续游戏」按钮。
-            //   XRSession 是普通对象，挂个私有标记即可（不依赖任何浏览器扩展）。
-            session._endedByPlayer = true;
-            session.end?.();
-          }
-          ctrl.userData.prevAB = ab;
-        }
+        // A/B：第三十四修起**不再**退出 VR（需求：删掉游戏内 A/B 的退出功能）。
+        //   会话退出只由外部事件触发：平台「关闭游戏」、玩家按系统键回主界面等（见 main.js sessionend）。
       } else if (hand === 'left') {
         // 左手扳机：记录扳机边缘状态
         if (ctrl) ctrl.userData.prevTrigger = trigger;
@@ -364,12 +379,7 @@ export class InputManager {
   setSettings(settings) {
     this.settings = { ...settings };
     this.reset();
-    for (const [hand, ctrl] of Object.entries(this._hands)) {
-      const ray = ctrl?.userData.rayLine;
-      if (!ray) continue;
-      ray.material.color.setHex(hand === this.shootingHand ? SHOOT.RAY_COLOR : SHOOT.RAY_COLOR_LEFT);
-      ray.rotation.x = hand === this.shootingHand ? THREE.MathUtils.degToRad(SHOOT.RIGHT_PITCH_DEG) : 0;
-    }
+    for (const ctrl of Object.values(this._hands)) this._applyRayAim(ctrl);
   }
 
   reset() {
