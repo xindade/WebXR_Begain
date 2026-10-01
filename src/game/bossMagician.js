@@ -1,11 +1,21 @@
 // 第18关 · 魔术师 Boss 控制器
-// 阶段循环：开场(0-10s, 正前30m播动画) → 激光(11-20s, 正前30m) → 玻璃墙(21-30s, 闪现左边30m) → 九宫格(31-40s, 闪现右边30m) → A→B→C…
+// 阶段循环：开场演出 → 激光(10s, 正前30m) → 玻璃墙(10s, 闪现左边30m) → 黑白球墙(10s, 闪现右边30m) → A→B→C…
 // 血量动态 = HP_BASE + 玩家DPS × HP_DPS_SEC；Boss 代理气球受击即扣血，血空触发通关。
+//
+// ★ 第三十八修（开场演出 + 召唤池）：
+//   1. 开场：以「第15关开场魔术师」的体型/位置在玩家前方念白（music/魔术师Boss开头.wav），
+//      语音播到 INTRO.CUE_AT 秒时 0.6s 飞回 Boss 位（POSITIONS[0]），到点瞬间放大约 2 倍 → 巨物感；
+//      语音播完（game.js 的 ended 回调 → onOpeningVoiceEnd）即进入激光阶段，INTRO 兜底上限见 PHASE.INTRO。
+//   2. 召唤：由「按时间点的波次」改为「场上维持池」（见 constants.MAGICIAN_BOSS.POOL）——
+//      场上维持 POOL.MAX 只（其中 POOL.ELITE 只为当前阶段的精英怪），总数 < POOL.REFILL_AT 时一次补满；
+//      出生点固定在距场地中心 POOL.SPAWN_R 米的环上，以敌种自身速度飘向玩家；
+//      出现方式 = 从 Boss 身上飞出光点（waves._queueSpawn 的 opts.from）。
+//      切阶段只更换「精英怪种类」，**不清场**：上一阶段召唤的怪留在场上直到被打掉。
+//
 // 复用 glbCache 加载「魔术师动画版」GLB 并循环播放内嵌动画（常驻，不自动消失）；
 // 视觉模型与命中代理解耦：代理气球(balloons.list) 只做命中靶子，模型独立动画 + 每帧同步位置。
 import * as THREE from 'three';
-import { MAGICIAN_BOSS, MOVE, SHURIKEN } from '../core/constants.js';
-import { ENEMY_TYPES } from '../content/enemies.js';   // 召唤怪速度回退（未显式配 SPEED 时用敌种默认）
+import { MAGICIAN_BOSS } from '../core/constants.js';
 import { loadGLB, cloneGLBScene } from './glbCache.js';
 import { BossLaserGroup } from './bossLaserGroup.js';
 import { BossGlassWall } from './bossGlassWall.js';
@@ -16,6 +26,50 @@ import { WinBanner3D } from './winBanner.js';        // Boss 死亡后 VR 横幅
 
 const D2R = Math.PI / 180; // 度→弧度（MODEL_ROTATION 用度标注）
 const WIN_BANNER_TEXT = '邪恶魔术师终于死了\n你成功拯救了公主'; // Boss 死亡 3D 横幅文案（双行）
+
+/**
+ * 开场演出时间轴（纯函数，供单测/调参）：t = 开场阶段内已过秒数。
+ *   t < CUE_AT          → 停在念白位（INTRO.POS），未变大
+ *   CUE_AT ~ CUE_AT+FLY → 沿 smoothstep 从念白位飞到 POSITIONS[0]
+ *   飞完（k>=1）        → big=true（调用方据此把模型瞬间放大）
+ * @param {object} cfg constants.MAGICIAN_BOSS
+ * @param {number} t 秒
+ * @return {{pos:number[], big:boolean}}
+ */
+export function introPose(cfg, t) {
+  const I = cfg.INTRO;
+  const src = I.POS;
+  const dst = cfg.POSITIONS[0];
+  if (t < I.CUE_AT) return { pos: [src[0], src[1], src[2]], big: false };
+  const k = Math.min(1, (t - I.CUE_AT) / Math.max(0.01, I.FLY_TIME));
+  const e = k * k * (3 - 2 * k);   // smoothstep：起飞柔和、到位不顿
+  return {
+    pos: [
+      src[0] + (dst[0] - src[0]) * e,
+      src[1] + (dst[1] - src[1]) * e,
+      src[2] + (dst[2] - src[2]) * e,
+    ],
+    big: k >= 1 - 1e-6,   // 容差：t 由帧累加，末端可能差 1e-16 没到 1
+  };
+}
+
+/**
+ * 召唤池补充计划（纯函数）：场上（含已发出光点、尚未落地）总数 < POOL.REFILL_AT 时，
+ * 一次补到 POOL.MAX；其中精英怪补到 POOL.ELITE 只，其余用基础怪。
+ * @param {object} cfg constants.MAGICIAN_BOSS
+ * @param {{alive:number, elites:number, pending:number, pendingElite:number, queued:number, queuedElite:number}} s
+ * @return {{elites:number, basics:number}|null} null = 还不到补充阈值
+ */
+export function planRefill(cfg, s) {
+  const P = cfg.POOL;
+  const total = (s.alive || 0) + (s.pending || 0) + (s.queued || 0);
+  if (total >= P.REFILL_AT) return null;
+  const need = Math.max(0, P.MAX - total);
+  if (need <= 0) return null;
+  const eliteHave = (s.elites || 0) + (s.pendingElite || 0) + (s.queuedElite || 0);
+  const elites = Math.max(0, Math.min(P.ELITE - eliteHave, need));
+  return { elites, basics: need - elites };
+}
 
 export class MagicianBoss {
   constructor(waves) {
@@ -31,37 +85,45 @@ export class MagicianBoss {
     this.phaseTimer = 0;
     this._proxy = null;
     this._modelRoot = null;
+    this._sizeY = 1;                             // GLB 原生高度（模型缩放基准）
     this._mixer = null;
     this._laser = null;
     this._glass = null;
     this._nine = null;
     this._ballWall = null;                       // 第三阶段「黑白球墙」控制器
     this._disposed = false;
-    this._summonQueue = [];                      // 召唤怪分帧消费队列（错峰，防同帧重度 GLB 解码卡死）
-    this._summoned = 0;                          // 本阶段已召唤波数（见 _summonTick）
+    this._big = false;                           // 开场「瞬间变大」是否已触发
     this._hpBar = null;                          // Boss 头顶 3D 血条（代理落地后创建）
+    this._hpBarOffsetY = MAGICIAN_BOSS.HP_BAR_OFFSET_Y; // 血条抬高（随体型放大同步，见 _grow）
     this._tmpV = new THREE.Vector3();            // 血条定位临时量
+    // —— 召唤池（第三十八修）——
+    this._minions = [];          // 场上召唤物（含精英；切阶段不清场）
+    this._refillQueue = [];      // 待落地队列 [{elite}]（错峰消费）
+    this._pendingRefill = 0;     // 已发出光点、尚未落地的召唤物数
+    this._pendingElite = 0;      // 其中精英怪数
+    this._refillCd = 0;          // 两次补充之间的冷却（秒）
 
     this._spawnProxy();
     this._loadModel();
   }
 
+  // 命中代理：开场先落在「念白位」（第15关开场魔术师的位置/体型），由 update 的开场时间轴接管移动
   _spawnProxy() {
-    const pos = new THREE.Vector3(...MAGICIAN_BOSS.POSITIONS[0]);
+    const I = MAGICIAN_BOSS.INTRO;
+    const pos = new THREE.Vector3(I.POS[0], I.POS[1], I.POS[2]);
     this.spawn('basic', pos, {
+      effect: false,                            // Boss 代理不走光点，直接落地
       onSpawn: (b) => {
         const hp = MAGICIAN_BOSS.HP_BASE + (this.getPlayerDPS ? this.getPlayerDPS() : 0) * MAGICIAN_BOSS.HP_DPS_SEC;
         b.maxHp = hp; b.hp = hp;
         b.isBoss = true;
         b.controlled = true;     // 由本控制器逐帧接管位置
         b.damageReduction = 0;   // 直接命中即全额扣血
-        b.radius = MAGICIAN_BOSS.PROXY_RADIUS;
-        b.effectiveRadius = MAGICIAN_BOSS.PROXY_RADIUS;
-        b.hitRadius = MAGICIAN_BOSS.PROXY_RADIUS;
         b.score = 2000;
         b.mesh.scale.setScalar(1);
         b.mesh.visible = false; // 隐藏整个代理子树（最外层球 + 占位胶囊/眼睛/名牌子网格），避免 Boss 脚下出现"可见基础小怪"
         this._proxy = b;
+        this._applyRadius(this._radiusForHeight(I.SCALE_HEIGHT)); // 命中半径随体型同步（开场小 → 变大后大）
         this.waves.bossSpawned = true;   // 落地即置位（防飞行期 cleared 误判）
         if (!this._hpBar) this._hpBar = new BossHealthBar3D(this.scene); // Boss 头顶 3D 血条
       },
@@ -76,15 +138,13 @@ export class MagicianBoss {
         this._modelRoot.updateMatrixWorld(true);
         const box = new THREE.Box3().setFromObject(this._modelRoot);
         const size = box.getSize(new THREE.Vector3());
-        // 缩放：先算「2m 基准缩放」(SCALE/size.y)，再 ×MODEL_SCALE(10) → 最终放大 10 倍(20m)
-        const baseScale = size.y > 0 ? MAGICIAN_BOSS.SCALE / size.y : 1;
-        const s = baseScale * MAGICIAN_BOSS.MODEL_SCALE;
-        this._modelRoot.scale.setScalar(s);
+        this._sizeY = size.y > 0 ? size.y : 1;
+        this._setModelHeight(MAGICIAN_BOSS.INTRO.SCALE_HEIGHT);   // 开场体型 = 第15关开场魔术师
         // 三轴旋转（度→弧度）与相对代理的偏移（米），均集中在 constants.MAGICIAN_BOSS
         const rot = MAGICIAN_BOSS.MODEL_ROTATION;
         this._modelRoot.rotation.set(rot.x * D2R, rot.y * D2R, rot.z * D2R);
         const off = MAGICIAN_BOSS.MODEL_POSITION;
-        const p0 = MAGICIAN_BOSS.POSITIONS[0];
+        const p0 = MAGICIAN_BOSS.INTRO.POS;
         this._modelRoot.position.set(p0[0] + off.x, p0[1] + off.y, p0[2] + off.z);
         this.scene.add(this._modelRoot);
         if (gltf.animations && gltf.animations.length) {
@@ -97,9 +157,52 @@ export class MagicianBoss {
       .catch((e) => console.warn('[MagicianBoss] 模型加载失败:', e));
   }
 
+  // ===== 体型 / 命中半径换算 =====
+  // 常规体型 = SCALE(基准2m) × MODEL_SCALE(5) = 10m；开场体型与放大后体型都由「目标身高(米)」直接换算，
+  // 命中半径与血条高度按同一比例缩放 → 瞄准躯干的手感不随体型变化。
+  _normalHeight() { return MAGICIAN_BOSS.SCALE * MAGICIAN_BOSS.MODEL_SCALE; }
+  _bigHeight() { return this._normalHeight() * MAGICIAN_BOSS.INTRO.BIG_MULT; }
+  _setModelHeight(h) { if (this._modelRoot) this._modelRoot.scale.setScalar(h / this._sizeY); }
+  _radiusForHeight(h) { return MAGICIAN_BOSS.PROXY_RADIUS * (h / this._normalHeight()); }
+  _applyRadius(r) {
+    const b = this._proxy;
+    if (!b) return;
+    b.radius = r; b.effectiveRadius = r; b.hitRadius = r;
+  }
+  // 瞬间变大：模型身高 ×BIG_MULT，命中半径与血条高度同步
+  _grow() {
+    if (this._big) return;
+    this._big = true;
+    const h = this._bigHeight();
+    this._setModelHeight(h);
+    this._applyRadius(this._radiusForHeight(h));
+    this._hpBarOffsetY = MAGICIAN_BOSS.HP_BAR_OFFSET_Y * (h / this._normalHeight());
+  }
+
   update(dt) {
     if (this._disposed) return;
     if (this._mixer) this._mixer.update(dt);
+
+    this.phaseTimer += dt;
+    if (this.phase === 'intro') {
+      this._updateIntro();
+    } else {
+      this._updateSummonPool(dt);          // 召唤池维护（开场念白期间不召唤）
+      const P = MAGICIAN_BOSS.PHASE;
+      if (this.phase === 'laser') {
+        if (this._laser) this._laser.update(dt);
+        if (this.phaseTimer >= P.LASER) this._enterPhase('glass');
+      } else if (this.phase === 'glass') {
+        if (this._glass) this._glass.update(dt);
+        if (this.phaseTimer >= P.GLASS) this._enterPhase('nine');
+      } else if (this.phase === 'nine') {
+        if (this._nine) this._nine.update(dt);
+        if (this._ballWall) this._ballWall.update(dt);   // 第三阶段：黑白球墙（浮动 → 脱墙追击 → 4×8 自爆）
+        if (this.phaseTimer >= P.NINE) this._enterPhase('laser'); // 循环 A→B→C
+      }
+    }
+
+    // 代理位置 → 视觉模型（放在阶段推进之后：闪现/飞行同帧跟随，不慢一帧）
     if (this._modelRoot && this._proxy && this._proxy.alive) {
       const off = MAGICIAN_BOSS.MODEL_POSITION;
       this._modelRoot.position.set(
@@ -108,13 +211,13 @@ export class MagicianBoss {
         this._proxy.mesh.position.z + off.z
       );
     }
-    // 分帧消费精英队列（错峰，防同帧多个重型 GLB 解码卡死主线程）
-    if (this._summonQueue.length) this._drainSummonQueue();
+    // 分帧消费补充队列（错峰，防同帧多个重型 GLB 解码卡死主线程）
+    if (this._refillQueue.length) this._drainRefillQueue();
     // Boss 头顶 3D 血条：跟随代理位置（头顶上方）+ 实时血量
     if (this._hpBar && this._proxy && this._proxy.alive) {
       this._hpBar.update(this._proxy.hp, this._proxy.maxHp);
       this._hpBar.setPosition(
-        this._tmpV.copy(this._proxy.mesh.position).setY(this._proxy.mesh.position.y + MAGICIAN_BOSS.HP_BAR_OFFSET_Y)
+        this._tmpV.copy(this._proxy.mesh.position).setY(this._proxy.mesh.position.y + this._hpBarOffsetY)
       );
     }
     // 通关判定：代理死亡或被移除
@@ -122,36 +225,41 @@ export class MagicianBoss {
       this._win();
       return;
     }
-
-    this.phaseTimer += dt;
-    // 阶段召唤节拍：按时间点触发波次 + 分帧落地（第一阶段激光 / 第二阶段玻璃墙）
-    this._summonTick();
-    const P = MAGICIAN_BOSS.PHASE;
-    if (this.phase === 'intro') {
-      if (this.phaseTimer >= P.INTRO) this._enterPhase('laser');
-    } else if (this.phase === 'laser') {
-      if (this._laser) this._laser.update(dt);
-      if (this.phaseTimer >= P.LASER) this._enterPhase('glass');
-    } else if (this.phase === 'glass') {
-      if (this._glass) this._glass.update(dt);
-      if (this.phaseTimer >= P.GLASS) this._enterPhase('nine');
-    } else if (this.phase === 'nine') {
-      if (this._nine) this._nine.update(dt);
-      if (this._ballWall) this._ballWall.update(dt);   // 第三阶段：黑白球墙（浮动 → 脱墙追击 → 4×8 自爆）
-      if (this.phaseTimer >= P.NINE) this._enterPhase('laser'); // 循环 A→B→C
-    }
   }
+
+  // ===== 开场演出 =====
+  // 念白（原地）→ 0.6s 飞回 Boss 位 → 瞬间变大。位置逐帧由纯函数 introPose 给出，
+  // 无状态机、无累积误差；放大用 _big 一次性触发。
+  _updateIntro() {
+    const s = introPose(MAGICIAN_BOSS, this.phaseTimer);
+    if (this._proxy && this._proxy.alive) this._proxy.mesh.position.set(s.pos[0], s.pos[1], s.pos[2]);
+    if (s.big) this._grow();
+    if (this.phaseTimer >= MAGICIAN_BOSS.PHASE.INTRO) this._finishIntro(); // 兜底：语音没播/加载失败
+  }
+
+  // 开场结束（语音播完 / 兜底超时共用）：确保已到 Boss 位并变大，然后进激光阶段
+  _finishIntro() {
+    if (this.phase !== 'intro') return;
+    const d = MAGICIAN_BOSS.POSITIONS[0];
+    if (this._proxy && this._proxy.alive) this._proxy.mesh.position.set(d[0], d[1], d[2]);
+    this._grow();
+    this._enterPhase('laser');
+  }
+
+  /** 开场语音播完（game.js 的 ended 回调）：立刻结束开场演出，进激光阶段 */
+  onOpeningVoiceEnd() { this._finishIntro(); }
 
   _enterPhase(phase) {
     this._clearPhaseSystems();
     this.phase = phase;
     this.phaseTimer = 0;
-    this._summoned = 0;                          // 新阶段重置召唤波计数
+    this._refillCd = 0;                          // 新阶段立刻允许补充（补的精英怪种类随阶段变化）
+    if (phase !== 'intro') this._grow();         // 兜底：万一没走完开场演出，也保证是「大 Boss」体型
     const idx = phase === 'glass' ? 1 : phase === 'nine' ? 2 : 0;
     if (this._proxy && this._proxy.alive) this._proxy.mesh.position.set(...MAGICIAN_BOSS.POSITIONS[idx]);
 
     if (phase === 'laser') {
-      // 第一阶段：激光机制保留，召唤改由 _summonTick 按时间点分 3 波（25 小怪冲锋 + 5 幽灵）
+      // 第一阶段：激光机制保留（召唤统一由 _updateSummonPool 维护，精英怪 = 盾兵怪）
       if (this._modelRoot) this._modelRoot.rotation.y = 0;            // 回正前：复位朝向
       this._laser = new BossLaserGroup(this.scene, this.getPlayerPos, this.damagePlayer, MAGICIAN_BOSS.LASER_GROUP);
     } else if (phase === 'glass') {
@@ -161,7 +269,6 @@ export class MagicianBoss {
         (dmg) => { if (this._proxy && this._proxy.alive) this._proxy.takeDamage(dmg); }
       );
       this.waves.magicianGlassWall = this._glass; // 供 game.js 子弹钩子拦截
-      // 第二阶段：玻璃墙机制保留，召唤改由 _summonTick 分 2 波（每波 10 盾兵）
     } else if (phase === 'nine') {
       // 第三阶段：原「九宫格」由「黑白球墙」替代（ORB_WALL.ENABLED=false 可回退）
       if (this._modelRoot) this._modelRoot.rotation.y = -Math.PI / 2; // 向右闪现：Y 反向 -90°（头朝玩家）
@@ -181,106 +288,91 @@ export class MagicianBoss {
     this.waves.magicianGlassWall = null;
   }
 
-  // —— 阶段召唤节拍 ——
-  // 第一/第二阶段内按「首次延迟 + 均分时间点」分波召唤，内容与数量见 MAGICIAN_BOSS.SUMMON。
-  // 时间点 = FIRST_DELAY + 已召唤波数 × (阶段时长 / 波数)，故改 PHASE.LASER / PHASE.GLASS 会同步调整节奏。
-  _summonTick() {
+  // ===== 召唤池（第三十八修）=====
+  // 每帧：① 清掉已死的召唤物 ② 消费补充队列（每帧最多 PER_FRAME 只）③ 总数 < REFILL_AT 时补满到 MAX。
+  // 「场上」含「已发出光点但还没落地」的部分，避免光点在飞时被重复补满。
+  _updateSummonPool(dt) {
     if (!MAGICIAN_BOSS.SPAWN_ENEMIES) return;
-    const S = MAGICIAN_BOSS.SUMMON;
-    const times = this.phase === 'laser' ? S.LASER_TIMES
-                : this.phase === 'glass' ? S.GLASS_TIMES : 0;
-    if (!times) return;                                   // 第三阶段/开场不召唤
-    if (this._summoned >= times) return;
-    const dur = this.phase === 'laser' ? MAGICIAN_BOSS.PHASE.LASER : MAGICIAN_BOSS.PHASE.GLASS;
-    const at = S.FIRST_DELAY + this._summoned * (dur / times);
-    if (this.phaseTimer < at) return;
-    this._summoned++;
-    this._summonWave(at);
-  }
-
-  // 组装本波召唤怪：第一阶段=小怪冲锋 + 幽灵；第二阶段=盾兵
-  //   at = 本波的时间点（阶段内秒数），用于反推「剩余时间 → 出生距离」
-  _summonWave(at) {
-    const S = MAGICIAN_BOSS.SUMMON;
-    const dur = this.phase === 'laser' ? MAGICIAN_BOSS.PHASE.LASER : MAGICIAN_BOSS.PHASE.GLASS;
-    const remainT = Math.max(S.MIN_REMAIN, dur - at);   // 本波召唤后到阶段结束的剩余时间
-    if (this.phase === 'laser') {
-      // 第一阶段：25 小怪冲锋 + 5 忍者（忍者由 _clampToRing 锁在 10~15m 环带内，不会靠近玩家）
-      this._summonKind('basic', S.LASER_BASIC, S.LASER_BASIC_HP, S.LASER_BASIC_SPEED, remainT);
-      this._summonKind('ninja', S.LASER_NINJA, S.LASER_NINJA_HP, S.LASER_NINJA_SPEED, remainT);
-    } else if (this.phase === 'glass') {
-      // 第二阶段：10 骑士（默认精英骑士 = 纯骑士无盾牌）
-      this._summonKind(S.GLASS_KNIGHT_TYPE || 'eliteKnight', S.GLASS_KNIGHT, S.GLASS_KNIGHT_HP, S.GLASS_KNIGHT_SPEED, remainT);
+    const P = MAGICIAN_BOSS.POOL;
+    // ① 清掉已死亡/已被移除的
+    if (this._minions.length) {
+      this._minions = this._minions.filter((b) => b.alive && this.balloons.list.includes(b));
     }
+    // ② 补充冷却（两次补充之间留出间隔，避免旧波刚清完就连着刷）
+    if (this._refillCd > 0) this._refillCd = Math.max(0, this._refillCd - dt);
+    if (this._refillQueue.length || this._refillCd > 0) return;
+    // ③ 触发补充
+    let elites = 0;
+    for (const b of this._minions) if (b._bossElite && b.alive) elites++;
+    const plan = planRefill(MAGICIAN_BOSS, {
+      alive: this._minions.length,
+      elites,
+      pending: this._pendingRefill,
+      pendingElite: this._pendingElite,
+      queued: 0,
+      queuedElite: 0,
+    });
+    if (!plan) return;
+    for (let i = 0; i < plan.elites; i++) this._refillQueue.push({ elite: true });
+    for (let i = 0; i < plan.basics; i++) this._refillQueue.push({ elite: false });
+    this._refillCd = P.REFILL_COOLDOWN;
+    console.log(`[MagicianBoss] 补充召唤：精英 ${plan.elites} + 基础 ${plan.basics}（阶段 ${this.phase}）`);
   }
 
-  // 从场地中心(原点)沿 ang 方向走到「气球自爆边界」的距离（矩形，按射线与矩形求交）
-  //   rad = 该怪的 effectiveRadius：game._checkExplosions 的判定是 |x|≤BOUND_X+rad、|z|≤BOUND_Z+rad，
-  //   所以半径大的怪（幽灵 2.4m / 盾兵 0.9m）实际会提前触界，必须按同一半径折算否则会早到。
-  _regionEdgeDist(ang, rad = 0) {
-    const a = MOVE.BOUND_X + rad, b = MOVE.BOUND_Z + rad;
-    const c = Math.abs(Math.cos(ang)), s = Math.abs(Math.sin(ang));
-    const rx = c > 1e-6 ? a / c : Infinity;
-    const rz = s > 1e-6 ? b / s : Infinity;
-    return Math.min(rx, rz);
-  }
-
-  // 把 count 个同类怪推入分帧队列
-  //   出生半径 = 「到 4×8 区域边界的距离」+「本波剩余时间内刚好能跑完的距离 ×(1±ARRIVE_JITTER)」
-  //   → 每只怪都恰好在阶段结束时抵达活动区域（自爆点），既不贴脸也不会远到看不见。
-  //   hp>0 → 覆盖血量；speed>0 → 覆盖移动速度（0=取敌种默认速度，距离仍按其真实速度计算）
-  _summonKind(type, count, hp, speed, remainT) {
-    if (!count || count <= 0) return;
-    const S = MAGICIAN_BOSS.SUMMON;
-    const t = ENEMY_TYPES[type];
-    const typeSpeed = t ? t.speed : 0;
-    const spd = speed > 0 ? speed : (typeSpeed > 0 ? typeSpeed : 1);  // 出生距离必须按「真实生效速度」算
-    const rad = t ? (t.radius || 0) * (t.scale || 1) : 0;             // 实际自爆边界要加上 effectiveRadius
-    const travel = spd * remainT * S.ARRIVE_FACTOR;                   // 剩余时间内能跑的距离
-    const jit = S.ARRIVE_JITTER || 0;
-    // 忍者：固有逻辑「不靠近玩家」——由 balloons._clampToRing 锁在距中心 SHURIKEN.RANGE_MIN~MAX 环带内，
-    //   永不进入 4×8 自爆区，故不套用「按剩余时间反推」，直接出生在该环带内。
-    const useRing = !!(S.NINJA_USE_RING && t && t.behavior === 'ninja');
-    for (let k = 0; k < count; k++) {
-      const ang = Math.random() * Math.PI * 2;
-      let r;
-      if (useRing) {
-        r = SHURIKEN.RANGE_MIN + Math.random() * Math.max(0, SHURIKEN.RANGE_MAX - SHURIKEN.RANGE_MIN);
-      } else {
-        const jitter = 1 + (Math.random() * 2 - 1) * jit;             // 距离抖动 → 抵达时间错开
-        r = this._regionEdgeDist(ang, rad) + travel * jitter;
-        r = THREE.MathUtils.clamp(r, S.SPAWN_R_MIN, S.SPAWN_R_MAX);
-      }
-      this._summonQueue.push({
-        type,
-        pos: new THREE.Vector3(Math.cos(ang) * r, 1 + Math.random() * 2, Math.sin(ang) * r),
-        hp: hp > 0 ? hp : 0,
-        speed: spd,                                                    // 覆盖为计算距离时用的速度，保证准时抵达
-      });
-    }
-  }
-
-  // 每帧最多落地 PER_FRAME 个（错峰，把 GLB 解码/立绘抓帧摊到多帧，关键防卡死）；单个失败不影响其余
-  _drainSummonQueue() {
-    const MAX_PER_FRAME = MAGICIAN_BOSS.SUMMON.PER_FRAME || 3;
+  // 每帧最多落地 PER_FRAME 只（错峰，把 GLB 解码/立绘抓帧摊到多帧，关键防卡死）；单个失败不影响其余
+  _drainRefillQueue() {
+    const MAX_PER_FRAME = MAGICIAN_BOSS.POOL.PER_FRAME || 3;
     let n = 0;
-    while (this._summonQueue.length && n < MAX_PER_FRAME) {
-      const item = this._summonQueue.shift();
+    while (this._refillQueue.length && n < MAX_PER_FRAME) {
+      const item = this._refillQueue.shift();
       try {
-        this.spawn(item.type, item.pos, {
-          onSpawn: (b) => {
-            if (item.hp > 0) { b.maxHp = item.hp; b.hp = item.hp; }
-            if (item.speed > 0) b.speed = item.speed;
-          },
-        });
+        this._spawnMinion(!!item.elite);
       } catch (e) {
-        console.warn('[MagicianBoss] 召唤失败:', item.type, e);
+        console.warn('[MagicianBoss] 召唤失败:', e);
       }
       n++;
     }
   }
 
-  // —— 已移除外圈基础怪：Boss 战不应出现基础怪（用户实测反馈）——
+  // 召唤一只：精英 = 当前阶段对应的精英怪种（POOL.ELITE_BY_PHASE），普通 = POOL.BASIC_TYPE。
+  // 出生点 = 距场地中心 POOL.SPAWN_R 米的随机环位；以敌种自身速度（不覆盖 speed）飘向玩家；
+  // 出现方式 = 从 Boss 身上飞出光点（waves._queueSpawn 的 opts.from）。
+  _spawnMinion(elite) {
+    const P = MAGICIAN_BOSS.POOL;
+    const type = elite ? (P.ELITE_BY_PHASE[this.phase] || P.BASIC_TYPE) : P.BASIC_TYPE;
+    const ang = Math.random() * Math.PI * 2;
+    const pos = new THREE.Vector3(
+      Math.cos(ang) * P.SPAWN_R,
+      P.SPAWN_Y_MIN + Math.random() * Math.max(0, P.SPAWN_Y_MAX - P.SPAWN_Y_MIN),
+      Math.sin(ang) * P.SPAWN_R
+    );
+    const opts = {
+      onSpawn: (b) => {
+        this._pendingRefill = Math.max(0, this._pendingRefill - 1);
+        if (elite) this._pendingElite = Math.max(0, this._pendingElite - 1);
+        b._bossElite = !!elite;
+        if (elite) b.isElite = true;   // 语义标记（外观不变，用于统计/后续扩展）
+        this._minions.push(b);
+      },
+    };
+    if (P.BEAM_ENABLED !== false) opts.from = this._beamOrigin();   // 光点从 Boss 身上飞出
+    this._pendingRefill++;
+    if (elite) this._pendingElite++;
+    this.spawn(type, pos, opts);
+  }
+
+  // 光点出发点 = Boss 代理位置 + POOL.BEAM_Y（约胸口高度）
+  _beamOrigin() {
+    const P = MAGICIAN_BOSS.POOL;
+    const p = (this._proxy && this._proxy.alive) ? this._proxy.mesh.position : null;
+    const base = p || {
+      x: MAGICIAN_BOSS.POSITIONS[0][0],
+      y: MAGICIAN_BOSS.POSITIONS[0][1],
+      z: MAGICIAN_BOSS.POSITIONS[0][2],
+    };
+    return new THREE.Vector3(base.x, base.y + P.BEAM_Y, base.z);
+  }
+
   _win() {
     if (this._disposed) return;
     this.dispose();
@@ -302,8 +394,11 @@ export class MagicianBoss {
     if (this._modelRoot) { this.scene.remove(this._modelRoot); this._modelRoot = null; }
     if (this._mixer) { try { this._mixer.stopAllAction(); } catch (e) { /* ignore */ } this._mixer = null; }
     if (this._hpBar) { this._hpBar.dispose(); this._hpBar = null; }
-    this._summonQueue.length = 0;
-    // 外圈小怪 / 精英由 balloons 统一管理，切关时整体清空；此处不单独移除
+    this._refillQueue.length = 0;
+    this._minions = [];
+    this._pendingRefill = 0;
+    this._pendingElite = 0;
+    // 场上召唤物由 balloons 统一管理，切关时整体清空；此处不单独移除
     this.waves.magicianGlassWall = null;
   }
 }

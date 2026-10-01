@@ -259,6 +259,36 @@ PC 接收端 HTTP 默认 **8443**，被占用时**自动 +1 重试至 8453**；
 头显通过 UDP 信标（组播 `224.0.0.100:8444`，每 2s）自动拿到**实际**端口，无需人工改。
 APK 本地游戏服务固定 **8080**。若现场 AP 开了**组播隔离**，信标到不了头显 → 需在 APK 配置页手工填 PC 地址。
 
+### ★ 第三十七修（2026-09-28）：端口被占用重试时**不再弹主进程报错**
+
+**现场症状**：平台点「启动游戏」后，PC 端弹出主进程错误框
+`A JavaScript error occurred in the main process / Uncaught Exception:`
+`Attempted to register a second handler for 'cfg:get'`（栈顶指向 `resources/app.asar/main.js` 的 `ipcMain.handle`）。
+
+**根因**：老写法是 `server.listen(port, '0.0.0.0', () => onListen(port))` + 端口占用时递归重试。
+Node 把 listen 的 callback 挂在**一次性** `'listening'` 上，而 **EADDRINUSE 时不会摘掉它** ——
+重试成功那次 `'listening'` 会把「旧回调 + 新回调」**一起触发**，于是 `onListen` 跑两遍，
+`ipcMain.handle('cfg:get')` 重复注册 → 抛异常 → 弹窗（异常抛出后 onListen 中断，进程留在半初始化状态）。
+
+还有更隐蔽的第二重后果：**第一遍已按旧端口建好了窗口**（`http://localhost:8443/__cast/index.html`），
+第二遍才把 `PORT` 改成新端口 ⇒ 窗口连的是**占用 8443 的那个程序**（通常是上一局没退干净的 EXE），
+而本进程的服务实际在 8444 —— 平台/头显仍连 8443，现场表现就是「PC 端像没起来」。
+
+**修法**：重试逻辑抽到 `tools/cast-pc/lib/net-listen.cjs`（`listenWithFallback`）：
+每次失败**显式 `removeListener('listening', …)`**（关键），再用 `done` 标记保证「成功/失败合计只回调一次」；
+`main.js` 的 `onListen` 再加一道重复调用告警（只告警不崩，避免现场被弹窗打断）。
+回归用例：`tests/listen-fallback.test.mjs`（根部 `npm test` 会跑；用旧实现跑必然失败 —— 实测会回调 2 次、端口分别是 8443/8444）。
+
+- **重打包边界**：改了 `tools/cast-pc/**` ⇒ EXE 必须重打（`cd tools/cast-pc && npm run dist`）。
+- **现场最小更新（不换 exe 名、不动平台登记路径）**：只把新包的
+  `tools\cast-pc\dist\win-unpacked\resources\app.asar` 覆盖到
+  `<平台游戏目录>\resources\app.asar`（例：`G:\01_Work\DXGames2\DeepmindHacker-2.0.5\resources\app.asar`）。
+  exe 名 / 图标 / 目录结构 / `resources\game-cfg\`（EXE 内置配置）都**不在** `app.asar` 里，
+  所以平台登记的 exe 路径与内置配置都不受影响。
+- **自检**：覆盖后重启 EXE，`GET http://127.0.0.1:8443/api/info` 里 `ver` 应为 **`1.4.1`**（第三十七修起）。
+- ⚠ 覆盖前先确认**没有残留的旧进程**（`tasklist | findstr /i deepmind`）—— 「8443 被占」的头号来源就是它，
+  此时新进程会退到 8444 并打日志提醒「平台/头显若写死 8443，会连到占用它的那个程序」。
+
 ---
 
 ## 附 · 2026-09-23 晚 第十八修（正式版裁剪与重打包边界）

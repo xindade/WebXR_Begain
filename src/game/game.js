@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { TEST } from '../core/constants.js';
 import { Player } from './player.js';
 import { BalloonManager } from './balloons.js';
-import { ShurikenManager } from './shurikens.js';
+import { ProjectileManager } from './projectiles.js';
+import { Vignette } from '../vr/vignette.js';
 import { BulletManager } from './bullets.js';
 import { WaveManager } from './waves.js';
 import { CardDraft } from './cardDraft.js';
@@ -82,9 +83,15 @@ export class Game {
 
     this.player = new Player(world.scene, this.rig);
     this.balloons = new BalloonManager(world.scene);
-    this.shurikens = new ShurikenManager(world.scene); // 忍者气球投掷物管理器
-    this.balloons.setShurikenManager(this.shurikens);  // 让气球系统驱动「最近忍者投掷」
-    this.shurikens.setOnHit((d) => this.player.takeDamage(d)); // 命中扣飞船血量（飞毯无独立 HP）
+    this.projectiles = new ProjectileManager(world.scene); // 远程投射物管理器（手里剑 / 鬼火 / 墨汁）
+    this.balloons.setProjectileManager(this.projectiles);  // 让气球系统驱动「同种怪里最近者投掷」
+    this.vignette = new Vignette(world.camera);            // 命中着色层（相机子节点，随头动）
+    // 命中：扣飞船血量（飞毯无独立 HP）+ 视野周边着色（鬼火=紫 / 墨汁=黑；手里剑无 TINT → 不着色）
+    this.projectiles.setOnHit((d, kind) => {
+      this.player.takeDamage(d);
+      const tint = this.projectiles.tintOf(kind);
+      if (tint != null) this.vignette.flash(tint);
+    });
     this.bullets = new BulletManager(world.scene);
     // DDA：内置战斗监测（每帧由 _ddaMetrics() 读取玩家/场上状态），喂给 WaveManager 调度出怪
     this.dda = new DifficultyController(() => this._ddaMetrics());
@@ -124,6 +131,7 @@ export class Game {
     this._introPreloadQueue = null; // 穿云窗顺序预载队列（[{url,radius,capture}]）
     this._introPreloadIdx = 0;     // 队列处理游标
     this.openingModel = null;  // 第3/9/15关开场动画模型（魔术师动画版），10秒后自动移除
+    this._openingVoiceSeq = 0; // 开场语音联动序号：切关/回菜单自增，使未播完的 ended 回调作废
     this._gameTime = 0;        // 全局累计时间（秒）：激光剑状态/每怪1秒限频的时间基准
     this._swordUntil = 0;      // 激光剑伤害状态结束时刻（this._gameTime 基准）
     this._swordReadyMarked = false; // 激光剑「已完全展开」标记：展开那一刻才起算 DURATION 秒（展开动画不计入）
@@ -221,7 +229,7 @@ export class Game {
     this.cast = cast;
     this.leftSword.setAudio(this.audio); // 注入音效管理器，供激光剑嗡鸣随剑出现/消失
     this.waves.audio = audio; // 注入音频到波次管理器（脸谱Boss 召唤语音用）
-    this.shurikens.setAudio(this.audio); // 注入音频，供手里剑投掷/命中音效
+    this.projectiles.setAudio(this.audio); // 注入音频，供投射物投掷/命中音效
   }
 
   // 游戏内日志：同时送往左手腕面板（VR 可见）和页面日志（预览可见、最高优先）
@@ -249,7 +257,8 @@ export class Game {
     this.input?.setGunMode(gunMode);
     this.player.input = this.input; // 让射速卡能触达真实节流源（input.setFireRateMul）
     this.balloons.clear();
-    this.shurikens.clear(); // 清忍者投掷物（与气球一并复位）
+    this.projectiles.clear(); // 清远程投射物（与气球一并复位）
+    this.vignette.clear();
     this.bullets.clear();
     this.score = 0;
     this.levelIndex = atIndex;
@@ -725,7 +734,7 @@ export class Game {
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon)   { this.dragon.dispose();   this.dragon = null; }
     if (this.cloudFx) { this.cloudFx.dispose(); this.cloudFx = null; } // 清穿云特效
-    if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清开场动画（防回菜单残留）
+    this._disposeOpening(); // 清开场动画 + 作废其语音联动（防回菜单残留）
     this.world._restoreFade(); // 恢复穿云淡入改写的材质（防回菜单残留半透明）
     this._introActive = false; this._introT = 0; // 复位开场门控
     this._introPreloadQueue = null; this._introPreloadIdx = 0; // 复位预载队列
@@ -733,7 +742,8 @@ export class Game {
     this.waves.clearPending();   // 清出怪光点（防回菜单残留）
     // 清理实体
     this.balloons.clear();
-    this.shurikens.clear(); // 清忍者投掷物（回菜单一并清理）
+    this.projectiles.clear(); // 清远程投射物（回菜单一并清理）
+    this.vignette.clear();
     this.bullets.clear();
     this._clearExplosions();
     if (this._buddhaFx) { this._buddhaFx.dispose(); this._buddhaFx = null; }
@@ -771,7 +781,7 @@ export class Game {
     if (this.grid) { this.grid.dispose(); this.grid = null; }
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon) { this.dragon.dispose(); this.dragon = null; }
-    if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; } // 清上一关残留的开场动画（防跨关泄漏）
+    this._disposeOpening(); // 清上一关残留的开场动画 + 作废其语音联动（防跨关泄漏）
     if (this._buddhaFx) { this._buddhaFx.dispose(); this._buddhaFx = null; } // 清上一关残留的如来神掌特效
     this._clearPortals(); // 清上一关残留的传送门装饰
     this.waves.clearPending();   // 清上一关残留出怪光点（防光点飞到新关卡）
@@ -780,8 +790,9 @@ export class Game {
     this._lastCell = 0;
     this._firstCardOfLevel = true;   // 每关首次抽卡才强制攻击紫（02关）
     this.balloons.clear();      // 防跨关残留气球（脸谱 Boss 装饰等）
-    this.shurikens.clear();     // 防跨关残留手里剑
-    this.bullets.clear();        // 防跨关残留子弹误击
+    this.projectiles.clear();   // 防跨关残留投射物
+    this.vignette.clear();      // 防跨关残留着色
+    this.bullets.clear();       // 防跨关残留子弹误击
     this.hud.clearCountdown();   // 关倒计时显示
     this.world.setSkyMood(lv.mood);
     // 飞毯显隐：第9关(laserMode='drive' 玻璃走格子)隐藏飞毯、保留脚下玻璃区域；其余关显示飞毯作玩家脚下活动区
@@ -831,7 +842,7 @@ export class Game {
       else if (lv.n === 15) this._pendingOpenVoice = 'music/魔法师九宫格.wav';
     } else if (lv.n === 18) {
       // 第18关 Boss 开头语音：延迟到穿云结束后再播
-      this._pendingOpenVoice = 'music/魔术师Boss开头.wav';
+      this._pendingOpenVoice = MAGICIAN_BOSS.INTRO.VOICE_URL;   // 第三十八修：URL 集中在 constants.MAGICIAN_BOSS.INTRO
     } else if (lv.n === 6) {
       // 第6关开局只播蓝色脸谱「儿郎冲锋」；红/黑阶段语音由脸谱Boss相位切换时播
       this._pendingOpenVoice = 'music/儿郎冲锋.mp3';
@@ -937,12 +948,11 @@ export class Game {
       addUrl(DRAGON.HEAD_MODEL);                  // 第12关龙 Boss 龙头 GLB（未被 main 预载）
       addType('basic');  addType('ninja');       // 龙 Boss 召唤用基础怪/忍者 GLB + DepthSprite 立绘：进关预载，避免首召冷加载卡顿
     } else if (lv.boss === 'magician') {
-      // 第18关魔术师 Boss：三阶段召唤物（25 小怪 / 5 忍者 / 10 骑士）的 GLB + DepthSprite 立绘抓帧
+      // 第18关魔术师 Boss：召唤池（普通怪 + 三阶段精英怪：盾兵/幽灵/章鱼）的 GLB + DepthSprite 立绘抓帧
       // 全部在穿云窗内预热 —— 抓帧 = 12 帧离屏渲染 + readRenderTargetPixels 同步回读，非常重；
       // 原先本关没有预载分支，导致阶段召唤瞬间才首次抓帧，正是「召唤时明显卡顿」的主因。
-      addType('basic');
-      addType('ninja');
-      addType(MAGICIAN_BOSS.SUMMON.GLASS_KNIGHT_TYPE || 'eliteKnight');
+      addType(MAGICIAN_BOSS.POOL.BASIC_TYPE || 'basic');
+      for (const _mt of Object.values(MAGICIAN_BOSS.POOL.ELITE_BY_PHASE)) addType(_mt);
     } else if (!isBoss(lv) && !isLaser(lv)) {
       // 普通/危机关（waves）：收集所有可能出怪类型
       const types = new Set();
@@ -1119,6 +1129,7 @@ export class Game {
     else if (this.state === 'intro') this._updateIntro(dt);
     // 通关横幅（魔术师Boss）：始终驱动，10s 后自动退出（不依赖关卡/抽卡状态）
     if (this.waves && this.waves._winBanner) this.waves._winBanner.update(dt);
+    this.vignette.update(dt);   // 命中着色：上色→褪色，结束后自动隐藏
   }
 
   // 穿云结束后统一启动本关 BGM + 开场语音（雾气转场期间一律静音）
@@ -1130,9 +1141,44 @@ export class Game {
       this.audio?.startBGM();                // 起播（雾气结束才响）
       if (kind === 'boss') this.audio?.playBossSting(); // Boss 进场演出：升调+铜锣+三连太鼓
     }
-    if (this._pendingOpenVoice) this.audio?.playVoice(this._pendingOpenVoice);
+    if (this._pendingOpenVoice) {
+      const _voiceEl = this.audio?.playVoice(this._pendingOpenVoice);
+      this._bindOpeningVoice(_voiceEl);   // 机制关(3/9/15)：语音播完 → 魔术师同步收场
+    }
     this._pendingBgm = null;
     this._pendingOpenVoice = null;
+  }
+
+  // 开场语音联动：语音播完（ended）→ ①机制关(3/9/15)魔术师动画同步收场 ②第18关魔术师 Boss 结束开场演出、进激光阶段。
+  // 解决「动画 SHOW_SECONDS(10s) 比语音(5.9~7.5s) 长 2~4 秒」的不匹配。
+  // 语音加载失败 / ended 不触发时，仍由 OpeningModel.SHOW_SECONDS 与 MAGICIAN_BOSS.PHASE.INTRO 各自兜底。
+  _bindOpeningVoice(el) {
+    if (!el) return;
+    const seq = ++this._openingVoiceSeq;
+    // 第18关标定用：把语音当前时间打进留痕，便于现场确认「我就是Boss中的Boss」对应秒数
+    // （对齐后改 userConfig.MAGICIAN_BOSS.INTRO.CUE_AT，或把 INTRO.LOG_VOICE 改 false 关掉）
+    if (MAGICIAN_BOSS.INTRO.LOG_VOICE && LEVELS[this.levelIndex] && LEVELS[this.levelIndex].n === 18) {
+      const step = MAGICIAN_BOSS.INTRO.LOG_STEP || 0.5;
+      let next = step;
+      el.addEventListener('timeupdate', () => {
+        if (seq !== this._openingVoiceSeq) return;
+        if (el.currentTime < next) return;
+        next += step;
+        this.log('开场语音 ' + el.currentTime.toFixed(1) + 's / ' + (el.duration || 0).toFixed(1) + 's');
+      });
+    }
+    el.addEventListener('ended', () => {
+      if (seq !== this._openingVoiceSeq) return;   // 已切关/已换关：回调作废
+      if (this.openingModel && OPENING_MAGICIAN.FOLLOW_VOICE) { this.openingModel.dispose(); this.openingModel = null; }
+      const mb = this.waves && this.waves._magicianBoss;   // 第18关：结束开场演出 → 激光阶段
+      if (mb && mb.onOpeningVoiceEnd) mb.onOpeningVoiceEnd();
+    }, { once: true });
+  }
+
+  // 释放开场魔术师动画，并作废其语音联动回调（切关 / 回菜单共用）
+  _disposeOpening() {
+    this._openingVoiceSeq++;
+    if (this.openingModel) { this.openingModel.dispose(); this.openingModel = null; }
   }
 
   // Boss 关程序化 BGM 升压：按「战斗时长」与「掉血进度」取较大者，ramp 到目标强度（0.45→1.0）
@@ -1217,7 +1263,7 @@ export class Game {
     // 气球以玩家世界位置为终点移动（所有怪追玩家）；碰飞毯区域自爆逻辑不变（见 _checkExplosions）
     this.balloons.update(dt, pp, this.world.camera);
     this._updateBasicVoice(dt); // 基础怪群体语音：数量达标播放一次，停顿后再判断
-    this.shurikens.update(dt, pp); // 手里剑飞行/自旋/命中回收（玩家位置 pp = rig 头部世界坐标）
+    this.projectiles.update(dt, pp); // 投射物飞行/自旋/命中回收（玩家位置 pp = rig 头部世界坐标）
     if (this.dragon) {
       this.dragon.update(dt, pp);   // 龙 Boss：逐帧接管龙气球位置
     } else {
@@ -1894,7 +1940,8 @@ export class Game {
     this._restoreSnapshot();
     this.balloons.clear();
     this._basicVoiceTimer = 0; this._basicVoiceEl = null; // 重开：清零基础怪语音停顿计时
-    this.shurikens.clear(); // 重开本关一并清手里剑
+    this.projectiles.clear(); // 重开本关一并清投射物
+    this.vignette.clear();
     this.bullets.clear();
     // 不调 _clearExplosions()：让死亡爆炸特效在 0.4s 内自然消亡
     this._respawnKeepPosition();   // 死亡重开：保留玩家水平位置（现实站在哪，游戏里就还在哪），只把高度拉回 0
@@ -1998,6 +2045,8 @@ export class Game {
     } else if (lv.kind === 'boss' || lv.kind === 'laser') {
       // Boss 关(6/12) + 机制关(9/15)：抽 4–7 池（技能消耗/技能伤害/自我修复/生命）
       plan = { pool: ['skillCost', 'skillDamage', 'selfRepair', 'hp'] };
+      // 第9关：必定出一张回血卡（自我修复优先，其次生命上限；两张都满级时退化为战场补给）
+      if (lv.n === 9) plan.guarantee = ['selfRepair', 'hp'];
     } else {
       // 普通/危机关：抽 1–5 池（射速/子弹/攻击/技能消耗/技能伤害）
       plan = { pool: ['fireRate', 'multiShot', 'atk', 'skillCost', 'skillDamage'] };
@@ -2011,7 +2060,7 @@ export class Game {
       getScore: () => this.score,
       spendScore: (cost) => { this.score -= cost; },
       pool: plan.pool || null,                 // 普通/Boss/机制关：属性卡池（抽 3 不重复）
-      guarantee: plan.guarantee || null,        // 01/02 关：指定卡必出（multiShot / fireRate）
+      guarantee: plan.guarantee || null,        // 必出卡：01/02 关单卡；第9关回血组（数组，取第一张可用）
       fixedSkills: plan.fixedSkills || null,    // 第三关：固定技能卡
       onSkill: (id) => this._applySkillCard(id),
       onCollect: (id) => this._collectedCards.push(id), // 本局收集：供第18关汇总
@@ -2076,7 +2125,8 @@ export class Game {
     VRPlusGame.terminate();   // cmd 5 中途结束（飞船坠落 / 失败）
     this.log('飞船坠落，游戏结束');
     this.balloons.clear();
-    this.shurikens.clear(); // 游戏结束清手里剑
+    this.projectiles.clear(); // 游戏结束清投射物
+    this.vignette.clear();
     this.bullets.clear();
     this.hud.message('飞船坠落', `得分 ${this.score} · 按「开始游戏」重来`, '#e74c3c');
     this.hud.showStart();
@@ -2089,7 +2139,8 @@ export class Game {
     this._endRound('全部消灭（通关）');   // cmd 5 兜底：通关暂未实现 cmd 6 结算，先按中途结束上报
     this.log('全部消灭，通关！');
     this.balloons.clear();
-    this.shurikens.clear(); // 通关清手里剑
+    this.projectiles.clear(); // 通关清投射物
+    this.vignette.clear();
     this.bullets.clear();
     this.hud.clearCountdown();
     this.hud.message('通关！', `得分 ${this.score} · 按「开始游戏」重新挑战`, '#2ecc71');

@@ -11,7 +11,9 @@ registerHooks({
 if (typeof globalThis.document === 'undefined') {
   const gradient = { addColorStop() {} };
   const ctx = new Proxy({}, {
-    get: (_t, key) => (key === 'createRadialGradient' || key === 'createLinearGradient' ? () => gradient : () => {}),
+    get: (_t, key) => (key === 'createRadialGradient' || key === 'createLinearGradient' ? () => gradient
+      : key === 'measureText' ? () => ({ width: 0 })   // 血条/横幅等 Canvas2D 文本量宽
+      : () => {}),
   });
   globalThis.document = { createElement: () => ({ width: 0, height: 0, getContext: () => ctx }) };
 }

@@ -1,7 +1,9 @@
 // 敌人配置（依据 IMA 知识库「小怪设计」文件夹 10 个小怪精确数值）。
 // 每个小怪有专用 GLB 模型则填 model，无模型则留空 → 走程序化占位（彩色胶囊+眼睛）。
-// 行为 behavior 决定移动/攻击逻辑；当前原型完整实现 basic / summon / shield / heal / treasure / ghost / ninja 的移动与核心机制，
-// 其余（dragonhead / octopus / chest 的弹卡 / ninja 手里剑）以基础移动+占位外观呈现，特殊攻击后续按知识库逐项补齐。
+// 行为 behavior 决定移动/攻击逻辑；basic / summon / shield / heal / ninja / chest / ghost / octopus / treasure
+// 的移动与核心机制均已完整实现 —— 第三十五修起，幽灵「鬼火」与章鱼「墨汁」套用忍者的投射物发射方式
+// （同种怪里只有最靠近玩家的那一只发射；命中会扣血并把玩家视野周边染一下色，见 src/game/projectiles.js、src/vr/vignette.js）。
+// 目前仅剩 龙头怪 dragonhead 的 cloud(造云隐身) / fireball(火球) 未实现，暂以基础移动 + 占位外观呈现。
 //
 // 速度说明（基准 = 基础怪 0.5 m/s）：
 //   0.5   = 基础怪（基准，缓慢奔向玩家）
@@ -56,7 +58,7 @@ export const ENEMY_TYPES = {
     model: 'Model/忍者.glb',
     blinkInterval: 3.0,  // 闪现间隔(s)
     blinkRange: 5.0,     // 闪现范围(m)
-    shurikenInterval: 3.0, shurikenDamage: 5, // 手里剑（后续补齐抛射）
+    // 单发伤害不在此配置：手里剑走 constants.SHURIKEN.DAMAGE（投掷节奏见同处的 APPEAR/CHARGE/BLINK_DELAY）
     tint: 0x2d3436,
   },
   // —— 06 宝箱怪 ——
@@ -86,7 +88,9 @@ export const ENEMY_TYPES = {
     behavior: 'ghost', selfDamage: 10,
     scale: 3,   // 同上：放大3倍 + 受击范围同步
     model: 'Model/幽灵.glb',
-    ghostFireInterval: 3.0, ghostFireCharge: 2.0, ghostFireDamage: 10, // 鬼火（蓄力2s后显形）
+    ghostFireInterval: 3.0,   // 开火周期(s)：每 3s 一轮
+    ghostFireCharge: 2.0,     // 蓄力时长(s)：这 2s 显形（可被击中）并显示紫色蓄力光球，结束时投鬼火
+    ghostFireDamage: 5,       // 鬼火命中伤害
     tint: 0xdfe6e9,
   },
   // —— 08 龙头怪 ——
@@ -94,8 +98,8 @@ export const ENEMY_TYPES = {
     id: 'dragonhead', name: '龙头怪',
     hp: 1000, speed: 0, radius: 1.0, score: 50,
     behavior: 'dragonhead', selfDamage: 10,
-    cloudInterval: 4.0,  // 制造云朵隐藏自己及周围
-    fireballInterval: 4.0, fireballDamage: 10, // 火球砸玩家（后续补齐抛射）
+    cloudInterval: 4.0,  // TODO 未实现：制造云朵隐藏自己及周围
+    fireballInterval: 4.0, fireballDamage: 10, // TODO 未实现：火球砸玩家
     model: 'Model/龙头.glb',
   },
   // —— 09 聚宝盆怪 ——
@@ -116,7 +120,9 @@ export const ENEMY_TYPES = {
     behavior: 'octopus', selfDamage: 5,
     scale: 3,   // 缩放倍率(单位:倍)：精英怪整体放大3倍 → 视觉 + 受击范围 同步放大；不写则默认 1 倍
     model: 'Model/章鱼.glb',
-    inkInterval: 3.0, inkDuration: 1.0, inkDamage: 5, // 喷墨污染视线（后续补齐屏幕遮挡）
+    inkInterval: 3.0,   // 开火周期(s)：每 3s 一轮
+    inkDuration: 1.0,   // 蓄力时长(s)：结束时喷出一团墨
+    inkDamage: 5,       // 墨汁命中伤害（命中后玩家视野周边短暂变黑）
     tint: 0x6c5ce7,
   },
 

@@ -338,6 +338,51 @@ export const SHURIKEN = {
   BLINK_DELAY: 1.0,  // 投掷后到开始闪现的间隔（秒）：即「扔出去 1 秒后再开始闪现」
 };
 
+// ============================================================
+// 远程投射物（第三十五修）：幽灵怪「鬼火」/ 章鱼怪「墨汁」套用忍者的发射方式
+//   · 与 SHURIKEN 同构（SPEED / DAMAGE / HIT_RADIUS / MAX_LIFE / SIZE / SPIN），
+//     由 src/game/projectiles.js 的 ProjectileManager 统一使用：spawn(kind, 出生点, 目标点)。
+//   · 发射规则与忍者一致：**同种怪里只有最靠近玩家的那一只**真正投出（balloons.isNearestLauncher），
+//     蓄力期头顶显示蓄力光球，蓄力结束即投掷。
+//   · TINT = 命中玩家后「视野周边着色」的颜色（见 src/vr/vignette.js；null = 不着色，如手里剑）。
+//   · 单发伤害以敌人配置优先（enemies.js 的 ghostFireDamage / inkDamage），此处为兜底默认值。
+// 这三块在 src/core/userConfig.js 里有同名配置 → 改那边刷新即生效，不用改这里。
+// ============================================================
+export const PROJECTILE = {
+  GHOST_FIRE: {
+    SPEED:      13.0,   // 飞行速度（米/秒）
+    DAMAGE:      5.0,   // 命中扣飞船血量（兜底值；实际以 enemies.ghostFireDamage 为准）
+    HIT_RADIUS:  0.7,   // 命中判定半径（米）
+    MAX_LIFE:    4.0,   // 最长存活（秒）：超时自动回收
+    SIZE:        0.26,  // 视觉半径（米）
+    SPIN:        0.0,   // 自旋角速度（度/秒）：鬼火不转
+    COLOR:  0xb46bff,   // 核心颜色（紫）
+    GLOW:   0x8a2be2,   // 外发光颜色（加色光晕）；null = 不发光晕
+    TINT:   0xb46bff,   // 命中后视野周边着色（紫）
+  },
+  INK: {
+    SPEED:      12.0,   // 飞行速度（米/秒）
+    DAMAGE:      5.0,   // 命中扣飞船血量（兜底值；实际以 enemies.inkDamage 为准）
+    HIT_RADIUS:  0.8,   // 命中判定半径（米）
+    MAX_LIFE:    4.0,   // 最长存活（秒）
+    SIZE:        0.36,  // 视觉半径（米）
+    SPIN:       55.0,   // 翻滚角速度（度/秒）
+    COLOR:  0x12121e,   // 墨色（近黑，留一点蓝以便在暗夜关卡里仍能看出飞行轨迹）
+    GLOW:   null,       // 墨汁不发光晕
+    TINT:   0x05050c,   // 命中后视野周边着色（黑）
+  },
+  // —— 命中着色层（src/vr/vignette.js）：贴在相机前的「视野周边着色」，中心透明、边缘着色 ——
+  VIGNETTE: {
+    ENABLED:  true,   // 总开关：false = 只扣血、不着色
+    DIST:     0.42,   // 距相机距离(m)：越小越像「眼睛被打花」，越大越像「面前有块玻璃」
+    MARGIN:   1.18,   // 尺寸余量：按相机 FOV 算出的平面再乘此值（>1 保证铺满视野）
+    ASPECT:   1.15,   // 宽高比（XR 单眼约 1.0~1.2）
+    OPACITY:  0.55,   // 峰值不透明度 0~1
+    RISE:     0.10,   // 上色时间(s)
+    FADE:     0.55,   // 褪色时间(s)
+  },
+};
+
 // Boss 关程序化 BGM 升压参数（见 src/vr/audio.js _stepBoss + game.js _updateBossIntensity）
 export const BOSS_BGM = {
   START_INTENSITY: 0.45,  // 进关起步强度（一进场就有 ostinato + 心跳）
@@ -486,7 +531,8 @@ export const OPENING_MAGICIAN = {
   3:  { pos: [0, 1.4, -5], scaleHeight: 2.0 },   // 第3关 · 激光搭阵：玩家正前5米、离地1.4、约2米高
   9:  { pos: [0, 1.4, -5], scaleHeight: 2.0 },   // 第9关 · 玻璃走格子：同上
   15: { pos: [0, 1.4, -5], scaleHeight: 2.0 },   // 第15关 · 九宫格翻转：同上
-  SHOW_SECONDS: 10,   // 出现后循环播放时长（秒），到时自动消失
+  SHOW_SECONDS: 10,   // 出现后循环播放时长（秒），到时自动消失（也是语音联动的兜底上限）
+  FOLLOW_VOICE: true, // true：机制关开场语音播完，魔术师同步消失（动画与语音对齐）；false：只按 SHOW_SECONDS 计时
 };
 
 // ===== 基础怪群体语音（"冲冲冲"）=====
@@ -878,7 +924,7 @@ export const MAGICIAN_BOSS = {
   MODEL_ROTATION: { x: 0, y: 0, z: 0 }, // 模型三轴旋转（度）：x=俯仰 y=偏航 z=翻滚
   MODEL_POSITION: { x: 0, y: 0, z: 0 }, // 视觉模型相对「命中代理」的偏移(米)：x=右 y=上 z=前(朝玩家为 -Z)；默认 0=完全贴合代理中心（改此可让模型浮在代理上方/侧方）
   PHASE: {
-    INTRO: 10,                // 开场动画时长 s（0-10s）
+    INTRO: 8,                 // 开场演出兜底上限 s：正常由开场语音播完（ended）触发进激光阶段，见下方 INTRO
     LASER: 10,                // 激光阶段 s（第 11-20s）
     GLASS: 10,                // 玻璃墙阶段 s（第 21-30s）
     NINE: 10,                 // 九宫格阶段 s（第 31-40s）
@@ -894,40 +940,46 @@ export const MAGICIAN_BOSS = {
     [30, 2, 0],     // 2 · 九宫格阶段：玩家右手边 30m（x=+30）
   ],
 
-  // —— 三阶段召唤（2026-09-10 新增；由 bossMagician._summonTick 按时间点分波触发）——
-  //   第一阶段（激光）：召唤 LASER_TIMES 次，每次 LASER_BASIC 个小怪冲锋 + LASER_NINJA 个忍者
-  //   第二阶段（玻璃墙）：召唤 GLASS_TIMES 次，每次 GLASS_KNIGHT 个骑士（类型见 GLASS_KNIGHT_TYPE）
-  //   第三阶段（黑白球墙）：不在此处召唤，见下方 ORB_WALL
-  //   ★ 召唤时间点 = FIRST_DELAY + 第 n 波 × (阶段时长 / 波数)，阶段时长见 PHASE.LASER / PHASE.GLASS
-  //   ★ 出生点 = 以「场地中心(原点)」为基准：沿该怪方位角到 4×8 区域边界的距离 + 它在「本波剩余时间」内
-  //     恰好能跑完的距离 → 每波怪都刚好在阶段结束时抵达活动区域（不早不晚、不会远到看不见）。
-  //     想更近/提前抵达：把 ARRIVE_FACTOR 调小（0.6=提前跑到）；想拉开抵达先后：调大 ARRIVE_JITTER。
-  //   ★ 数量是「每次」的量；实测卡顿优先降 LASER_BASIC / GLASS_KNIGHT，或把 PER_FRAME 调小
-  SUMMON: {
-    FIRST_DELAY: 0.6,        // 进入阶段后首次召唤延迟 s（留出阶段切换的视觉缓冲）
-    PER_FRAME: 3,            // 每帧最多落地几个（错峰，防同帧 GLB 解码/立绘抓帧卡死；越大越卡）
-    ARRIVE_FACTOR: 1.0,      // 出生距离系数：1=刚好在阶段结束抵达活动区域；<1=提前抵达(出生更近)；>1=更远
-    ARRIVE_JITTER: 0.15,     // 出生距离随机抖动 ±比例：错开各怪抵达时间，避免整波同时自爆
-    MIN_REMAIN: 0.8,         // 剩余时间下限 s：防止最后一波出生点贴脸（距离≈0）
-    SPAWN_R_MIN: 5,          // 出生半径下限 m（安全钳制）
-    SPAWN_R_MAX: 32,         // 出生半径上限 m（安全钳制）
-    NINJA_USE_RING: true,    // 忍者专用：true=直接出生在忍者固有活动环带内（SHURIKEN.RANGE_MIN~MAX），
-                             //   不套用「按剩余时间反推」—— 忍者由 balloons._clampToRing 锁在环带内、本就不会靠近玩家 4×8 区域
-    // —— 第一阶段 · 激光 ——
-    LASER_TIMES: 3,          // 召唤次数
-    LASER_BASIC: 25,         // 每次小怪数量
-    LASER_NINJA: 5,          // 每次忍者数量
-    LASER_BASIC_HP: 0,       // 小怪血量覆盖（0=用敌种默认 100）
-    LASER_BASIC_SPEED: 2.0,  // 小怪冲锋速度 m/s（>0 覆盖敌种默认 0.5；0=用默认）
-    LASER_NINJA_HP: 0,       // 忍者血量覆盖（0=用敌种默认 500）
-    LASER_NINJA_SPEED: 0,    // 忍者速度覆盖 m/s（0=用敌种默认 1.5；忍者平时不靠近，一般无需改）
-    // —— 第二阶段 · 玻璃墙 ——
-    GLASS_TIMES: 2,          // 召唤次数
-    GLASS_KNIGHT: 10,        // 每次骑士数量
-    GLASS_KNIGHT_TYPE: 'eliteKnight', // 骑士敌种：'eliteKnight'=精英骑士(与盾兵同体型的纯骑士) / 'knight'=放大 3 倍的骑士Boss体型
-    GLASS_KNIGHT_HP: 0,      // 骑士血量覆盖（0=用敌种默认 500）
-    GLASS_KNIGHT_SPEED: 1.0, // 骑士推进速度 m/s（写明以便按剩余时间反推出生距离；敌种默认 0.5）
+  // —— 开场演出（第三十八修）——
+  //   以「第15关开场魔术师」的体型/位置在玩家前方念白 → 语音播到 CUE_AT 秒时 0.6s 飞回 Boss 位（POSITIONS[0]）
+  //   → 到点瞬间放大 BIG_MULT 倍（巨物感）→ 语音播完即进入激光阶段（game.js 的 ended 回调驱动）。
+  //   PHASE.INTRO 是兜底上限：语音加载失败 / ended 不触发时按它硬切。
+  INTRO: {
+    VOICE_URL: 'music/魔术师Boss开头.wav', // 开场语音（实际长度 7.494s）；CUE_AT 按它标定
+    POS: [0, 7.4, -10],      // 念白位置（与第15关开场魔术师一致：玩家正前 10m、离地 7.4m）
+    SCALE_HEIGHT: 5.0,       // 念白体型：目标身高 m（与第15关开场一致）
+    CUE_AT: 5.4,             // 语音播到此秒 → 起飞（对齐「我就是Boss中的Boss」；偏早/偏晚只改这一处）
+    FLY_TIME: 0.6,           // 飞回 Boss 位耗时 s
+    BIG_MULT: 2,             // 变大后 = 常规体型(SCALE×MODEL_SCALE=10m) × 此倍数
+    LOG_VOICE: true,         // true=把语音当前时间打进留痕，便于现场标定 CUE_AT（标定完可改 false）
+    LOG_STEP: 0.5,           // 留痕间隔 s
   },
+
+  // —— 召唤池（第三十八修：取代原「按时间点分波的召唤」）——
+  //   场上维持 POOL.MAX 只（其中 POOL.ELITE 只为「当前阶段」的精英怪），
+  //   总数（含已发出光点、尚未落地）< POOL.REFILL_AT 时一次补满到 MAX。
+  //   出生点 = 距场地中心 POOL.SPAWN_R 米的随机环位（以敌种自身速度飘向玩家，不覆盖 speed）；
+  //   出现方式 = 从 Boss 身上飞出光点（waves._queueSpawn 的 opts.from）。
+  //   ★ 切阶段只换精英怪种类，**不清场**：上一阶段的精英留在场上直到被打掉。
+  POOL: {
+    MAX: 20,                 // 场上上限（只）
+    ELITE: 3,                // 其中精英怪数量（只）
+    REFILL_AT: 5,            // 存活 < 此值 → 一次补满到 MAX
+    REFILL_COOLDOWN: 0.5,    // 两次补充之间的最小间隔 s
+    SPAWN_R: 15,             // 出生半径 m（距场地中心）
+    SPAWN_Y_MIN: 1,          // 出生高度下限 m
+    SPAWN_Y_MAX: 3,          // 出生高度上限 m
+    BASIC_TYPE: 'basic',     // 普通怪敌种
+    ELITE_BY_PHASE: {        // 各阶段精英怪敌种（只换种类、不清场）
+      laser: 'shield',       // 激光阶段 · 盾牌骑士（骑士模型 + 旋转盾）
+      glass: 'ghost',        // 玻璃墙阶段 · 幽灵怪（远程鬼火）
+      nine:  'octopus',      // 黑白球墙阶段 · 章鱼怪（远程墨汁）
+    },
+    PER_FRAME: 3,            // 每帧最多落地几只（错峰，防同帧 GLB 解码卡死；越大越卡）
+    BEAM_ENABLED: true,      // true=召唤物先以「从 Boss 身上飞出的光点」出现，落地才成怪
+    BEAM_Y: 8,               // 光点出发点相对代理的抬高 m（约胸口高度）
+  },
+
   SPAWN_ENEMIES: true,        // 召唤总开关：false=三阶段都不召唤(排查卡顿/伤害用)；true=按下方 SUMMON 完整召唤
   HP_BAR_OFFSET_Y: 11,        // 头顶 3D 血条相对代理的抬高高度(m)：Boss 5倍≈10m高(头顶≈y=12)，置于头顶上方
 
@@ -1309,6 +1361,7 @@ const _OVERRIDES = [
   ['TEST', TEST, USER_CONFIG.TEST],
   ['BGM_VOLUME', BGM_VOLUME, USER_CONFIG.BGM_VOLUME],
   ['SHURIKEN',       SHURIKEN,       USER_CONFIG.SHURIKEN],
+  ['PROJECTILE',     PROJECTILE,     USER_CONFIG.PROJECTILE],
   ['DRAGON_SUMMON', DRAGON_SUMMON, USER_CONFIG.DRAGON_SUMMON],
   ['DRAGON_VOICE', DRAGON_VOICE, USER_CONFIG.DRAGON_VOICE],
   ['DRAGON', DRAGON, USER_CONFIG.DRAGON],

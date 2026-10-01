@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { pointSegmentDistanceSq } from '../core/collision.js';
 import { CARD, RARITY } from '../core/constants.js';
-import { ATTR_TYPES, SKILL_CARDS, availableAttributes, attributePreview } from '../content/cards.js';
+import { ATTR_TYPES, SKILL_CARDS, RESUPPLY_CARD, availableAttributes, attributePreview } from '../content/cards.js';
 
 // 抽卡：固定世界坐标 (Z=-4, Y=1) 均匀排开的 3D 卡牌，每张卡上方绑一个可射击气球。
 // 选卡方式 = 射击对应气球：气球爆炸 → 该卡化为光点飞向玩家；其余卡/气球无敌上飞到 10m（2s）后消失。
@@ -18,6 +18,23 @@ function rollRarity(weights) {
   let r = Math.random() * total;
   for (const [k, v] of entries) { if ((r -= v.weight) <= 0) return k; }
   return entries[0][0];
+}
+
+// 从卡池选卡（不重复）。guarantee 支持「单个 id」或「id 数组」：
+//   单卡（01/02 关）：池中有则必出，没有则退回随机（原语义不变）；
+//   数组（第9关回血组）：取数组中第一张池中可用的；一张都不可用（已满级）时退化为战场补给卡，
+//                       保证「一定有可回血的选项卡」。
+export function pickCards(pool, guarantee, count = CARD.COUNT) {
+  const ids = Array.isArray(guarantee) ? guarantee : (guarantee ? [guarantee] : []);
+  let gCard = ids.length ? (pool.find(a => ids.includes(a.id)) || null) : null;
+  if (!gCard && ids.length > 1) gCard = RESUPPLY_CARD;   // 组保证兜底：回血卡全部满级
+  const rest = pool.filter(a => a.id !== (gCard ? gCard.id : ''));
+  for (let i = rest.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rest[i], rest[j]] = [rest[j], rest[i]];
+  }
+  if (gCard) return [gCard, ...rest.slice(0, Math.max(0, count - 1))];
+  return rest.slice(0, Math.min(count, rest.length));
 }
 
 // 按宽度断行（中文按字符断），最多 maxLines 行，超出加「…」
@@ -241,7 +258,7 @@ export class CardDraft {
     // 01/02 关卡片品质覆盖（来自 LEVEL_PLANS）：仅首次 open 注入，refresh 复用本对象
     this._rarity = state.rarity || null;
     this._forceAtkPurple = !!state.forceAttackPurple;
-    this._guarantee = state.guarantee || null; // 01/02 关指定卡必出（multiShot / fireRate）
+    this._guarantee = state.guarantee || null; // 必出卡：字符串（01/02 关 multiShot / fireRate）或数组（第9关回血组）
     this._buildCards();
   }
 
@@ -261,24 +278,7 @@ export class CardDraft {
     } else {
       // 普通/Boss/机制关：从卡池抽 3 张不重复的属性卡（无刷新卡）
       const pool = availableAttributes(this._state.player, this._state.pool || undefined);
-      let chosen;
-      const g = this._guarantee;
-      if (g && pool.some(a => a.id === g)) {
-        // 保证卡必出：先固定该卡，再对剩余卡洗牌取 2 张（不重复）
-        const rest = pool.filter(a => a.id !== g);
-        for (let i = rest.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [rest[i], rest[j]] = [rest[j], rest[i]];
-        }
-        chosen = [pool.find(a => a.id === g), ...rest.slice(0, Math.min(2, rest.length))];
-      } else {
-        // 洗牌取前 3（不重复）
-        for (let i = pool.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [pool[i], pool[j]] = [pool[j], pool[i]];
-        }
-        chosen = pool.slice(0, Math.min(CARD.COUNT, pool.length));
-      }
+      const chosen = pickCards(pool, this._guarantee);   // 必出卡优先（支持单卡 / 数组）
       for (const attr of chosen) {
         picks.push({
           kind: 'attr', def: attr, rarity: 'gold',

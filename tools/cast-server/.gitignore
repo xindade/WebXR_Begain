@@ -6,6 +6,8 @@ data/
 # 不入库：它是**从项目源码派生**的副本，入库会出现「改了两边不一致」。
 # 服务器部署时必须跑一次：node sync-content.js --ver <版本号>
 content/
+# 发布前的本地备份（同样是从 src/ 派生的副本，不入库）
+content.bak-*/
 
 # 跨语言验证工具生成的样本（每次跑 xlang/gen.js 都会变）
 xlang/license.txt

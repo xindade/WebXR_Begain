@@ -72,12 +72,15 @@ export function availableAttributes(player, ids = ATTR_TYPES.map(c => c.id)) {
   const pool = ATTR_TYPES.filter(card => ids.includes(card.id) && useful(card));
   // 主池不足时补充仍可成长的生存属性；完全满级时提供明确的补给奖励。
   for (const card of ATTR_TYPES) if (pool.length < 3 && useful(card) && !pool.includes(card)) pool.push(card);
-  if (!pool.length) pool.push({
-    id: 'resupply', label: '战场补给', desc: '回满生命，并获得3秒护盾', color: '#16a085', icon: 'hp',
-    apply: p => { p.hp = p.maxHp; p.shieldTime = Math.max(p.shieldTime || 0, 3); },
-  });
+  if (!pool.length) pool.push(RESUPPLY_CARD);
   return pool;
 }
+
+// 满级兜底卡：主池已无任何可用成长卡时使用；同时作为第9关「回血保证」的最终兜底。
+export const RESUPPLY_CARD = {
+  id: 'resupply', label: '战场补给', desc: '回满生命，并获得3秒护盾', color: '#16a085', icon: 'hp',
+  apply: p => { p.hp = p.maxHp; p.shieldTime = Math.max(p.shieldTime || 0, 3); },
+};
 
 // 技能卡（红色）：第3关固定三张（buddha/lightsaber/scatterburst）
 export const SKILL_CARDS = [

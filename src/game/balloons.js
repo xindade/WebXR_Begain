@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ENEMY_TYPES } from '../content/enemies.js';
-import { BALLOON, MOVE, SHURIKEN } from '../core/constants.js';
+import { BALLOON, MOVE, SHURIKEN, PROJECTILE } from '../core/constants.js';
 import { attachBalloonModel, fitToRadius, loadBalloonModel, attachDragonSegment, hideLoadDot } from './balloonModels.js';
 
 // 程序化笑脸贴图（按颜色缓存）——占位怪也复用调色板
@@ -30,7 +30,7 @@ const _shieldSp  = new THREE.Vector3();   // getShieldBlock() 盾牌世界坐标
 const _shieldCt  = new THREE.Vector3();   // getShieldBlock() 气球中心世界坐标
 const _orbTmp    = new THREE.Vector3();   // 忍者蓄力光球定位临时量（_updateChargeOrb 复用，消除每帧 new 的 GC 压力）
 
-class Balloon {
+export class Balloon {
   constructor(typeId, opts = null) {
     const t = ENEMY_TYPES[typeId] || ENEMY_TYPES.basic;
     this.type = t;
@@ -99,11 +99,18 @@ class Balloon {
     if (t.id !== 'basic' && !t.noHealthBar) this._makeHealthBar(this.healthBarRadius);
     if (t.scale) this.mesh.scale.setScalar(t.scale);
 
-    // 幽灵怪：默认隐身，仅在自身蓄力攻击时显形（见 update）
+    // 幽灵怪：默认隐身，仅在自身蓄力攻击（最后 ghostFireCharge 秒）时显形 ——
+    // 显形期就是玩家的攻击窗口（隐身期间子弹打不中，见 game._collide 的 revealed 过滤）
     if (t.behavior === 'ghost') {
       this.revealed = false;
       this.mesh.visible = false;
-      this._ghostTimer = Math.random() * (t.ghostFireInterval || 3);
+      this._fireTimer = Math.random() * (t.ghostFireInterval || 3); // 随机初相位：多只不同时开火
+      this._chargeOrb = null;
+    }
+    // 章鱼怪：远程投射物「蓄力→投掷」循环（第三十五修，与幽灵同机制，只是边靠近边喷墨）
+    if (t.behavior === 'octopus') {
+      this._fireTimer = Math.random() * (t.inkInterval || 3);
+      this._chargeOrb = null;
     }
     // 聚宝盆：无敌 + 寿命计时
     if (t.behavior === 'treasure') {
@@ -322,15 +329,12 @@ class Balloon {
       const S = SHURIKEN;
       switch (this._ninjaPhase) {
         case 'appear':  // 出现期：仅存在，不蓄力/不投掷/不闪现
-          if (this._ninjaTimer >= S.APPEAR) { this._ninjaPhase = 'charge'; this._ninjaTimer = 0; this._showChargeOrb(true); }
+          if (this._ninjaTimer >= S.APPEAR) { this._ninjaPhase = 'charge'; this._ninjaTimer = 0; this._showChargeOrb(true, 0x66ccff); }
           break;
         case 'charge':  // 蓄力期：头顶光球渐大脉动；结束即投掷（仅最近忍者真正投出）
-          this._updateChargeOrb(dt);
+          this._updateChargeOrb(dt, this._ninjaTimer, S.CHARGE);
           if (this._ninjaTimer >= S.CHARGE) {
-            if (this.manager && this.manager.isNearestNinja(this) && this.manager.shurikens && this.manager._playerPos) {
-              const hy = this.mesh.position.y + 1.0 * (this.mesh.scale.x || 1) + 0.3; // 头顶高度（按模型缩放）
-              this.manager.shurikens.spawn(new THREE.Vector3(this.mesh.position.x, hy, this.mesh.position.z), this.manager._playerPos);
-            }
+            this._throwProjectile('shuriken');   // 同种怪里只有最靠近玩家的一只真的投出
             this._showChargeOrb(false);
             this._ninjaPhase = 'post'; this._ninjaTimer = 0;
           }
@@ -349,22 +353,27 @@ class Balloon {
           break;
       }
     }
-    // 幽灵怪：隐身，仅自身蓄力攻击(最后 charge 秒)时显形并可被击中
+    // 幽灵怪：隐身 → 蓄力（显形 + 头顶紫色蓄力光球）→ 投鬼火 → 回到隐身
+    //   发射方式与忍者完全一致：蓄力结束时投出，且只有最靠近玩家的那只幽灵真的投（见 _throwProjectile）
     if (t.behavior === 'ghost') {
-      this._ghostTimer += dt;
       const cycle = t.ghostFireInterval || 3;
-      const charge = t.ghostFireCharge || 2;
-      const phase = this._ghostTimer % cycle;
-      this.revealed = phase >= (cycle - charge);
-      this.mesh.visible = this.revealed;
-      // TODO: 鬼火抛射（蓄力结束发射，伤害10）后续补齐
+      const charge = Math.min(cycle, t.ghostFireCharge || 2);
+      const inCharge = this._updateChargeCycle(dt, cycle, charge, 'ghostfire', PROJECTILE.GHOST_FIRE.COLOR);
+      this.revealed = inCharge;
+      this.mesh.visible = inCharge;
+    }
+    // 章鱼怪：边靠近玩家边蓄力 → 每 inkInterval 秒喷一团墨（inkDuration 秒蓄力，头顶深色蓄力光球）
+    if (t.behavior === 'octopus') {
+      const cycle = t.inkInterval || 3;
+      const charge = Math.min(cycle, t.inkDuration || 1);
+      this._updateChargeCycle(dt, cycle, charge, 'ink', PROJECTILE.INK.COLOR);
     }
     // 聚宝盆：无敌存活寿命，到点标记脚本化死亡
     if (t.behavior === 'treasure') {
       this._lifespan -= dt;
       if (this._lifespan <= 0) this._pendingKill = true;
     }
-    // TODO: 龙头怪 cloud(造云隐身)/fireball(火球)、章鱼怪 ink(喷墨遮视线) 的特殊攻击后续补齐
+    // TODO: 龙头怪 cloud(造云隐身)/fireball(火球) 的特殊攻击后续补齐（幽灵鬼火/章鱼墨汁已于第三十五修补齐）
   }
 
   // 将水平位置夹紧到距中心(世界原点) RANGE_MIN~RANGE_MAX 的环带内（忍者活动范围约束）
@@ -384,12 +393,12 @@ class Balloon {
 
   // 蓄力光球：场景级小球，悬于忍者头顶上方，蓄力时渐大脉动，直观表现「手里剑蓄力」。
   // 场景级（非 mesh 子节点）可避开父节点可见性（DepthSprite 模式主体不可见）影响。
-  _showChargeOrb(on) {
+  _showChargeOrb(on, color = 0x66ccff) {
     if (on) {
       if (!this._chargeOrb && this.manager) {
         const R = SHURIKEN.SIZE * 1.5;
         const g = new THREE.SphereGeometry(R, 12, 10);
-        const m = new THREE.MeshBasicMaterial({ color: 0x66ccff, transparent: true, opacity: 0.85, depthWrite: false });
+        const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false });
         this._chargeOrb = new THREE.Mesh(g, m);
         this._chargeOrb.renderOrder = 998;
         this.manager.scene.add(this._chargeOrb);
@@ -400,16 +409,58 @@ class Balloon {
     }
   }
 
-  _updateChargeOrb(dt) {
+  _updateChargeOrb(dt, elapsed, dur) {
     if (!this._chargeOrb || !this._chargeOrb.visible) return;
     const p = this.mesh.getWorldPosition(_orbTmp);
     const top = 1.2 * (this.mesh.scale.x || 1) + 0.3; // 头顶上方（按模型缩放）
     this._chargeOrb.position.set(p.x, p.y + top, p.z);
-    const k = 0.4 + 0.6 * Math.min(1, this._ninjaTimer / Math.max(0.001, SHURIKEN.CHARGE)); // 随蓄力进度放大
-    const pulse = 1 + 0.15 * Math.sin(this._ninjaTimer * 18);                                // 脉动
+    const k = 0.4 + 0.6 * Math.min(1, elapsed / Math.max(0.001, dur));   // 随蓄力进度放大
+    const pulse = 1 + 0.15 * Math.sin(elapsed * 18);                    // 脉动
     this._chargeOrb.scale.setScalar(k * pulse);
   }
 
+
+  // 通用「蓄力 → 投掷」循环（幽灵鬼火 / 章鱼墨汁共用，第三十五修）。
+  //   忍者不在这里：它还要闪现（appear→charge→post→blink），走自己的状态机，但共用下面的 _throwProjectile。
+  //   返回「当前是否处于蓄力窗口」——幽灵据此决定显隐。
+  _updateChargeCycle(dt, cycle, charge, kind, orbColor) {
+    this._fireTimer += dt;
+    if (this._fireTimer >= cycle) {
+      this._fireTimer -= cycle;
+      this._showChargeOrb(false);
+      this._throwProjectile(kind);   // 只有最靠近玩家的同种怪真的投出（见 _throwProjectile）
+      return false;
+    }
+    const inCharge = this._fireTimer >= cycle - charge;
+    if (inCharge) {
+      this._showChargeOrb(true, orbColor);
+      this._updateChargeOrb(dt, this._fireTimer - (cycle - charge), charge);
+    } else {
+      this._showChargeOrb(false);
+    }
+    return inCharge;
+  }
+
+  // 统一投掷：出生点在怪头顶、射向玩家；带「最靠近玩家的同种怪才投」门禁。
+  //   单发伤害以敌人自身配置为准（enemies.js 的 shurikenDamage / ghostFireDamage / inkDamage），
+  //   未配置时回落到 constants 里该 kind 的 DAMAGE。
+  _throwProjectile(kind) {
+    const mgr = this.manager;
+    if (!mgr || !mgr.projectiles) return false;
+    if (!mgr.isNearestLauncher(this)) return false;
+    const pp = mgr._playerPos;
+    if (!pp) return false;
+    // 鬼火/墨汁的单发伤害以敌人自身配置为准（enemies.js）；手里剑固定用 SHURIKEN.DAMAGE
+    //   —— 保持第三十五修之前的手感，不因新增机制顺手改动忍者强度。
+    const t = this.type;
+    const dmg = kind === 'ghostfire' ? t.ghostFireDamage
+              : kind === 'ink'       ? t.inkDamage
+              : 0;
+    const hy = this.mesh.position.y + 1.0 * (this.mesh.scale.x || 1) + 0.3; // 头顶高度（按模型缩放）
+    mgr.projectiles.spawn(kind, new THREE.Vector3(this.mesh.position.x, hy, this.mesh.position.z), pp,
+      dmg > 0 ? { damage: dmg } : null);
+    return true;
+  }
   dispose() {
     if (this._chargeOrb) {
       this.manager?.scene?.remove(this._chargeOrb);
@@ -469,21 +520,23 @@ export class BalloonManager {
     this.list = [];
     this._sepVec = new THREE.Vector3();
     this.depthDebug = false; // DepthSprite 深度调试：按 D 切换（中心亮=凸、边缘亮=凹）
-    this.shurikens = null;   // 手里剑管理器（由 game.js 注入）；非空时启用忍者投掷
-    this._playerPos = null;  // 每帧玩家位置（update 注入），供「最近忍者」判定
+    this.projectiles = null; // 远程投射物管理器（由 game.js 注入）；非空时忍者/幽灵/章鱼才会投掷
+    this._playerPos = null;  // 每帧玩家位置（update 注入），供「最近发射者」判定
   }
 
-  setShurikenManager(m) { this.shurikens = m; }
+  setProjectileManager(m) { this.projectiles = m; }
 
-  // 最近忍者判定：在「所有非龙部件/非受控/存活的 ninja」中，返回距玩家最近者。
-  // 用于保证「有且只有最靠近玩家的忍者投掷手里剑」（其余忍者不投）。
-  isNearestNinja(b) {
-    if (!b || b.behavior !== 'ninja' || b.isDragonPart || b.controlled || !b.alive) return false;
+  // 最近发射者判定：在「所有 behavior 相同、非龙部件、非受控、存活」的怪里，返回距玩家最近者。
+  // 保证「每次只有最靠近玩家的那一只发射」——忍者/幽灵/章鱼共用（第三十五修由 isNearestNinja 泛化）。
+  // 注意是**按 behavior 分别**判定：幽灵的最近者不会拦住章鱼的最近者。
+  isNearestLauncher(b) {
+    if (!b || !b.alive || b.isDragonPart || b.controlled) return false;
     const pp = this._playerPos;
     if (!pp) return false;
+    const beh = b.behavior;
     let best = b, bestD = b.mesh.position.distanceToSquared(pp);
     for (const o of this.list) {
-      if (o === b || o.behavior !== 'ninja' || o.isDragonPart || o.controlled || !o.alive) continue;
+      if (o === b || !o.alive || o.isDragonPart || o.controlled || o.behavior !== beh) continue;
       const d = o.mesh.position.distanceToSquared(pp);
       if (d < bestD) { bestD = d; best = o; }
     }

@@ -207,20 +207,24 @@ export class WaveManager {
   _queueSpawn(type, pos, opts = {}) {
     // 类型开关关 → 直接 spawn
     if (opts.effect === false) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn });
-    // 无门 / 总开关关 → 直接 spawn（Boss/激光关自动兜底）
-    const portals = this.getPortals ? this.getPortals() : null;
-    if (!PORTAL_BEAM.ENABLED || !portals || !portals.length) {
-      return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn });
+    // 出发点：显式指定（第三十八修 · Boss 召唤物从 Boss 身上飞出）优先；否则取最近传送门
+    let from = opts.from ? opts.from.clone() : null;
+    if (!from) {
+      // 无门 / 总开关关 → 直接 spawn（Boss/激光关自动兜底）
+      const portals = this.getPortals ? this.getPortals() : null;
+      if (!PORTAL_BEAM.ENABLED || !portals || !portals.length) {
+        return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn });
+      }
+      // 最近传送门稳定中心
+      const nearest = this._nearestPortal(portals, pos);
+      if (!nearest) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn });
+      from = nearest.getWorldPos(new THREE.Vector3());
+      // 出发点相对门中心上抬 START_Y_OFFSET 米（让光点从门上方飞出，视觉更明显）
+      from.y += PORTAL_BEAM.START_Y_OFFSET || 0;
+      // 门升太高 → 起点 y 向目标收敛，保持水平进场（避免纵向跳水）
+      const dy = from.y - pos.y;
+      if (Math.abs(dy) > PORTAL_BEAM.Y_GAP_MAX) from.y = pos.y + Math.sign(dy) * PORTAL_BEAM.Y_GAP_MAX;
     }
-    // 最近传送门稳定中心
-    const nearest = this._nearestPortal(portals, pos);
-    if (!nearest) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn });
-    const from = nearest.getWorldPos(new THREE.Vector3());
-    // 出发点相对门中心上抬 START_Y_OFFSET 米（让光点从门上方飞出，视觉更明显）
-    from.y += PORTAL_BEAM.START_Y_OFFSET || 0;
-    // 门升太高 → 起点 y 向目标收敛，保持水平进场（避免纵向跳水）
-    const dy = from.y - pos.y;
-    if (Math.abs(dy) > PORTAL_BEAM.Y_GAP_MAX) from.y = pos.y + Math.sign(dy) * PORTAL_BEAM.Y_GAP_MAX;
     // 飞行时长 = 距离 / SPEED，clamp
     const dur = THREE.MathUtils.clamp(
       from.distanceTo(pos) / PORTAL_BEAM.SPEED,

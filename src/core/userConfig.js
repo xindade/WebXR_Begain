@@ -11,7 +11,8 @@ export const USER_CONFIG = {
     3:  { pos: [0, 5.4, -10], scaleHeight: 3.0 },   // 第3关 · 激光搭阵
     9:  { pos: [0, 6.4, -10], scaleHeight: 4.0 },   // 第9关 · 玻璃走格子
     15: { pos: [0, 7.4, -10], scaleHeight: 5.0 },   // 第15关 · 九宫格翻转
-    SHOW_SECONDS: 10,   // 循环播放时长（秒）
+    SHOW_SECONDS: 10,   // 循环播放时长（秒）；也是语音联动的兜底上限
+    FOLLOW_VOICE: true, // 机制关开场语音播完，魔术师同步消失（动画与语音对齐）
   },
 
   // ==================== 左手腕信息提示框（战斗信息）位置 / 旋转 / 大小 ====================
@@ -74,36 +75,43 @@ export const USER_CONFIG = {
     HP_BASE: 20000,        // Boss 基础血量
     HP_DPS_SEC: 30,        // 血量 = HP_BASE + 玩家DPS × 此值
     PHASE: {
-      INTRO: 10,           // 开场动画（秒）
+      INTRO: 8,            // 开场演出兜底上限（秒）：正常由开场语音播完触发，秒数对不上先看这条
       LASER: 10,           // 第一阶段·激光（秒）：召唤时间点按此时长均分
       GLASS: 10,           // 第二阶段·玻璃墙（秒）：同上
       NINE: 10,            // 第三阶段·黑白球墙（秒）：需 ≥ 浮动5s + 追击到位时间
     },
-    SUMMON: {
-      FIRST_DELAY: 0.6,    // 进入阶段后首次召唤延迟（秒）
-      PER_FRAME: 3,        // 每帧最多落地几个（错峰，越大越卡）
-      // —— 出生点：按「本波剩余时间」反推距离，让怪刚好跑到 4×8 活动区域 ——
-      ARRIVE_FACTOR: 1.0,  // 1=刚好在阶段结束抵达；<1=提前抵达(出生更近)；>1=更远
-      ARRIVE_JITTER: 0.15, // 出生距离随机抖动 ±比例（错开抵达时间，避免整波同时自爆）
-      MIN_REMAIN: 0.8,     // 剩余时间下限（秒）
-      SPAWN_R_MIN: 5,      // 出生半径下限（米）
-      SPAWN_R_MAX: 32,     // 出生半径上限（米）
-      NINJA_USE_RING: true,    // 忍者直接出生在固有活动环带内（不靠近玩家），不套用抵达反推
-      // 第一阶段 · 激光：3 次，每次 25 小怪 + 5 忍者
-      LASER_TIMES: 3,
-      LASER_BASIC: 25,
-      LASER_NINJA: 5,
-      LASER_BASIC_HP: 0,       // 0=用敌种默认血量
-      LASER_BASIC_SPEED: 2.0,  // 小怪冲锋速度（米/秒）；0=用敌种默认
-      LASER_NINJA_HP: 0,
-      LASER_NINJA_SPEED: 0,    // 忍者速度（米/秒）；0=用敌种默认 1.5
-      // 第二阶段 · 玻璃墙：2 次，每次 10 骑士
-      GLASS_TIMES: 2,
-      GLASS_KNIGHT: 10,
-      GLASS_KNIGHT_TYPE: 'eliteKnight', // 'eliteKnight'=精英骑士(与盾兵同体型) / 'knight'=放大3倍骑士
-      GLASS_KNIGHT_HP: 0,
-      GLASS_KNIGHT_SPEED: 1.0, // 骑士推进速度（米/秒）；敌种默认 0.5
+    // —— 开场演出（第三十八修）：念白 → 0.6s 飞回 Boss 位 → 瞬间变大 → 语音播完进激光阶段 ——
+    INTRO: {
+      VOICE_URL: 'music/魔术师Boss开头.wav', // 开场语音（实际 7.494s）
+      POS: [0, 7.4, -10],    // 念白位置（与第15关开场魔术师同款）：[x,y,z] 米，z 负=玩家正前方
+      SCALE_HEIGHT: 5.0,     // 念白体型：目标身高（米），与第15关开场一致
+      CUE_AT: 5.4,           // 语音播到此秒 → 起飞（现场标定：看留痕里的「开场语音 x.xs」）
+      FLY_TIME: 0.6,         // 飞回 Boss 位耗时（秒）
+      BIG_MULT: 2,           // 变大后身高 = 常规 10m × 此倍数
+      LOG_VOICE: true,       // 标定用留痕（标定完改 false）
+      LOG_STEP: 0.5,
     },
+
+    // —— 召唤池（第三十八修）：场上维持 MAX 只（含 ELITE 只阶段精英怪），总数 < REFILL_AT 时补满 ——
+    POOL: {
+      MAX: 20,               // 场上上限（只）
+      ELITE: 3,              // 其中精英怪数量（只）
+      REFILL_AT: 5,          // 存活 < 此值 → 一次补满到 MAX
+      REFILL_COOLDOWN: 0.5,  // 两次补充之间的最小间隔（秒）
+      SPAWN_R: 15,           // 出生半径（米，距场地中心）
+      SPAWN_Y_MIN: 1,
+      SPAWN_Y_MAX: 3,
+      BASIC_TYPE: 'basic',   // 普通怪敌种
+      ELITE_BY_PHASE: {      // 各阶段精英怪敌种（只换种类、不清场）
+        laser: 'shield',     // 激光阶段 = 盾牌骑士
+        glass: 'ghost',      // 玻璃墙阶段 = 幽灵怪
+        nine:  'octopus',    // 黑白球墙阶段 = 章鱼怪
+      },
+      PER_FRAME: 3,          // 每帧最多落地几只（错峰，越大越卡）
+      BEAM_ENABLED: true,    // 从 Boss 身上飞出光点后再出现
+      BEAM_Y: 8,             // 光点出发点抬高（米，约胸口）
+    },
+
     ORB_WALL: {
       ENABLED: true,       // false → 回退到原「九宫格」机制
       HP: 1500,            // 每球血量
@@ -332,6 +340,42 @@ export const USER_CONFIG = {
     BLINK_DELAY: 1.0,  // 投掷后到闪现的间隔（秒）
   },
 
+  // ==================== 远程投射物（幽灵鬼火 / 章鱼墨汁，projectiles.js） ====================
+  // 与 constants.PROJECTILE 同名；改这里刷新即生效，不用动源码。详见 constants.js 注释。
+  PROJECTILE: {
+    GHOST_FIRE: {
+      SPEED:      13.0,   // 飞行速度（米/秒）
+      DAMAGE:      5.0,   // 命中扣飞船血量（兜底值；实际以 enemies.ghostFireDamage 为准）
+      HIT_RADIUS:  0.7,   // 命中判定半径（米）
+      MAX_LIFE:    4.0,   // 最长存活（秒）：超时自动回收
+      SIZE:        0.26,  // 视觉半径（米）
+      SPIN:        0.0,   // 自旋角速度（度/秒）：鬼火不转
+      COLOR:  0xb46bff,   // 核心颜色（紫）
+      GLOW:   0x8a2be2,   // 外发光颜色（加色光晕）；null = 不发光晕
+      TINT:   0xb46bff,   // 命中后视野周边着色（紫）
+    },
+    INK: {
+      SPEED:      12.0,   // 飞行速度（米/秒）
+      DAMAGE:      5.0,   // 命中扣飞船血量（兜底值；实际以 enemies.inkDamage 为准）
+      HIT_RADIUS:  0.8,   // 命中判定半径（米）
+      MAX_LIFE:    4.0,   // 最长存活（秒）
+      SIZE:        0.36,  // 视觉半径（米）
+      SPIN:       55.0,   // 翻滚角速度（度/秒）
+      COLOR:  0x12121e,   // 墨色（近黑，留一点蓝以便在暗夜关卡里仍能看出飞行轨迹）
+      GLOW:   null,       // 墨汁不发光晕
+      TINT:   0x05050c,   // 命中后视野周边着色（黑）
+    },
+    // —— 命中着色层（src/vr/vignette.js）：贴在相机前的「视野周边着色」，中心透明、边缘着色 ——
+    VIGNETTE: {
+      ENABLED:  true,   // 总开关：false = 只扣血、不着色
+      DIST:     0.42,   // 距相机距离(m)：越小越像「眼睛被打花」，越大越像「面前有块玻璃」
+      MARGIN:   1.18,   // 尺寸余量：按相机 FOV 算出的平面再乘此值（>1 保证铺满视野）
+      ASPECT:   1.15,   // 宽高比（XR 单眼约 1.0~1.2）
+      OPACITY:  0.55,   // 峰值不透明度 0~1
+      RISE:     0.10,   // 上色时间(s)
+      FADE:     0.55,   // 褪色时间(s)
+    },
+  },
   // ==================== 龙 Boss 召唤（dragonLevel.js） ====================
   // 与 constants.DRAGON_SUMMON 同名；改这里刷新即生效，不用动源码。详见 constants.js 注释。
   DRAGON_SUMMON: {

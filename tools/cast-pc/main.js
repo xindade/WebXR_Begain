@@ -35,6 +35,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
+const { listenWithFallback } = require('./lib/net-listen.cjs');   // ★ 第三十七修：端口 fallback（见 lib/net-listen.cjs）
 
 // —— WebRTC：关掉 mDNS 候选混淆 ——
 // Chrome 默认把 host candidate 的真实 IP 换成 xxx.local，跨设备解析失败就连不上。
@@ -512,7 +513,7 @@ app.whenReady().then(() => {
         // 启动授权能力标识：头显 APK 用它区分「地址上跑的是旧版接收端（没有
         // /api/launch/request）」与「这个地址根本不是直播接收端」。不带这个字段的
         // 都按旧版处理 —— 现场排障时「整包没换」是最常见的一种失败。
-        guard: true, ver: '1.4.0',
+        guard: true, ver: '1.4.1',   // ★ 第三十七修：端口 fallback 修复；现场拿 /api/info 看这一行确认新 EXE 已换
         // ★ 门禁（文档第 3 条）：本端支持 /api/master/allow —— APK/页面据此区分「旧版接收端」。
         masterAllow: true,
         // ★ 本局放行（第十八修）：armed=true 表示操作员已点「开始本局」，头显页面此时才给
@@ -542,23 +543,19 @@ app.whenReady().then(() => {
 
   // 端口 fallback：8443 常被开发环境的 http-server / nginx 等占用。
   // 自动 +1 重试最多 10 次。APK 端通过 UDP 信标自动拿到实际端口，无需手动改。
-  const tryListen = (port, attempts) => {
-    server.listen(port, '0.0.0.0', () => onListen(port));
-    server.once('error', (e) => {
-      if (e.code === 'EADDRINUSE' && attempts < 10) {
-        console.warn(`[cast-pc] 端口 ${port} 被占用，改用 ${port + 1}`);
-        tryListen(port + 1, attempts + 1);
-      } else {
-        console.error(`[cast-pc] 服务启动失败：${e.message}`);
-        if (e.code === 'EADDRINUSE') {
-          console.error('[cast-pc] 10 次重试仍无空闲端口，请关掉占用 8443~8453 的进程，或用 --port= 指定别的端口');
-        }
-        process.exit(1);
-      }
-    });
-  };
+  // ★ 第三十七修：重试逻辑抽到 lib/net-listen.cjs，统一在下面（onListen 定义之后）启动。
+  //   原来的 `server.listen(port, () => onListen(port))` 有个坑：EADDRINUSE 时这个 callback
+  //   不会被摘掉，重试成功时新旧回调一起触发 ⇒ onListen 跑两遍 ⇒ ipcMain.handle 重复注册
+  //   报「Attempted to register a second handler for 'cfg:get'」并弹主进程错误框。
+  //   原因与回归用例见 lib/net-listen.cjs 头部注释 / tests/listen-fallback.test.mjs。
   // 把所有「启动后初始化」放进 onListen，用闭包变量覆盖模块顶部 PORT
+  let _initDone = false;  // ★ 第三十七修：防重入（重复初始化会重复注册 ipcMain.handle，主进程必崩）
   const onListen = (usedPort) => {
+    if (_initDone) {
+      console.error('[cast-pc] ⚠ onListen 被重复调用（已忽略）—— 端口 fallback 异常，请查 lib/net-listen.cjs');
+      return;
+    }
+    _initDone = true;
     PORT = usedPort;        // 顶部 PORT 是 let，赋新值后所有引用 PORT 的闭包自动用新值
     const ips = lanIPs();
     console.log('==================================================');
@@ -713,8 +710,18 @@ app.whenReady().then(() => {
     if (hasFlag('fullscreen')) mainWindow.setFullScreen(true);
     mainWindow.on('closed', () => { mainWindow = null; });
   };
-  tryListen(PORT, 0);
-});
+  // ★ 第三十七修：端口 fallback 监听（被占用自动 +1；成功回调保证只触发一次）
+  listenWithFallback(server, PORT, onListen, {
+    maxAttempts: 10,
+    log: (m) => console.warn(m),
+    onFail: (e) => {
+      console.error(`[cast-pc] 服务启动失败：${e.message}`);
+      if (e.code === 'EADDRINUSE') {
+        console.error('[cast-pc] 10 次重试仍无空闲端口，请关掉占用 8443~8453 的进程，或用 --port= 指定别的端口');
+      }
+      process.exit(1);
+    },
+  });});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
