@@ -15,5 +15,13 @@ if (typeof globalThis.document === 'undefined') {
       : key === 'measureText' ? () => ({ width: 0 })   // 血条/横幅等 Canvas2D 文本量宽
       : () => {}),
   });
-  globalThis.document = { createElement: () => ({ width: 0, height: 0, getContext: () => ctx }) };
+  // 第四十三修：加 createElementNS + addEventListener —— buddhaFx.js 在**模块级**就预载贴图
+  //   （three 的 ImageLoader 会 createElementNS('img') 并 addEventListener），少了这两个桩
+  //   整个文件 import 就会炸，等于把「神掌朝向」这类纯逻辑挡在单测之外。
+  const el = () => ({
+    width: 0, height: 0, style: {},
+    getContext: () => ctx,
+    addEventListener() {}, removeEventListener() {},
+  });
+  globalThis.document = { createElement: el, createElementNS: el };
 }

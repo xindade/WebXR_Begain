@@ -12,6 +12,13 @@
 //      出现方式 = 从 Boss 身上飞出光点（waves._queueSpawn 的 opts.from）。
 //      切阶段只更换「精英怪种类」，**不清场**：上一阶段召唤的怪留在场上直到被打掉。
 //
+// ★ 第三十九修（Boss 死亡收尾 / 加载预热）：
+//   1. _win() 先清场再显示横幅 —— ① 撤掉在飞的光点（group='magicianSub'）② 移除场上全部召唤物。
+//      旧实现只 dispose() 自己（模型/血条/机制），召唤物归 balloons 管、要等切关才清
+//      ⇒ 现场实测 Boss 死后玩家还在通关横幅里挨 20 只小兵的打。
+//   2. 横幅时长改配置项 MAGICIAN_BOSS.WIN_BANNER_SECONDS（0 = 不显示横幅，直接结束本局）。
+//   3. 真正的「结束本局 / 关浏览器」不在这里 —— 见 game.js 的 _onFinalBossClear/_finishRound。
+//
 // 复用 glbCache 加载「魔术师动画版」GLB 并循环播放内嵌动画（常驻，不自动消失）；
 // 视觉模型与命中代理解耦：代理气球(balloons.list) 只做命中靶子，模型独立动画 + 每帧同步位置。
 import * as THREE from 'three';
@@ -347,6 +354,7 @@ export class MagicianBoss {
       Math.sin(ang) * P.SPAWN_R
     );
     const opts = {
+      group: 'magicianSub',    // ★ 第三十九修：分组 → 通关/清场时 _cancelPendingGroup 可撤掉在飞光点
       onSpawn: (b) => {
         this._pendingRefill = Math.max(0, this._pendingRefill - 1);
         if (elite) this._pendingElite = Math.max(0, this._pendingElite - 1);
@@ -375,16 +383,42 @@ export class MagicianBoss {
 
   _win() {
     if (this._disposed) return;
+    this._clearMinions();      // ★ 第三十九修：先清场再收尾（否则小兵在通关横幅期间继续打玩家）
     this.dispose();
-    this.waves.cleared = true; // 标记通关（供 game 判定），但第18关走自定义横幅+10s退出，不进抽卡
-    // VR 可见通关横幅：锚定玩家准星、10s 后自动退出游戏（DOM hud.message 在头显里不可见）
-    if (this.scene && this.waves.camera) {
+    this.waves.cleared = true; // 标记通关（供 game 判定），但第18关走自定义横幅 + 结束本局，不进抽卡
+    // 第三十九修：显式标记「第18关已清」—— WIN_BANNER_SECONDS=0 时不建横幅，
+    // 只靠 _winBanner 非空来挡抽卡会漏（同一帧就会去开毕业汇总界面）。见 game.js 的抽卡入口判据。
+    this.waves.magicianCleared = true;
+    // VR 可见通关横幅：锚定玩家准星；到期（WIN_BANNER_SECONDS）即调 onWinExit → game 结束本局。
+    // ★ 时长 0（或没有场景/相机）= 不建横幅，直接结束本局。
+    const secs = MAGICIAN_BOSS.WIN_BANNER_SECONDS;
+    if (this.scene && this.waves.camera && secs > 0) {
       const banner = new WinBanner3D(this.scene, this.waves.camera, WIN_BANNER_TEXT, () => {
         if (this.waves._winBanner) { this.waves._winBanner.dispose(); this.waves._winBanner = null; }
         if (this.waves.onWinExit) this.waves.onWinExit();
-      });
-      this.waves._winBanner = banner; // 交 waves/game 在切关或 10s 到期时清理
+      }, secs);
+      this.waves._winBanner = banner; // 交 waves/game 在切关或到期时清理
+    } else if (this.waves.onWinExit) {
+      this.waves.onWinExit();
     }
+  }
+
+  /**
+   * ★ 第三十九修：把召唤物与「在飞的光点」一次清干净（Boss 死亡 / 通关收尾专用）。
+   *
+   * 为什么必须清：召唤物由 waves.balloons 统一管理，旧实现要等**切关**才整体清空 —— 而 Boss 死后
+   * 走的是「横幅 → 结束本局」，中间不切关，于是那 20 只（含 3 只精英）会继续飘向玩家、继续造成
+   * 伤害。现场表现即「Boss 死了小兵还在」。
+   */
+  _clearMinions() {
+    this.waves._cancelPendingGroup?.('magicianSub');   // 撤掉还没落地的光点（否则收尾后还会冒怪）
+    for (const b of this._minions) {
+      if (b && b.alive && this.balloons.list.includes(b)) this.balloons.remove(b);
+    }
+    this._minions = [];
+    this._refillQueue.length = 0;
+    this._pendingRefill = 0;
+    this._pendingElite = 0;
   }
 
   dispose() {

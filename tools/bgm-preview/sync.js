@@ -2,18 +2,29 @@
 // 作用：把 src/vr/audio.js 的 BGM 引擎原样内嵌进 index.html，
 //       生成一个可双击打开、无需服务器的自包含试听页。
 // 用法：node sync.js   （改完 src/vr/audio.js 后跑一次即可同步）
-const fs = require('node:fs');
-const path = require('node:path');
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-const HERE = __dirname;
+const HERE = import.meta.dirname;
 const SRC = path.resolve(HERE, '../../src/vr/audio.js');
+const CONSTANTS = path.resolve(HERE, '../../src/core/constants.js');
 const OUT = path.join(HERE, 'index.html');
 
-// 去掉 ES module 的 export，使其可放进普通 <script>
-let code = fs.readFileSync(SRC, 'utf8')
-  .replace(/^export\s+class\s+AudioManager/m, 'class AudioManager');
-if (/^export\s/m.test(code)) {
-  console.warn('⚠ audio.js 中仍存在其它 export 语句，内嵌后可能无法运行');
+// 去掉 ES module 的 import / export，使其能放进普通 <script>：
+//   · `import { ... } from '../core/constants.js'` **必须删掉** —— 本页是 file:// 直开的普通脚本，
+//     裸 import 会让整段脚本语法错误、页面全哑。删的同时记下用到哪些常量，稍后用「内联 shim」补上。
+//   · `export class AudioManager` → `class AudioManager`。
+function stripModuleSyntax(raw) {
+  const names = new Set();
+  let code = raw.replace(/^import\s*\{([^}]*)\}\s*from\s*'\.\.\/core\/constants\.js';[^\n]*\n/gm, (_m, inner) => {
+    for (const n of inner.split(',')) { const t = n.trim(); if (t) names.add(t); }
+    return '';
+  });
+  code = code.replace(/^export\s+class\s+AudioManager/m, 'class AudioManager');
+  if (/^import\s/m.test(code)) console.warn('⚠ audio.js 中仍存在其它 import 语句，内嵌后可能无法运行');
+  if (/^export\s/m.test(code)) console.warn('⚠ audio.js 中仍存在其它 export 语句，内嵌后可能无法运行');
+  return { code, names };
 }
 
 const TEMPLATE = `<!DOCTYPE html>
@@ -111,6 +122,16 @@ const TEMPLATE = `<!DOCTYPE html>
   </section>
 
   <div class="grid" id="grid"></div>
+
+  <section class="panel" id="sfxPanel" style="flex-direction:column;align-items:stretch;gap:10px">
+    <div style="font-size:13px;font-weight:600">🔫 打击感音效试听（第四十修 · 档1）</div>
+    <div id="sfxRow" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+    <p style="margin:0;font-size:12px;color:var(--ink3);line-height:1.7">
+      命中音与击杀音是<b>分开的两层</b>（命中=轻 tick，击杀=按敌种换音色的重击）；
+      每一下都带 ±8% 音高抖动，所以连点同一颗按钮听感也不会一模一样 —— 这正是「不糊成机关枪嗡嗡」的来源。
+      「连击演示」会连打 6 下并逐级抬高音高。参数见 <code>src/core/constants.js</code> 的 <code>HIT_FEEDBACK</code>。
+    </p>
+  </section>
 
   <p class="foot">
     · <b>切轨</b>在游戏里于小节边界生效并做 0.2s 音量 duck，此处直接点另一张卡的「播放」即可听到同样的过渡。<br>
@@ -286,6 +307,42 @@ __AUDIO_JS__
   }
 
   document.getElementById('stopAll').onclick = stop;
+
+  // 打击感音效试听（第四十修 · 档1）：直接调 AudioManager 的新音效方法
+  (function(){
+    var row = document.getElementById('sfxRow');
+    if(!row) return;
+    function btn(label, fn){
+      var b = el('button','chip', label);
+      b.onclick = function(){
+        am.unlock();
+        if(am.ctx && am.ctx.state === 'suspended') am.ctx.resume();
+        applyVol();
+        fn();
+      };
+      row.appendChild(b);
+    }
+    btn('射击 playShoot', function(){ am.playShoot(); });
+    btn('命中 playHit', function(){ am.playHit(); });
+    btn('击杀·基础怪', function(){ am.playKill('basic', 1); });
+    btn('击杀·幽灵', function(){ am.playKill('ghost', 1); });
+    btn('击杀·章鱼', function(){ am.playKill('octopus', 1); });
+    btn('击杀·忍者', function(){ am.playKill('ninja', 1); });
+    btn('击杀·盾兵', function(){ am.playKill('shield', 1); });
+    btn('击杀·心型', function(){ am.playKill('heart', 1); });
+    btn('击杀·宝箱', function(){ am.playKill('chest', 1); });
+    btn('击杀·精英', function(){ am.playKill('elite', 1); });
+    btn('击杀·Boss', function(){ am.playKill('boss', 1); });
+    btn('连杀加速 playRapidFire', function(){ am.playRapidFire(); });
+    btn('连击演示（音高逐级上扬）', function(){
+      var n = 0;
+      var t = setInterval(function(){
+        n++;
+        am.playKill(n % 2 ? 'basic' : 'shield', 2 + n);
+        if(n >= 6) clearInterval(t);
+      }, 220);
+    });
+  })();
   var vol = document.getElementById('vol');
   vol.oninput = function(){
     document.getElementById('volVal').textContent = Number(vol.value).toFixed(2);
@@ -330,9 +387,21 @@ __AUDIO_JS__
 </html>
 `;
 
+// 内联 shim：audio.js 从 constants.js 用到的常量，按**当前实际值**（含 userConfig 覆盖）
+// 以 JSON 字面量写进页面 —— 于是试听台与游戏同源，且页面仍是零依赖、可双击打开。
+const { code, names } = stripModuleSyntax(fs.readFileSync(SRC, 'utf8'));
+const constants = await import(pathToFileURL(CONSTANTS).href);
+const shimLines = [];
+for (const n of names) {
+  const v = constants[n];
+  if (v === undefined) { console.warn('⚠ constants.js 未导出 ' + n + '，试听台将缺少该常量'); continue; }
+  shimLines.push('const ' + n + ' = ' + JSON.stringify(v) + ';');
+}
+const embedded = shimLines.length ? shimLines.join('\n') + '\n\n' + code : code;
+
 const html = TEMPLATE
-  .replace('__AUDIO_JS__', () => code)
+  .replace('__AUDIO_JS__', () => embedded)
   .replace('__GEN_TIME__', new Date().toLocaleString('zh-CN', { hour12: false }));
 
 fs.writeFileSync(OUT, html, 'utf8');
-console.log('已生成 ' + OUT + '  (' + (fs.statSync(OUT).size / 1024).toFixed(1) + ' KB)');
+console.log('已生成 ' + OUT + '  (' + (fs.statSync(OUT).size / 1024).toFixed(2) + ' KB)');

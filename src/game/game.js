@@ -23,8 +23,12 @@ import { ENEMY_TYPES } from '../content/enemies.js';
 import { ELITE_SCHEDULE } from '../content/eliteMonsters.js';
 import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO } from '../core/constants.js';
-import { setRenderer, loadBalloonModel, preCaptureDepthSprite } from './balloonModels.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO, HIT_FEEDBACK, FX, MID_WARNING, RAPID_FIRE, levelSecondsOf } from '../core/constants.js';
+import { DamageNumbers } from './damageNumbers.js';
+import { FxEffects } from './fx.js';
+import { WarningBanner3D, midWarningDue } from './warningBanner.js';  // 第四十二修：中场预警横幅
+import { advanceStreak } from './rapidFire.js';                // 第四十三修：连杀推进规则（加速期封顶）
+import { setRenderer, loadBalloonModel, preCaptureDepthSprite, warmModelGpu } from './balloonModels.js';
 import { DifficultyController } from './difficultyController.js';
 import { VRPlusGame, VRPlus } from '../net/vrplus.js';   // VR+ 平台桥接：cmd 3 启动 / 4 开始 / 5 中途结束 + 下行 inbox 监听
 
@@ -89,6 +93,7 @@ export class Game {
     // 命中：扣飞船血量（飞毯无独立 HP）+ 视野周边着色（鬼火=紫 / 墨汁=黑；手里剑无 TINT → 不着色）
     this.projectiles.setOnHit((d, kind) => {
       this.player.takeDamage(d);
+      this._pulseHaptic('HURT');   // 第四十修：被投射物打中 → 双手重震
       const tint = this.projectiles.tintOf(kind);
       if (tint != null) this.vignette.flash(tint);
     });
@@ -107,7 +112,10 @@ export class Game {
       () => this.skillCooldown,    // 新：技能剩余冷却（>3 = 最近5秒放过技能 → 内圈系数=1）
       (dmg) => this.player.takeDamage(dmg), // 新：Boss 子系统（激光/九宫格）伤害玩家
       world.camera,                        // 新：玩家相机（通关横幅锚定准星位置）
-      () => this.toMenu()                  // 新：通关横幅 10s 后自动退出游戏
+      // ★ 第三十九修：第18关 Boss 击杀 = **本局自然结束**（不再是「回菜单」—— 回菜单不带
+      //   roundOver，浏览器不关、页面停在菜单，平台下一次「启动游戏」一到就从第 1 关重开，
+      //   现场表现即「Boss 打死后过一会又回到第一关」）。
+      () => this._onFinalBossClear()
     );
     this.cards = new CardDraft(world.scene);
     this.rightGun = new RightGun(world.scene);   // 右手柄 AK 枪（VR 手持，纯视觉）
@@ -145,6 +153,21 @@ export class Game {
     this._cardState = null;
     this._levelSnapshot = null;  // 关卡开始时的玩家属性+分数快照
     this._explosions = [];       // 爆炸视觉特效列表
+    this.damageNumbers = new DamageNumbers(world.scene); // 伤害数字（第四十修）
+    this.fx = new FxEffects(world.scene);   // 档2 打击感视觉层（第四十一修）：曳光/火花/碎片/枪口焰
+    this._tailDir = new THREE.Vector3();    // 曳光方向临时向量（避免每帧 new）
+    this.midWarning = new WarningBanner3D(world.scene, world.camera); // 中场预警横幅（第四十二修）：每关过半弹一次
+    this.combo = 0;              // 连击计数：HIT_FEEDBACK.COMBO.WINDOW 秒内的连续击杀数
+    this._comboUntil = 0;        // 连击失效时刻（this._gameTime 基准）
+    this._hapticAt = { HIT: -99, KILL: -99, ELITE: -99, HURT: -99 }; // 各档震动上次触发时刻（节流用）
+    this._fxPos = new THREE.Vector3(); // 伤害数字取位临时向量（避免每次命中 new）
+    // —— 第四十二修 · 连杀加速（只认子弹击杀，计数显示在枪管上，见 src/vr/streakCounter.js）——
+    this._bulletStreak = 0;       // 当前连杀数
+    this._bulletStreakAt = -99;   // 上次子弹击杀时刻（_gameTime 基准），超 RAPID_FIRE.GAP 清零
+    this._rapidUntil = 0;         // 射速加速结束时刻（_gameTime 基准）
+    this._rapidMul = 1;           // 当前生效的射速倍率（1=无加成），交给 input.setFireRateMul
+    this._midWarned = false;      // 本关是否已弹过中场预警（_loadLevel 复位）
+    this._buddhaQueue = [];       // 如来神掌分帧结算队列（第四十二修，见 _drainBuddhaQueue）
     this.enemyFreeze = 0;        // 定身咒计时(s)：>0 时敌人暂停行动（Boss 仅前 50% 时长）
     this.selectedSkill = 'scatter'; // 当前装备技能：前期默认「积分散射」；第三关选卡后可替换为 lightsaber/freeze/buddha，左手柄 grip 触发
     this.skillCooldown = 0;      // 技能释放冷却计时(s)：>0 时握柄无效，HUD 显示剩余
@@ -272,6 +295,12 @@ export class Game {
     this.hud.setHp(this.player.hp, this.player.maxHp);
     this.audio?.unlock();
     this._clearExplosions();
+    this.damageNumbers.clear();   // 新一局：清掉上一局残留的伤害数字
+    this.fx.clear();              // 档2：一并清掉上一局残留的曳光/火花/碎片/枪口焰
+    this.midWarning?.hide();      // 第四十二修：收掉上一局残留的中场预警横幅
+    this._bulletStreak = 0; this._rapidUntil = 0; this._setRapidMul(1);
+    this._buddhaQueue.length = 0;
+    this.combo = 0;
     this.attackBonus = 0;     // 新一局：攻击力加成重置，从 0 重新累计
     this._clearAttackHint();  // 清残留攻击力提示
     this.log(`游戏开始${this.loadout ? `（开局加成：${this.loadout}）` : ''}`);
@@ -514,15 +543,52 @@ export class Game {
     // 看门狗路径：先复核再动手。误判代价太大（整个页面被卸载），而头显对后台页的节流
     // 会让 fetch 成片失败 —— 必须先确认「本地 8080 真的连不上」才认定 APK 已死。
     if (confirm) { this._confirmThenGone(why); return; }
+    this._finishRound(why);
+  }
+
+  /**
+   * ★ 第三十九修：第18关魔术师 Boss 被击杀 = **本局自然结束（通关）**。
+   *
+   * 与「平台点结束游戏」共用同一条收尾（_finishRound），只把留痕标签换成 round-clear：
+   *   · 上报 game-end 带 **roundOver** → APK 按退出策略执行（唤醒平台客户端 + 关浏览器；
+   *     直播模式（?cast=1）下**只有 roundOver 才允许关**，见 GameServer.notifyGameEndIfAny）；
+   *   · 直播模式：停推流 + 页面卸载成 about:blank；非直播：进「本局已结束」待机态等平台下一次开始；
+   *   · 这条 roundOver 还会经 PC 端转成平台的 **CMD 7 结算报文**（tools/cast-pc 的 handleRoundEnd）
+   *     —— 平台据此弹本局结算。
+   *
+   * 为什么不用 toMenu()：toMenu() 只回菜单、**不带 roundOver** ⇒ 浏览器不关、客户端不回前台，
+   *   而平台每 ~20s 会重发一次「启动游戏」⇒ 页面被叫回来时 state=menu，直接从**第 1 关**重开
+   *   （现场实测：「Boss 打死后小兵还在，过一会又回到了第一关」）。
+   */
+  _onFinalBossClear() {
+    if (this._goneHandled) return;
+    // 「本局已结束，等平台下一次开始」—— 与平台明说关闭同语义：**不起复活探针**，
+    // 否则探针两秒后就会把封盖撤掉、页面又回到可玩状态（那等于没收尾）。
+    this._closedByPlatformCommand = true;
+    // explicit=false：这是通关，不是「平台明说关闭」，留痕里别写成平台指令（排障时要能分开）。
+    this._finishRound('第18关通关（魔术师 Boss 击杀）', { dead: 'round-clear', explicit: false });
+  }
+
+  /**
+   * 「本局真的结束」的统一收尾（平台关闭 / 第18关通关都走它）。
+   *
+   * 顺序有讲究：先留痕（页面马上要消失）→ 回菜单并上报 cmd5/game-end(roundOver) → 退 XR 会话 →
+   * 直播模式停推流并卸载页面 / 非直播进待机态。
+   *
+   * @param {string} why 结束原因（进留痕与日志）
+   * @param {string} [dead] 留痕事件名：platform-gone（平台关闭/看门狗）| round-clear（通关）
+   * @param {boolean} [explicit] 是否「平台明说关闭」（只影响留痕可读性）
+   */
+  _finishRound(why, { dead = 'platform-gone', explicit = this._closedByPlatformCommand === true } = {}) {
     this._goneHandled = true;
     this._roundOver = true;                    // 本轮真的结束（见 _reportGameEnd 的 roundOver）
-    this.log('平台已结束本局，正在退出…（' + why + '）');
+    this.log('本局结束，正在退出…（' + why + '）');
     // ★ 留痕（2026-09-19）：页面即将退出 —— 把死因写进 APK 的统一时间线磁盘文件。
     //   页面自己的日志会随页面一起消失，而这条会留在 APK 上，事后打开 APK 配置页
     //   或浏览器访问 /api/page/forensics 就能读到「谁在几点几分让页面退出的」。
-    VRPlus.reportDead('platform-gone', {
+    VRPlus.reportDead(dead, {
       why,
-      explicit: this._closedByPlatformCommand === true,   // 平台明说 vs 看门狗推断
+      explicit,                                 // 平台明说 vs 看门狗推断 / 通关
       preloadDone: !!this.preloadDone,
       state: this.state,
     });
@@ -746,6 +812,12 @@ export class Game {
     this.vignette.clear();
     this.bullets.clear();
     this._clearExplosions();
+    this.damageNumbers.clear();   // 回菜单：清伤害数字
+    this.fx.clear();              // 档2：一并清掉特效残留
+    this.midWarning?.hide();      // 第四十二修：回菜单收掉中场预警横幅
+    this._bulletStreak = 0; this._rapidUntil = 0; this._setRapidMul(1);
+    this._buddhaQueue.length = 0;
+    this.combo = 0;
     if (this._buddhaFx) { this._buddhaFx.dispose(); this._buddhaFx = null; }
     this.cards.clearCards();                    // 清抽卡气球（不拆除 group，可再次 open 复用）
     this._cardState = null;
@@ -792,6 +864,11 @@ export class Game {
     this.balloons.clear();      // 防跨关残留气球（脸谱 Boss 装饰等）
     this.projectiles.clear();   // 防跨关残留投射物
     this.vignette.clear();      // 防跨关残留着色
+    this.fx.clear();            // 档2：防跨关残留曳光/火花/碎片/枪口焰（切关瞬间的残留最显眼）
+    this.midWarning?.hide();    // 第四十二修：切关收掉中场预警横幅
+    this._midWarned = false;    // 新一关重新允许弹一次
+    this._bulletStreak = 0; this._rapidUntil = 0; this._setRapidMul(1);  // 连杀/加速不跨关
+    this._buddhaQueue.length = 0;  // 清掉上关没结算完的神掌队列
     this.bullets.clear();       // 防跨关残留子弹误击
     this.hud.clearCountdown();   // 关倒计时显示
     this.world.setSkyMood(lv.mood);
@@ -915,6 +992,7 @@ export class Game {
     if (!CLOUD.ENABLED && this._introPreloadQueue.length) {
       for (const it of this._introPreloadQueue) {
         if (it.url) loadBalloonModel(it.url);
+        if (it.warm) warmModelGpu(it.url);     // 无穿云：同步预热（第三十九修）
         if (it.capture) preCaptureDepthSprite(it.url, it.radius);
       }
       this._introPreloadQueue = null;
@@ -932,25 +1010,29 @@ export class Game {
       if (!t || !t.model) return;
       q.push({ url: t.model, radius: t.radius || 0.5, capture: DEPTH_SPRITE_TYPES.includes(typeId) });
     };
-    const addUrl = (url) => { if (url) q.push({ url, radius: 1.0, capture: false }); };
+    // warm = 顺带预热 GPU（纹理上传 + 着色器编译，见 balloonModels.warmModelGpu）。
+    //   Boss 模型都走它：GLB 的 parse 在 main.js 预载时已完成，但**第一次真正渲染**那一帧才做
+    //   纹理上传 / program 编译 —— 在 PICO 上就是「Boss 一登场卡一下」（第三十九修）。
+    const addUrl = (url, warm = false) => { if (url) q.push({ url, radius: 1.0, capture: false, warm }); };
 
     if (lv.boss === 'face') {
       // 第6关脸谱 Boss：穿云窗内预热三张脸谱 + 旗子 + 蓝阶段小怪 GLB，
       // 并把「黑阶段分身」的 DepthSprite 抓帧也提前到这里 —— 抓帧 = 12 帧离屏渲染 + readRenderTargetPixels
       // 同步回读，非常重；原先等红→黑切换那一刻才首次抓帧，正是切换卡顿的主因。
-      for (const url of FACE_BOSS.MODELS) addUrl(url);
-      addUrl(FACE_BOSS.FAN_MODEL);
+      for (const url of FACE_BOSS.MODELS) addUrl(url, true);   // 脸谱三张 + 扇子：登场首帧前预热 GPU
+      addUrl(FACE_BOSS.FAN_MODEL, true);
       addUrl(ENEMY_TYPES.flagMask.model);
       addType('basic');   // 蓝阶段 3×3 小怪 GLB + 立绘抓帧
       addType('knight');  // 蓝阶段中心格骑士
       q.push({ url: FACE_BOSS.BLACK_CLONE_MODEL, radius: ENEMY_TYPES.blackMaskClone.radius, capture: true });
     } else if (lv.boss === 'dragon') {
-      addUrl(DRAGON.HEAD_MODEL);                  // 第12关龙 Boss 龙头 GLB（未被 main 预载）
+      addUrl(DRAGON.HEAD_MODEL, true);            // 第12关龙 Boss 龙头 GLB（未被 main 预载）+ GPU 预热
       addType('basic');  addType('ninja');       // 龙 Boss 召唤用基础怪/忍者 GLB + DepthSprite 立绘：进关预载，避免首召冷加载卡顿
     } else if (lv.boss === 'magician') {
       // 第18关魔术师 Boss：召唤池（普通怪 + 三阶段精英怪：盾兵/幽灵/章鱼）的 GLB + DepthSprite 立绘抓帧
       // 全部在穿云窗内预热 —— 抓帧 = 12 帧离屏渲染 + readRenderTargetPixels 同步回读，非常重；
       // 原先本关没有预载分支，导致阶段召唤瞬间才首次抓帧，正是「召唤时明显卡顿」的主因。
+      addUrl(MAGICIAN_BOSS.MODEL, true);   // Boss 本体（与 main 预载的开场动画同文件）：预热 GPU，去掉登场首帧卡顿
       addType(MAGICIAN_BOSS.POOL.BASIC_TYPE || 'basic');
       for (const _mt of Object.values(MAGICIAN_BOSS.POOL.ELITE_BY_PHASE)) addType(_mt);
     } else if (!isBoss(lv) && !isLaser(lv)) {
@@ -982,6 +1064,7 @@ export class Game {
     if (this._introPreloadIdx >= this._introPreloadQueue.length) { this._introPreloadQueue = null; return; }
     const it = this._introPreloadQueue[this._introPreloadIdx++];
     if (it.url) loadBalloonModel(it.url).catch(() => {}); // 加载层记录失败，实体显示占位并可重试
+    if (it.warm) warmModelGpu(it.url);                    // 预热 GPU：纹理上传 + 着色器编译（第三十九修）
     if (it.capture) preCaptureDepthSprite(it.url, it.radius); // 预热 DepthSprite 抓帧缓存（首帧零成本）
   }
 
@@ -1121,7 +1204,11 @@ export class Game {
     this.rightGun.update(dt, this.input, this);  // 右手柄 AK 枪 + 技能就绪提示面板（VR 手持，桌面忽略）
     this.leftSword.update(dt, this.input);        // 左手柄激光剑（VR 手持，桌面忽略）
     this._updateBuddhaFx(dt);
+    this._drainBuddhaQueue();   // 第四十二修：神掌命中分帧结算（每帧限量，削掉单帧 GPU 尖峰）
     this._updateExplosions(dt);
+    this.damageNumbers.update(dt);   // 伤害数字：上浮 + 淡出 + 回池
+    if (this.combo > 0 && this._gameTime > this._comboUntil) this.combo = 0; // 连击窗口过期即断连
+    this._tickRapidFire();        // 第四十二修：连杀计时（超时清零）+ 加速到期还原射速
     this._updateAttackHint(dt);   // 推进攻击力提示淡出/移除（2 秒后消失）
 
     if (this.state === 'playing') this._updatePlaying(dt);
@@ -1129,7 +1216,41 @@ export class Game {
     else if (this.state === 'intro') this._updateIntro(dt);
     // 通关横幅（魔术师Boss）：始终驱动，10s 后自动退出（不依赖关卡/抽卡状态）
     if (this.waves && this.waves._winBanner) this.waves._winBanner.update(dt);
+    this.midWarning?.update(dt);   // 第四十二修：中场预警横幅（淡入→停留→淡出，到点自动隐藏）
     this.vignette.update(dt);   // 命中着色：上色→褪色，结束后自动隐藏
+    this._updateFx(dt);         // 档2：曳光/火花/碎片/枪口焰（帧末取位，与弹头不会错位）
+  }
+
+  // ====== 档2 打击感视觉层（第四十一修）======
+  //   曳光：每帧只扫一遍「玩家子弹 + 敌方投射物」，写进同一条 InstancedMesh（1 draw call）。
+  //   必须是帧末调用（所有 update 之后）——位置才是本帧最终值，尾迹与弹头不会错位一帧。
+  _updateFx(dt) {
+    if (!this.fx) return;
+    this.fx.update(dt);
+    if (!FX.TRACER.ENABLED) return;
+    const tail = this.fx.tracer;
+    const d = this._tailDir;
+    tail.begin();
+    const bullets = this.bullets.active;
+    for (let i = 0; i < bullets.length; i++) {
+      const b = bullets[i];
+      d.copy(b.vel).normalize();
+      // 第四十二修：尾迹最多拖到「出生点」(b.origin)，绝不越过枪管 ——
+      //   子弹出生点在枪管内部(SHOOT.SPAWN_OFFSET)，照常拖满 LENGTH 的话，
+      //   弹头刚出膛那几帧整条尾迹会穿到枪管后方（玩家反馈的「曳光延伸到枪管背后」）。
+      tail.add(b.pos, d, FX.TRACER.COLOR, b.origin ? b.pos.distanceTo(b.origin) : null);
+    }
+    if (this.projectiles) {
+      const list = this.projectiles.list;
+      for (let i = 0; i < list.length; i++) {
+        const p = list[i];
+        d.copy(p.vel).normalize();
+        const col = FX.TRACER.ENEMY_COLORS[p.kind];
+        tail.add(p.mesh.position, d, col == null ? FX.TRACER.COLOR : col);
+      }
+    }
+    tail.end();
+    this.damageNumbers?.flushUploads();   // 第四十二修：把本帧超预算未上传的伤害数字贴图补上
   }
 
   // 穿云结束后统一启动本关 BGM + 开场语音（雾气转场期间一律静音）
@@ -1232,6 +1353,12 @@ export class Game {
     const pp = this._playerPos();
 
     for (const shot of this.input.shots) this.player.fire(shot, this.bullets, this.audio);
+    // 档2：枪口焰 —— 用**真实枪口位姿**（与红射线/子弹同源）闪一下；不改动任何弹道
+    //   第四十二修：连方向一起传 —— 焰光沿枪口方向前移 FX.MUZZLE.FORWARD，避免被枪管自身遮住。
+    if (FX.MUZZLE.ENABLED && this.input.shots.length > 0) {
+      const lastShot = this.input.shots[this.input.shots.length - 1];
+      this.fx.muzzle(lastShot.position, lastShot.direction);
+    }
 
     // 选中技能：冷却递减；左手柄 grip(或桌面 F)请求释放 → 冷却就绪则触发
     this.skillCooldown = Math.max(0, this.skillCooldown - dt);
@@ -1270,6 +1397,18 @@ export class Game {
       this.waves.update(dt);
     }
 
+    // 第四十二修 · 中场预警：普通关/危机关过半时弹一次「更强的敌人来袭」（每关一次）
+    //   判据 = 本关时间窗(levelSecondsOf) × MID_WARNING.AT；机制关/Boss 关没有倒计时，不弹。
+    if (MID_WARNING.ENABLED && !this.normalTest) {
+      const lv = LEVELS[this.levelIndex];
+      if (lv && !isBoss(lv) && !isLaser(lv)
+          && midWarningDue(this.waves.elapsed, levelSecondsOf(lv.n), this._midWarned)) {
+        this._midWarned = true;
+        this.midWarning?.show();
+        this.log('中场预警：更强的敌人来袭（第 ' + lv.n + ' 关已过半 ' + Math.round(this.waves.elapsed) + 's）');
+      }
+    }
+
     // 聚宝盆等脚本化死亡（寿命到期 → 标记 _pendingKill）在此结算
     for (let i = this.balloons.list.length - 1; i >= 0; i--) {
       const b = this.balloons.list[i];
@@ -1285,14 +1424,16 @@ export class Game {
     this.hud.setHp(this.player.hp, this.player.maxHp);
     // 正常测试：显示"距停止补怪"倒计时，便于观察出怪曲线
     if (this.normalTest) {
-      const stopAt = SPAWN_RING.enabled ? SPAWN_RING.stopAt : NORMAL_TEST.stopAt;
+      const stopAt = levelSecondsOf(this.level ? this.level.n : 0);   // 第四十一修：倒计时按关卡取（见 constants.LEVEL_SECONDS）
       this.hud.setCountdown(Math.ceil(Math.max(0, stopAt - this.waves.elapsed)));
     }
 
     if (!this.player.alive) { this._restartLevel(); return; }
     const cleared = this.dragon ? this.dragon.cleared : this.waves.cleared;
     // 第18关魔术师Boss：通关横幅激活期间不走抽卡，改由横幅 10s 计时自动退出
-    if (cleared && !(this.waves && this.waves._winBanner)) { this._enterCard(); }
+    // 第18关魔术师 Boss：本关通关不走抽卡/毕业汇总（_winBanner 在跑横幅，或已击杀待收尾）
+    //   —— 第三十九修：即使 WIN_BANNER_SECONDS=0（不建横幅）也要挡住，否则同一帧又去开抽卡界面。
+    if (cleared && !(this.waves && (this.waves._winBanner || this.waves.magicianCleared))) { this._enterCard(); }
   }
 
   // 基础怪群体语音：场上存活基础怪(排除龙身部件)≥ 阈值时播放一次，停顿 PAUSE 秒后再判断
@@ -1541,8 +1682,9 @@ export class Game {
         }
         const killed = hitBalloon.takeDamage(b.dmg);
         this.bullets.release(b);
-        this.audio?.playPop();
+        this._damageFeedback(hitBalloon, killed, b.pos);   // 第四十修：伤害数字 + 命中音/轻震动；档2：火花落在弹着点
         if (killed) this._onKilled(hitBalloon);
+        if (killed) this._bulletKill(hitBalloon);   // 第四十二修：连杀加速只认子弹击杀
       }
     }
     this.bullets.sync(); // 碰撞释放后立刻刷新实例矩阵（避免命中子弹滞留一帧）
@@ -1587,11 +1729,11 @@ export class Game {
   }
 
   _onKilled(balloon) {
+    this._killFeedback(balloon);   // 第四十修：击杀音色（按敌种）+ 连击升调 + 中/重震动
     // 龙 Boss 部件：隐藏并由 DragonBoss 管理「1秒复活」，不从这里永久移除（且不再连锁炸其他龙部件）
     if (balloon.isDragonPart) {
       if (this.dragon && !this.dragon.dying) {
         this._addScore(balloon.score);
-        this.audio?.playPop();
         this._spawnExplosionFx(balloon.mesh.position, balloon.effectiveRadius);
         this.dragon.notifyKilled(balloon);
       }
@@ -1603,7 +1745,6 @@ export class Game {
     if (balloon.behavior === 'treasure') {
       const bonus = (balloon.type.baseScore || 0) + (balloon._killsDuringLife || 0) * (balloon.type.perKillScore || 0);
       this._addScore(bonus);
-      this.audio?.playPop();
       this.balloons.remove(balloon);
       return;
     }
@@ -1624,7 +1765,9 @@ export class Game {
         if (balloon.type.id === 'flagMask') pct = FACE_BOSS.KILL_FLAG_HP_PCT;
         else if (balloon.type.id === 'blackMaskClone') pct = FACE_BOSS.KILL_CLONE_HP_PCT;
         const dmg = Math.round(boss.maxHp * pct);
-        if (boss.takeDamage(dmg, true))  // ignoreReduction=true，绕过减伤
+        const bossKilled = boss.takeDamage(dmg, true);  // ignoreReduction=true，绕过减伤
+        this._damageFeedback(boss, bossKilled);
+        if (bossKilled)
           this._onKilled(boss);          // Boss 死亡 → 递归进入正常 Boss 结算
       }
     }
@@ -1651,6 +1794,124 @@ export class Game {
     }
     // 爆炸范围伤害已移除（爆炸卡删除）
     this.balloons.remove(balloon);
+  }
+
+  // ====== 打击感（第四十修）======
+
+  // 命中反馈统一入口：伤害数字 + 命中音 + 轻震动。
+  //   killed=true 时不发命中音 —— 击杀那一击改由 _killFeedback 发击杀音，
+  //   否则「命中 tick + 击杀 thump」会在同一帧叠在一起，反而糊。
+  _damageFeedback(balloon, killed, hitPos) {
+    if (!balloon) return;
+    const dealt = balloon._lastDamage != null ? balloon._lastDamage : 0;
+    // 档2：命中火花 —— 打在怪身上的那一点（有弹着点就用弹着点，别糊在模型中心）
+    this.fx?.spark(hitPos || balloon.mesh.position);
+    if (this.damageNumbers) {
+      this._fxPos.copy(balloon.mesh.position);
+      this._fxPos.y += (balloon.effectiveRadius || 0.5) + 0.35;   // 抬到头顶，别糊在模型里
+      this.damageNumbers.spawn(this._fxPos, dealt, { key: balloon, kill: killed });
+    }
+    if (!killed) {
+      this.audio?.playHit();
+      this._pulseHaptic('HIT');
+    }
+  }
+
+  // 击杀反馈：按敌种换音色 + 连击升调 + 中/重震动。
+  _killFeedback(balloon) {
+    this._bumpCombo();
+    const kind = this._killSoundKind(balloon);
+    this.audio?.playKill(kind, this.combo);
+    const heavy = kind === 'elite' || kind === 'boss' || kind === 'dragon';
+    this._pulseHaptic(heavy ? 'ELITE' : 'KILL');
+    // 档2：击杀碎片 —— 颜色取该敌种 tint（没有就兜底）；精英/Boss/龙多爆几片
+    if (this.fx && balloon.mesh) {
+      const t = balloon.type;
+      this.fx.debrisBurst(balloon.mesh.position, t && t.tint != null ? t.tint : null,
+        heavy ? FX.DEBRIS.ELITE_MUL : 1);
+    }
+  }
+
+  // ====== 连杀加速（第四十二修）======
+
+  // 只统计**子弹**击杀：技能/如来神掌/激光剑/爆炸杀的一律不计数（也不打断连杀）。
+  // 满 RAPID_FIRE.KILLS → 射速 ×MULT 持续 SECONDS 秒 + 奖励音；随后从 0 重新起算。
+  // 第四十三修：加速期间最多只能再攒 BOOST_CARRY_MAX 个（规则见 game/rapidFire.js 的 advanceStreak）。
+  _bulletKill(balloon) {
+    if (!RAPID_FIRE.ENABLED) return;
+    const boosting = this._gameTime < this._rapidUntil;
+    const { next, triggered } = advanceStreak(this._bulletStreak, boosting, RAPID_FIRE);
+    this._bulletStreak = next;
+    this._bulletStreakAt = this._gameTime;      // 还有子弹击杀 → 断连计时重置
+    if (!triggered) return;
+    this._rapidUntil = this._gameTime + RAPID_FIRE.SECONDS;
+    this._setRapidMul(1 / RAPID_FIRE.MULT);
+    this.audio?.playRapidFire();                // 奖励音（配方见 src/vr/audio.js）
+    this.log('连杀 ' + RAPID_FIRE.KILLS + ' 达成：射速 +' + Math.round((RAPID_FIRE.MULT - 1) * 100)
+             + '%，持续 ' + RAPID_FIRE.SECONDS + 's');
+  }
+
+  // 每帧：连杀超时清零 + 加速到期还原射速（幂等，用 _rapidMul 记住当前生效值）
+  _tickRapidFire() {
+    if (!RAPID_FIRE.ENABLED) return;
+    if (this._bulletStreak > 0 && this._gameTime - this._bulletStreakAt > RAPID_FIRE.GAP) this._bulletStreak = 0;
+    this._setRapidMul(this._gameTime < this._rapidUntil ? 1 / RAPID_FIRE.MULT : 1);
+  }
+
+  // 改写真实节流源（input._gunCooldown = _baseGunCooldown × mul；mul<1 = 更快）
+  _setRapidMul(mul) {
+    if (this._rapidMul === mul) return;
+    this._rapidMul = mul;
+    this.input?.setFireRateMul(mul);
+  }
+
+  // ====== 如来神掌分帧结算（第四十二修）======
+  //   一掌罩住几十只怪时，原来在**同一帧**给每只怪各跑一遍 takeDamage + 伤害数字
+  //   （canvas 重绘 + CanvasTexture 上传）+ 击杀碎片/音效 → 单帧几十次纹理上传，
+  //   在 PICO 上就是一次 GPU 尖峰，表现即「神掌一放就卡一下」。
+  //   改为入队、每帧只结算 MAX_DAMAGE_PER_FRAME 个：数字照弹、击杀照结算，
+  //   只是把几十只怪摊到 5~8 帧（≈0.1s）内 —— 肉眼看不出来。
+  _drainBuddhaQueue() {
+    const q = this._buddhaQueue;
+    if (!q || !q.length) return;
+    const limit = Math.max(1, BUDDHA.MAX_DAMAGE_PER_FRAME | 0);
+    for (let n = 0; n < limit && q.length; n++) {
+      const it = q.shift();
+      const b = it.b;
+      // 排队期间可能已被别的伤害打死/移除（连锁击杀、Boss 收尾）→ 直接丢弃
+      if (!b || !b.alive || !this.balloons.list.includes(b)) continue;
+      const stuck = b.takeDamage(it.dmg);
+      this._damageFeedback(b, stuck);
+      if (stuck) this._onKilled(b);
+    }
+  }
+
+  // 敌人 → 击杀音色键（取值见 audio.js 的 _killVoice switch）。
+  _killSoundKind(b) {
+    if (!b) return 'basic';
+    if (b.isBoss) return 'boss';
+    if (b.isDragonPart) return 'dragon';
+    if (b.isElite) return 'elite';
+    return (b.type && b.type.id) || b.behavior || 'basic';
+  }
+
+  // 连击：COMBO.WINDOW 秒内的连续击杀累加；断连后从 1 重新起算。
+  _bumpCombo() {
+    if (this._gameTime <= this._comboUntil) this.combo = Math.min(HIT_FEEDBACK.COMBO.MAX, this.combo + 1);
+    else this.combo = 1;
+    this._comboUntil = this._gameTime + HIT_FEEDBACK.COMBO.WINDOW;
+  }
+
+  // 手柄震动：按档位节流（同一档 MIN_GAP 秒内只震一次）；受伤双手一起震。
+  _pulseHaptic(channel) {
+    const H = HIT_FEEDBACK.HAPTIC;
+    if (!H.ENABLED || !this.input || typeof this.input.pulseHand !== 'function') return;
+    const p = H[channel];
+    if (!p) return;
+    if (this._gameTime - (this._hapticAt[channel] ?? -99) < H.MIN_GAP) return;
+    this._hapticAt[channel] = this._gameTime;
+    if (channel === 'HURT') this.input.pulseBothHands && this.input.pulseBothHands(p.intensity, p.duration);
+    else this.input.pulseHand('right', p.intensity, p.duration);
   }
 
   _doBuddha() {
@@ -1789,7 +2050,8 @@ export class Game {
       if ((b._swordCdUntil || 0) > now) continue; // 同一只怪在 HIT_INTERVAL 内只受一次（剑刃持续扫到则可高频多次扣血）
       const killed = b.takeDamage(LASER_SWORD.DAMAGE * this.player.skillDamageMul, true); // ignoreReduction=true 穿透减伤（实际伤害 = DAMAGE × player.skillDamageMul）
       b._swordCdUntil = now + LASER_SWORD.HIT_INTERVAL; // 调小 HIT_INTERVAL = 更高 DPS（修复：原 1.0s 导致单次挥击只命中一次，#1）
-      if (killed) { this.audio?.playPop(); this._onKilled(b); } // 击毙音效（修复：原激光击杀静默，#2）
+      this._damageFeedback(b, killed);   // 第四十修：伤害数字 + 命中音（击毙音由 _onKilled 统一发）
+      if (killed) this._onKilled(b);
     }
   }
 
@@ -1815,10 +2077,14 @@ export class Game {
         const p = b.mesh.position;
         if (Math.abs(p.x - px) < halfW && Math.abs(p.y - py) < halfH && Math.abs(p.z - pz) < zBand) {
           this._buddhaHit.add(b);
-          if (b.takeDamage(dmg)) this._onKilled(b);
+          // 第四十二修：不在这里当场结算 —— 一掌罩住几十只怪时，同帧几十次 takeDamage +
+          //   伤害数字纹理上传 + 击杀碎片/音效 = 一次 GPU 尖峰（「神掌一放就卡一下」）。
+          //   入队交给 _drainBuddhaQueue 每帧定量消费（数字照弹、击杀照结算，只是摊到 5~8 帧）。
+          this._buddhaQueue.push({ b, dmg });
         }
       }
     }
+    this._drainBuddhaQueue();   // 本帧入队的量按上限消费（剩下的交给 _update 的下一帧兜底）
     if (finished) this._buddhaFx = null;
   }
 
@@ -1842,6 +2108,7 @@ export class Game {
         this.audio?.playPop();
         // 气球入侵飞船区域即造成伤害，不依赖玩家与爆炸点的距离；伤害按该气球自身自爆值
         const dead = this.player.takeDamage(balloon.isBoss ? 40 : (balloon.selfDamage ?? BALLOON.DAMAGE));
+        this._pulseHaptic('HURT');   // 第四十修：被自爆气球炸到 → 双手重震
         if (dead) { this._restartLevel(); return true; }
       }
     }
@@ -1944,6 +2211,11 @@ export class Game {
     this.vignette.clear();
     this.bullets.clear();
     // 不调 _clearExplosions()：让死亡爆炸特效在 0.4s 内自然消亡
+    this.damageNumbers.clear();   // 死亡重开：清伤害数字，避免跨重开残留
+    this.fx.clear();              // 档2：一并清掉特效残留
+    this.midWarning?.hide();      // 第四十二修：重开收掉中场预警横幅
+    this._bulletStreak = 0; this._rapidUntil = 0; this._setRapidMul(1);
+    this._buddhaQueue.length = 0;
     this._respawnKeepPosition();   // 死亡重开：保留玩家水平位置（现实站在哪，游戏里就还在哪），只把高度拉回 0
     this._loadLevel(this.levelIndex); // 会重新拍快照（恢复后的状态）
     // 死亡重开：攻击力 +50（以「死亡前攻击力」为基准，而不是从 100 起算），立即生效并弹面前 2m 文字提示

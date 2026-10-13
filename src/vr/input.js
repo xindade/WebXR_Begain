@@ -117,7 +117,10 @@ export class InputManager {
         noteInputSource(e.data);   // 记录 profiles（设备槽识别的证据②）
         // 主手射线：变红 + 套上本设备槽的补偿角（与子弹方向共用同一角，见 deviceProfile.js）
         this._applyRayAim(ctrl);
-        _logAim(`[AIM] ${describeDetection()}`);
+        // 第四十三修：把**生效角**一起打出来 —— 现场调角时一眼确认「改的到底有没有生效」
+        //   （只打印槽位与证据时，URL 覆盖 / FORCE 有没有命中看不出来）。
+        const _a = getAimDeg();
+        _logAim(`[AIM] ${describeDetection()} → 生效角 x=${_a.x} y=${_a.y} z=${_a.z}（来源 ${_a.source}）`);
       });
       ctrl.addEventListener('disconnected', () => {
         if (ctrl.userData.hand) this._hands[ctrl.userData.hand] = null;
@@ -131,6 +134,7 @@ export class InputManager {
       line.scale.z = SHOOT.RAY_LENGTH;
       ctrl.add(line);
       ctrl.userData.rayLine = line;   // 存引用，connected 时按左右手调整颜色/俯角
+      line.visible = SHOOT.OFFHAND_RAY !== false;   // 第四十三修：非主手默认不画（connected 后再按左右手定）
       // 挂到 rig 而非 camera：控制器位姿本身已在参考空间内，
       // 再作为 camera 子节点会重复叠加头部变换导致偏移。
       this.rig.add(ctrl);
@@ -151,11 +155,14 @@ export class InputManager {
   }
 
   // 把某手柄的射线刷成「本设备槽的补偿角」：主手（射击手）套角 + 变红，另一手复位为青
+  //   · 第四十三修：非射击手的射线默认**不画**（SHOOT.OFFHAND_RAY = false）——左手那条光
+  //     与真正的瞄准基准（主手）无关，现场定稿去掉；要恢复把它改回 true 即可。
   _applyRayAim(ctrl) {
     const ray = ctrl?.userData?.rayLine;
     if (!ray) return;
     const shooting = ctrl.userData.hand === this.shootingHand;
     ray.material.color.setHex(shooting ? SHOOT.RAY_COLOR : SHOOT.RAY_COLOR_LEFT);
+    ray.visible = shooting || SHOOT.OFFHAND_RAY !== false;
     if (shooting) ray.rotation.copy(this._aimEulerRad());
     else ray.rotation.set(0, 0, 0);
   }
@@ -436,6 +443,35 @@ export class InputManager {
     return { x: gp.buttons[4]?.pressed || false, y: gp.buttons[5]?.pressed || false };
   }
 
+  // 手柄震动（第四十修）：命中 / 击杀 / 受伤的打击感反馈。
+  //   兼容两种 WebXR 实现 —— hapticActuators[0].pulse()（多数浏览器）与
+  //   gamepad.vibrationActuator.playEffect("dual-rumble")（Chromium 系）。
+  //   机型/浏览器不支持时静默返回 false：震动永远不是玩法必需项，不能因缺 API 抛错。
+  //   @param {"left"|"right"} hand 手别   @param {number} intensity 强度 0~1   @param {number} durationMs 时长(ms)
+  pulseHand(hand, intensity, durationMs) {
+    const gp = this._gamepadOf(hand);
+    if (!gp) return false;
+    const i = Math.max(0, Math.min(1, intensity || 0));
+    const d = Math.max(0, durationMs || 0);
+    if (i <= 0 || d <= 0) return false;
+    const act = (gp.hapticActuators && gp.hapticActuators[0]) || gp.vibrationActuator;
+    if (!act) return false;
+    try {
+      if (typeof act.pulse === "function") { act.pulse(i, d); return true; }
+      if (typeof act.playEffect === "function") {
+        act.playEffect("dual-rumble", { duration: d, startDelay: 0, strongMagnitude: i, weakMagnitude: i * 0.6 });
+        return true;
+      }
+    } catch (e) { /* 震动失败不影响游戏 */ }
+    return false;
+  }
+
+  // 双手同时震动（玩家受伤用）：任一手成功即算成功。
+  pulseBothHands(intensity, durationMs) {
+    const a = this.pulseHand("left", intensity, durationMs);
+    const b = this.pulseHand("right", intensity, durationMs);
+    return a || b;
+  }
   // 技能触发（桌面 F / VR 右手握柄）：返回本帧是否请求释放「选中技能」
   consumeSkill() { const v = this._skillQueued; this._skillQueued = false; return v; }
 

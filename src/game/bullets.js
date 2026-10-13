@@ -26,7 +26,7 @@ export class BulletManager {
   _obtain() {
     let b = this._pool.pop();
     if (!b) {
-      b = { pos: new THREE.Vector3(), prevPos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, dmg: 0, alive: false };
+      b = { pos: new THREE.Vector3(), prevPos: new THREE.Vector3(), origin: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, dmg: 0, alive: false };
     }
     b.alive = true;
     this.active.push(b);
@@ -40,6 +40,7 @@ export class BulletManager {
     }
     const b = this._obtain();
     b.pos.copy(position);
+    b.origin.copy(position);  // 出生点（第四十二修）：曳光尾迹的「后拖上限」，见 game._updateFx
     b.prevPos.copy(position); // 本帧线段起点 = 出生点（首帧线段退化为点，不误判）
     b.vel.copy(direction).normalize().multiplyScalar(SHOOT.BULLET_SPEED);
     b.life = SHOOT.BULLET_LIFE;

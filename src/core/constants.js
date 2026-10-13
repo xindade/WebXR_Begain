@@ -91,7 +91,10 @@ export const SHOOT = {
   // ===== 右手柄射线视觉 =====
   RAY_COLOR: 0xff2222,   // 右手射线颜色（红）
   RAY_LENGTH: 5,         // 射线可见长度 m
-  RAY_COLOR_LEFT: 0x66ccff, // 左手射线颜色（青，保持原样）
+  RAY_COLOR_LEFT: 0x66ccff, // 左手射线颜色（青）
+  // 第四十三修：非射击手是否也画射线。false = 只留主手那条。
+  //   现场定稿：左手指示观感上是「多出来的一条光」，且与真正的瞄准基准（主手）无关 → 默认不画。
+  OFFHAND_RAY: false,
 
   // —— 命中判定几何（仅 DepthSprite 2D立绘怪生效；3D模型怪走真实包围球，不受这两项影响）——
   // 立绘怪是永远朝相机的扁平卡片，命中体积是一个「竖薄板盒子」：
@@ -195,6 +198,7 @@ export const BUDDHA = {            // 如来神掌（大招）
   HIT_MARGIN_XY: 1.3,             // 命中盒 XY 放大系数：以掌图平面半宽/半高为基准再乘该系数（1=完全贴合掌面）
   HIT_Z_BAND: 8,                  // 命中盒 Z 半厚（米）：掌图作「横扫墙」，仅命中其当前 Z 前后 ±HIT_Z_BAND 内的敌人（沿 +Z 扫过逐步清场）
   DAMAGE: 700,                     // 命中盒内单体基础伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
+  MAX_DAMAGE_PER_FRAME: 6,         // 单帧最多结算几只怪（第四十二修）：详见 game._updateBuddhaFx 的分帧队列。
   // —— 视觉参数（基于透明 PNG 贴图） ——
   TEXTURE_URL: 'assets/buddha-palm.jpg', // 贴图路径（相对 index.html）；若原图为 PNG 可换 .png
   COLOR_KEY_THRESHOLD: 0.92,       // 白底剔除阈值：R/G/B 均大于 0.92×255 的像素变透明（0~1，越低越激进）
@@ -208,6 +212,9 @@ export const BUDDHA = {            // 如来神掌（大招）
   MOVE_TIME: 1.0,                  // 沿 +Z 移动时长 s
   PAUSE_TIME: 1.0,                 // 到达终点后停顿 s
   FADE_TIME: 0.3,                  // 淡出消失时长 s
+  // 第四十三修：掌图越过玩家后**冻结朝向**。
+  //   原先每帧朝相机 → 掌图穿过玩家（z 由负变正）时方向掉头，瞬间翻 180°（现场「穿过去后翻转一下」）。
+  LATCH_FACING: true,              // false = 恢复旧行为（每帧朝相机，会翻面）
   // —— 程序化 SDF 金掌（VFX_MODE='shader'，推荐）——
   // 回退：把 VFX_MODE 改成 'texture' 即恢复原 JPG 白底抠图方案（两方案共用同一平面/缩放/命中逻辑）。
   VFX_MODE: 'texture',             // 视觉方案：'texture'=优化抠图的 JPG 掌图（当前默认）；'canvas'=程序化 Canvas 矢量金掌；'shader'=SDF 金掌
@@ -432,6 +439,122 @@ export const EXPLOSION = {        // 气球进入4×8区域自爆特效
   MAX_SCALE: 2.5,      // 最大缩放倍数（相对气球半径）
   START_OPACITY: 0.7,  // 起始不透明度
   COLOR: 0xff6b3d,     // 爆炸颜色（橙红）
+};
+// ============================================================
+// 打击感层（第四十修）—— 命中/击杀音效分层 + 音高抖动 + 连击 + 手柄震动
+//   现场反馈「打击感偏弱」：此前命中与击杀共用同一个 playPop()，且每次播放音量/音高完全相同，
+//   高射速下几十发叠在一起听不出打中了什么。这里把「命中 / 击杀 / 精英 / Boss」拆成不同音色，
+//   每次播放带 ±抖动，并让 1.5s 内的连杀逐级抬高音高。全部为代码合成音，无新增音频资源。
+// ============================================================
+export const HIT_FEEDBACK = {
+  SOUND: {
+    HIT_VOLUME: 0.16,        // 普通命中音量（原 playPop 0.3，且命中/击杀同音）
+    KILL_VOLUME: 0.34,       // 击杀音量
+    PITCH_JITTER: 0.08,      // 每次播放音高随机 ±8%（消除「机关枪嗡嗡」的关键）
+    VOLUME_JITTER: 0.15,     // 每次播放音量随机 ±15%
+    COMBO_PITCH_STEP: 0.06,  // 连击每级音高上爬 6%
+    COMBO_MAX_STEP: 8,       // 连击音高最多上爬 8 级（+60%）
+  },
+  COMBO: {
+    WINDOW: 1.5,             // 连击窗口(s)：相邻两次击杀间隔超过它就断连
+    MIN_FOR_FEEDBACK: 3,     // 连击达到此值才开始升调（避免单杀就变调）
+    MAX: 99,                 // 连击计数上限（音高与后续显示都封顶）
+  },
+  HAPTIC: {
+    ENABLED: true,           // 手柄震动总开关；机型不支持时静默跳过，不影响游戏
+    HIT:   { intensity: 0.12, duration: 20 },   // 命中：轻
+    KILL:  { intensity: 0.35, duration: 45 },   // 击杀：中
+    ELITE: { intensity: 0.60, duration: 70 },   // 精英/Boss 击杀：重
+    HURT:  { intensity: 0.80, duration: 120 },  // 玩家受伤：最重（双手一起震）
+    MIN_GAP: 0.05,           // 同一档震动最小间隔(s)：防止高射速把手柄震麻
+  },
+};
+
+// ============================================================
+// 伤害数字（第四十修）—— 命中/击杀时在怪物头顶弹出的伤害数值
+//   颜色分档：每满 STEP(=100) 伤害，颜色沿 COLORS 往红加深一档，字号同步放大一档。
+//   同一只怪在 AGGREGATE_WINDOW 内的多次命中会合并成一个数字（避免高射速刷屏 + 反复上传纹理）。
+// ============================================================
+export const DAMAGE_NUMBER = {
+  ENABLED: true,
+  STEP: 100,                 // 每 +100 伤害 → 颜色加深一档（100=第1档，200=第2档……）
+  COLORS: [                  // 由浅到深：白 → 黄 → 橙 → 橙红 → 红 → 深红
+    0xffffff, 0xffe066, 0xffb347, 0xff8a33, 0xff5a1f, 0xff2a12, 0xd41010,
+  ],
+  BIG_TIER: 4,               // 达到该档起加金色描边（暴击级伤害更醒目）
+  BIG_STROKE: "#ffd24a",     // 高档位描边色
+  STROKE: "rgba(0,0,0,0.85)",// 常规描边（保证任何背景下都能看清）
+  SIZE: 0.30,                // 数字世界高度(m)（第 0 档）
+  TIER_SCALE_STEP: 0.06,     // 每高一档，字号 +6%
+  TEX_W: 256,                // 数字贴图宽(px)
+  TEX_H: 128,                // 数字贴图高(px)
+  FONT_PX: 84,               // 字号(px)
+  STROKE_PX: 8,              // 描边宽度(px)
+  LIFE: 0.75,                // 存活时长(s)
+  RISE: 0.9,                 // 上浮速度(m/s)
+  POP: 1.35,                 // 出生瞬间的放大倍数（0.12s 内回落到 1）
+  KILL_SCALE: 1.18,          // 击杀那一击的额外放大（区分「打中」与「打死」）
+  AGGREGATE_WINDOW: 0.14,    // 同一只怪的合并窗口(s)
+  POOL: 24,                  // 同时存在的数字上限（超出则回收最旧的）
+  UPLOAD_PER_FRAME: 6,       // 每帧最多上传几张数字贴图（第四十二修）：如来神掌一次命中几十只怪时，
+                             //   同帧几十次 canvas 重绘 + 纹理上传 = 一次 3MB 级 GPU 尖峰（「神掌一放就卡一下」）；
+                             //   超预算的条目延后一帧上传，且上传前保持透明（池复用绝不能露出上一轮的旧数字）。
+};
+
+// ============================================================
+// 打击感视觉层（档2 · 第四十一修）—— 曳光 / 命中火花 / 击杀碎片 / 枪口焰
+//   全部 InstancedMesh + 预分配池：零 per-frame 分配，draw call 只 +4
+//   （曳光 1、火花 1、碎片 1、枪口焰 1）。实现见 src/game/fx.js。
+//   性能铁律（PICO 4 / 72fps）：单次爆发数量受限、池满复用得最旧的实例。
+//   淡出：加色混合下逐实例调暗颜色（等效降透明度，且不触发着色器重编译）。
+// ============================================================
+export const FX = {
+  TRACER: {
+    ENABLED: true,
+    CAPACITY: 512,      // 同时存在的曳光条数（≥ 子弹池 500 + 敌方投射物余量）
+    LENGTH: 0.55,       // 曳光长度 m（自弹头沿飞行反方向拖出）
+    WIDTH: 0.022,       // 曳光粗细 m
+    OPACITY: 0.55,      // 曳光不透明度
+    MIN_BACK: 0.10,     // 曳光「后拖」最短长度 m（第四十二修）：不足此长度干脆不画。
+                        //   子弹出生点在枪管内部（SHOOT.SPAWN_OFFSET），照常从弹头往后拖 LENGTH
+                        //   会把尾迹拖到枪管后方（玩家看到的「曳光穿到枪后面」）。
+    COLOR: 0xffe066,    // 玩家子弹曳光色（与子弹同色）
+    ENEMY_COLORS: {     // 敌方投射物曳光色（按 kind）
+      shuriken: 0xdfe6e9,
+      ghostfire: 0xb46bff,
+      ink: 0x51517a,    // 墨汁本体近黑，曳光提亮一点才看得见
+    },
+  },
+  SPARK: {
+    ENABLED: true,
+    POOL: 64,           // 同时存在的火花上限
+    COUNT: [3, 5],      // 每次命中喷几粒（随机区间）
+    LIFE: 0.14,         // 存活 s
+    SIZE: 0.055,        // 单粒半径 m
+    SPEED: 3.2,         // 初速 m/s
+    GRAVITY: 0,         // 火花不受重力（能量感）
+    COLOR: 0xffd24a,    // 火花色（暖金）
+  },
+  DEBRIS: {
+    ENABLED: true,
+    POOL: 120,          // 同时存在的碎片上限
+    COUNT: [6, 10],     // 每次击杀爆几片
+    ELITE_MUL: 1.6,     // 精英/Boss/龙的碎片数量倍率
+    LIFE: 0.55,         // 存活 s
+    SIZE: 0.075,        // 单块边长 m
+    SPEED: 4.0,         // 初速 m/s
+    GRAVITY: 9.0,       // 重力加速度 m/s²
+    SPIN: 6.0,          // 翻滚角速度 rad/s
+    COLOR: 0xcccccc,    // 兜底颜色（正常取敌种 tint）
+  },
+  MUZZLE: {
+    ENABLED: true,
+    POOL: 2,            // 枪口焰并发槽位（射速再高也只闪一下）
+    LIFE: 0.05,         // 闪现时长 s
+    SIZE: 0.22,         // 光斑直径 m
+    COLOR: 0xffd76a,    // 焰色
+    FORWARD: 0.20,      // 焰光沿枪口方向再前移 m（第四十二修）：出生点在枪管内，前移才不被枪管自身遮住
+  },
 };
 
 export const CARD = {
@@ -818,6 +941,99 @@ export const SPAWN_RING = {
 };
 
 // ============================================================
+// 关卡时长（第四十一修）—— 按关卡给「停止补怪时间窗」，取代原来的全局 60s
+//   语义未变：时间窗到点后不再补怪，场上清空即通关（见 waves._updateDpsSpawn）。
+//   只作用于普通关 / 危机关；机制关(3/9/15)与 Boss 关(6/12/18)没有倒计时，不在此表。
+//   REF_SECONDS 既是「未列出关卡的兜底值」，也是精英波时间窗的缩放基准（见 levelTimeScale）。
+// ============================================================
+export const LEVEL_SECONDS = {
+  REF_SECONDS: 60,
+  BY_LEVEL: {
+    1: 40, 2: 40, 4: 40, 5: 40,          // 前 6 关：−20s（3 与 6 是机制关/Boss 关，无倒计时）
+    7: 50, 8: 50, 10: 50, 11: 50,        // 7~10 关：−10s
+    13: 60, 14: 60, 16: 60, 17: 60,      // 11 关之后维持 60s（本轮不动）
+  },
+};
+
+/** 取某关的倒计时秒数（未列出的关 → REF_SECONDS） */
+export function levelSecondsOf(n) {
+  const v = LEVEL_SECONDS.BY_LEVEL[n];
+  return (typeof v === 'number' && v > 0) ? v : LEVEL_SECONDS.REF_SECONDS;
+}
+
+/**
+ * 精英波时间窗的缩放比例：关卡时长缩短多少，三期（前期/中期/后期）就等比前移多少。
+ *   例：1~6 关 40/60 = 0.667 → 原 5/20/40s 变 3.3/13.3/26.7s。
+ *   不缩放的话，「后期 40s」在 40s 就结束的关卡里根本打不到（时间一到直接通关）。
+ */
+export function levelTimeScale(n) { return levelSecondsOf(n) / LEVEL_SECONDS.REF_SECONDS; }
+
+// ============================================================
+// 中场预警横幅（第四十二修）—— 关卡过半时在准星正前方弹 2 秒「更强的敌人来袭」
+//   为什么是场景内 Sprite：头显沉浸态里页面 DOM 不可见（同 winBanner / wristUI 的结论）。
+//   只作用于有倒计时的普通关/危机关（机制关 3/9/15 与 Boss 关 6/12/18 没有「过半」这个概念）。
+//   实现在 src/game/warningBanner.js；触发判据在 game._updatePlaying（每关只弹一次，_midWarned 把关）。
+// ============================================================
+export const MID_WARNING = {
+  ENABLED: true,
+  AT: 0.5,             // 触发点 = 本关时间窗(levelSecondsOf) × AT（0.5 = 刚好过半）
+  SECONDS: 2,          // 横幅停留总时长 s（含淡入淡出）
+  FADE_IN: 0.25,       // 淡入时长 s
+  FADE_OUT: 0.35,      // 淡出时长 s
+  DIST: 2.6,           // 出现在准星前方多远（米）：太近糊脸、太远看不清字
+  WIDTH: 2.2,          // 横幅宽度（米）；高度按画布 4:1 自动算
+  COLOR: '#ff5a3c',    // 边框与警示三角颜色（橙红）
+  TEXT: '更强的敌人来袭',   // 横幅文字（空字符串则用 game._drawMidWarning 的默认文案）
+};
+
+// ============================================================
+// 连杀加速（第四十二修）—— 连续用**子弹**击杀 KILLS 个敌人 → 射速加速 SECONDS 秒 + 奖励音
+//   只认子弹击杀：技能/如来神掌/激光剑/爆炸杀的一律不计数（也不打断连杀）。
+//   GAP 秒内没有新的子弹击杀 → 计数清零（否则会变成「慢慢攒够 10 个」的无感累积）。
+//   计数显示在**枪身的红点环**上（src/vr/streakCounter.js），集齐后闪一下 + 枪身周围向后飘雾（第四十三修）。
+//   实现在 game._bulletKill / game._tickRapidFire。
+// ============================================================
+export const RAPID_FIRE = {
+  ENABLED: true,
+  KILLS: 10,           // 触发所需连杀数
+  GAP: 6,              // 距上次子弹击杀超过该秒数即清零（秒）
+  MULT: 1.5,           // 射速倍率（1.5 = 2 发/秒 → 3 发/秒）
+  SECONDS: 3,          // 加速持续时长 s
+  // 第四十三修：**加速期间**最多只能再攒这么多个（防止「越杀越快」无限续杯）：
+  //   加速中击杀同样计入，但封顶 BOOST_CARRY_MAX —— 剩下的要等加速结束后重新连杀。
+  BOOST_CARRY_MAX: 5,
+  // —— 枪身的连杀红点环（src/vr/streakCounter.js，纯视觉；现场可热调）——
+  //   每用子弹击杀一个 → 环上点亮一个红点；集齐（KILLS 个）→ 整圈闪一下 + 开始飘雾。
+  //   一个 InstancedMesh 装下全部红点（1 次 draw call），不显示时整体 visible=false。
+  COUNTER: {
+    ENABLED: true,
+    DOTS: 0,            // 红点个数（0 = 取 KILLS）
+    ALONG: 0.5,         // 环心落在「枪托 → 枪口」的比例（0.5 = 枪身正中，1 = 枪口端）
+    RING_RADIUS: 0,     // 环半径 m（0 = 自动 = 枪身横截面最大半宽 × RING_FRAC）
+    RING_FRAC: 1.45,    // 自动环半径系数（>1 才在枪身外面）
+    DOT_SIZE: 0,        // 单个红点直径 m（0 = 自动 = 环半径 × DOT_FRAC）
+    DOT_FRAC: 0.28,     // 自动点径系数
+    COLOR: 0xff2f2b,    // 已点亮（红）
+    COLOR_BOOST: 0xffd24a, // 加速期间新攒的点（金）：用来区分「这一轮在加速里攒的」
+    FLASH_TIME: 0.28,   // 集齐后「闪一下」的时长 s（放大 + 淡出）
+    FLASH_SCALE: 2.6,   // 闪光时的放大倍数
+  },
+  // —— 加速期间「向后飘的雾气」（表现「枪已经加速」）——
+  //   同样是一个 InstancedMesh（1 次 draw call），只在加速的 SECONDS 秒内可见。
+  MIST: {
+    ENABLED: true,
+    COUNT: 8,           // 雾团数
+    LIFE: 0.85,         // 单团存活 s
+    INTERVAL: 0.10,     // 出团间隔 s
+    SIZE: 0,            // 单团直径 m（0 = 自动 = 环半径 × 2）
+    SPEED: 1.5,         // 向后（枪口反方向）飘的速度 m/s
+    SPREAD: 0.35,       // 沿环切线散开的幅度 m
+    COLOR: 0xbfe9ff,    // 冷白蓝
+    OPACITY: 0.34,      // 整片雾气的不透明度
+  },
+};
+
+// ============================================================
 // 脸谱 Boss（第6/18关）— 单 Boss 多阶段循环
 //   单 Boss 3000 HP + 95% 减伤，3 阶段循环（蓝→红→黑→蓝...）直到 HP 归零
 //   每阶段 10s，变脸时换位置（前→左→右→前...）+ 清除子实体
@@ -954,6 +1170,14 @@ export const MAGICIAN_BOSS = {
     LOG_VOICE: true,         // true=把语音当前时间打进留痕，便于现场标定 CUE_AT（标定完可改 false）
     LOG_STEP: 0.5,           // 留痕间隔 s
   },
+
+  // —— 收尾（第三十九修）——
+  //   Boss 死亡 = **本局自然结束**：先清场（召唤物与在飞光点立即消失）→ 显示通关横幅 →
+  //   横幅到期即结束本局（game.js 的 _onFinalBossClear → _finishRound，上报 game-end 带
+  //   roundOver ⇒ APK 关浏览器 / 唤醒平台客户端；直播模式另外还会停推流并卸载页面）。
+  //   旧实现（第三十八修）是「横幅 10s → toMenu()」：不带 roundOver ⇒ 浏览器不关、页面回菜单，
+  //   平台下一次「启动游戏」一到就从第 1 关重开（现场现象：Boss 打死后过一会又回到第一关）。
+  WIN_BANNER_SECONDS: 5,      // 通关横幅持续 s（0 = 不显示横幅，Boss 一死就直接结束本局）
 
   // —— 召唤池（第三十八修：取代原「按时间点分波的召唤」）——
   //   场上维持 POOL.MAX 只（其中 POOL.ELITE 只为「当前阶段」的精英怪），
@@ -1374,6 +1598,12 @@ const _OVERRIDES = [
   ['INTRO_VIDEO', INTRO_VIDEO, USER_CONFIG.INTRO_VIDEO],
   ['CAST', CAST, USER_CONFIG.CAST],
   ['MIRROR', MIRROR, USER_CONFIG.MIRROR],
+  ['HIT_FEEDBACK', HIT_FEEDBACK, USER_CONFIG.HIT_FEEDBACK],
+  ['DAMAGE_NUMBER', DAMAGE_NUMBER, USER_CONFIG.DAMAGE_NUMBER],
+  ['LEVEL_SECONDS', LEVEL_SECONDS, USER_CONFIG.LEVEL_SECONDS],
+  ['FX', FX, USER_CONFIG.FX],
+  ['MID_WARNING', MID_WARNING, USER_CONFIG.MID_WARNING],
+  ['RAPID_FIRE', RAPID_FIRE, USER_CONFIG.RAPID_FIRE],
 ];
 for (const [name, target, patch] of _OVERRIDES) {
   if (patch && typeof patch === 'object') {

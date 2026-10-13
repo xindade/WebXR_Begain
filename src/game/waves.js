@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM, SPAWN_RING } from '../core/constants.js';
+import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM, SPAWN_RING, levelSecondsOf, levelTimeScale } from '../core/constants.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { ELITE_SCHEDULE, ELITE_WINDOW, ELITE_BASE_HP } from '../content/eliteMonsters.js';
 import { isBoss } from '../content/levels.js';
@@ -60,6 +60,7 @@ export class WaveManager {
     this._magicianBoss = null;          // MagicianBoss 控制器实例
     this.magicianGlassWall = null;       // 当前玻璃墙（供 game.js 子弹钩子拦截；非玻璃阶段为 null）
     this._winBanner = null;              // 第18关 Boss 死亡后的 VR 通关横幅（切关时清理，见 startLevel）
+    this.magicianCleared = false;         // 第18关 Boss 已被击杀（第三十九修：game 据此直接收尾，不再进抽卡/毕业汇总）
     this.facePhase = 0;             // 0=蓝, 1=红, 2=黑
     this.facePhaseTimer = 0;
     this.faceSubEntities = [];      // 当前阶段子实体（小怪/旗子/分身混合）
@@ -91,6 +92,7 @@ export class WaveManager {
 
   startLevel(level) {
     if (this._winBanner) { this._winBanner.dispose(); this._winBanner = null; } // 切关清理上关的 VR 通关横幅
+    this.magicianCleared = false;      // 第三十九修：新一关重新置位（Boss 死过一次不污染下一关）
     // 魔术师 Boss（第18关）：重开关卡时必须销毁上一个控制器。
     //   否则旧实例的代理气球已被 game._restartLevel → balloons.clear() 移除，其 update() 里
     //   「代理不在 balloons.list 中」会被当成「Boss 已死」→ 误触发 _win() 弹出通关横幅
@@ -360,6 +362,15 @@ export class WaveManager {
     this._magicianBoss = new MagicianBoss(this);
   }
 
+  // 本关倒计时秒数（第四十一修）：按关卡取值，取代原来那份全局常量（原 60s 写死在 SPAWN_RING 与 NORMAL_TEST 里各一份）
+  _stopAt() { return levelSecondsOf(this.level ? this.level.n : 0); }
+
+  // 精英波时间窗：随本关时长等比前移（1~6 关 −20s → 三期一起前移 1/3）
+  _eliteWindows() {
+    const k = levelTimeScale(this.level ? this.level.n : 0);
+    return { early: ELITE_WINDOW.early * k, mid: ELITE_WINDOW.mid * k, late: ELITE_WINDOW.late * k };
+  }
+
   // ===== 精英波（叠加于普通出怪之上，来自 ELITE_SCHEDULE）=====
 
   // 取某敌种的「默认血量」：优先用 Excel 跨关聚合的全局表 ELITE_BASE_HP
@@ -376,9 +387,10 @@ export class WaveManager {
     if (!this._elitePlan || !this._eliteFired) return;
     this._eliteElapsed += dt;
     const e = this._eliteElapsed;
-    if (!this._eliteFired.early && e >= ELITE_WINDOW.early) { this._eliteFired.early = true; this._fireElitePhase('early'); }
-    if (!this._eliteFired.mid   && e >= ELITE_WINDOW.mid)   { this._eliteFired.mid   = true; this._fireElitePhase('mid'); }
-    if (!this._eliteFired.late  && e >= ELITE_WINDOW.late)  { this._eliteFired.late  = true; this._fireElitePhase('late'); }
+    const W = this._eliteWindows();   // 第四十一修：时长缩短 → 三期等比前移（否则后期永远打不到）
+    if (!this._eliteFired.early && e >= W.early) { this._eliteFired.early = true; this._fireElitePhase('early'); }
+    if (!this._eliteFired.mid   && e >= W.mid)   { this._eliteFired.mid   = true; this._fireElitePhase('mid'); }
+    if (!this._eliteFired.late  && e >= W.late)  { this._eliteFired.late  = true; this._fireElitePhase('late'); }
   }
 
   // 触发某期精英波：按各敌种分别计算血量并逐个生成组合敌种
@@ -951,6 +963,7 @@ export class WaveManager {
   // 每帧驱动：5s 检查内圈 → 系数调外圈；时间窗内滴流补怪；窗后清空通关
   _updateDpsSpawn(dt) {
     const S = SPAWN_RING;
+    const stopAt = this._stopAt();   // 第四十一修：本关倒计时按关卡取（不再固定 60s）
     this.ringTimer += dt;
 
     // 每 CHECK_INTERVAL 秒：检查内圈存活 → 算系数 → 调外圈配额
@@ -960,10 +973,10 @@ export class WaveManager {
     }
 
     // 停止补怪时间窗内：滴流补怪到配额
-    if (this.elapsed < S.stopAt) this._refillDrip(dt);
+    if (this.elapsed < stopAt) this._refillDrip(dt);
 
     // 时间窗结束且场上清空（含飞行光点）→ 通关
-    if (this.elapsed >= S.stopAt && this._active === 0) this.cleared = true;
+    if (this.elapsed >= stopAt && this._active === 0) this.cleared = true;
   }
 
   // 每 5 秒检查：内圈存活数 → RING_TABLE → 内圈系数 → 外圈目标
@@ -1032,6 +1045,7 @@ export class WaveManager {
 
   _updateNormalTest(dt) {
     this.elapsed += dt;
+    const stopAt = this._stopAt();   // 第四十一修：DDA/时间曲线回退分支同样按关卡取时长
 
     // 新调度（DPS 基准内外圈）：SPAWN_RING.enabled=true 时完全接管，替换下方 DDA 分支
     if (SPAWN_RING.enabled) {
@@ -1043,7 +1057,7 @@ export class WaveManager {
     if (DDA.enabled && this.dda) {
       const D = this.dda.update(dt);
       const plan = this.dda.getPlan();
-      if (this.elapsed < NORMAL_TEST.stopAt) {
+      if (this.elapsed < stopAt) {
         this.spawnTimer -= dt;
         if (this._active < plan.concurrency && this.spawnTimer <= 0) {
           // 场上缺口大时批量补充（避免一个个慢慢滴出，体感稀疏）
@@ -1059,14 +1073,14 @@ export class WaveManager {
         }
       }
       // 停止补怪后场上清空 → 通关
-      if (this.elapsed >= NORMAL_TEST.stopAt && this._active === 0) {
+      if (this.elapsed >= stopAt && this._active === 0) {
         this.cleared = true;
       }
       return;
     }
 
     // 原时间曲线（DDA 关闭时回退）
-    if (this.elapsed < NORMAL_TEST.stopAt) {
+    if (this.elapsed < stopAt) {
       this.spawnTimer -= dt;
       const target = this._targetConcurrency(this.elapsed);
       if (this._active < target && this.spawnTimer <= 0) {
@@ -1075,7 +1089,7 @@ export class WaveManager {
         this.spawnTimer = NORMAL_TEST.spawnCooldown;
       }
     }
-    if (this.elapsed >= NORMAL_TEST.stopAt && this._active === 0) {
+    if (this.elapsed >= stopAt && this._active === 0) {
       this.cleared = true;
     }
   }

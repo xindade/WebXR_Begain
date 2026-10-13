@@ -8,14 +8,24 @@ const _midScale = new THREE.Vector3();
 const _faceZ = new THREE.Vector3(0, 0, 1);
 const _faceTmp = new THREE.Vector3();
 const _faceQ = new THREE.Quaternion();
-// 让 plane 的 +Z（normal）始终指向相机——PlaneGeometry + lookAt 的经典坑：
+// 让 plane 的 +Z（normal）指向相机——PlaneGeometry + lookAt 的经典坑：
 // lookAt 让 -Z 指向目标，导致 plane 正面背对相机；远处看到的是侧边（"斜光柱"）。
 // 这里改用 setFromUnitVectors 把 +Z 旋转到「指向相机」的方向，plane 正面始终朝玩家。
-function _faceCamera(mesh, camera) {
+//
+// 第四十三修：掌图从 START_POS(z=-30) 飞到 END_POS(z=+30)，中途**穿过玩家**。
+//   穿过那一刻「相机在掌图哪一侧」反转 → 方向掉头 → 照抄新方向会让掌图瞬间翻 180°
+//   （现场反馈的「经过玩家后会翻转一下」）。判据：新方向与当前法线夹角 > 90°
+//   ⇒ 说明已经越过去了，冻结在越过前的朝向（此时看到的自然是掌图背面）。
+const _faceNow = new THREE.Vector3();
+export function faceCamera(mesh, camera) {
   if (!camera) return;
   _faceTmp.subVectors(camera.position, mesh.position);
   if (_faceTmp.lengthSq() < 1e-6) return;   // 玩家与 plane 重合时跳过
   _faceTmp.normalize();
+  if (BUDDHA.LATCH_FACING !== false) {
+    _faceNow.set(0, 0, 1).applyQuaternion(mesh.quaternion);
+    if (_faceNow.dot(_faceTmp) < 0) return; // 已越过玩家 → 冻结（不再翻面）
+  }
   _faceQ.setFromUnitVectors(_faceZ, _faceTmp);
   mesh.quaternion.copy(_faceQ);
 }
@@ -485,7 +495,7 @@ export class BuddhaFx {
     this._mesh.position.copy(_startPos);
     this._mesh.scale.setScalar(BUDDHA.START_SCALE);
 
-    if (this._camera) _faceCamera(this._mesh, this._camera);
+    if (this._camera) faceCamera(this._mesh, this._camera);
     this.scene.add(this._mesh);
   }
 
@@ -548,7 +558,7 @@ export class BuddhaFx {
 
     this.position.copy(this._mesh.position);
     // 始终面朝相机
-    if (this._camera) _faceCamera(this._mesh, this._camera);
+    if (this._camera) faceCamera(this._mesh, this._camera);
     return false;
   }
 

@@ -4,7 +4,7 @@
 //          机制关(laser：第3/9/15关) → 'laser'；Boss 关(第6/12/18关) → 'boss'。
 // 全部由代码实时合成，替换原 music/*.wav 文件 BGM。语音(_pendingOpenVoice)仍走文件 playVoice。
 
-import { BGM_VOLUME } from '../core/constants.js'; // 各关卡 BGM 音量倍率（normal/laser/boss），可经 userConfig 热调
+import { BGM_VOLUME, HIT_FEEDBACK } from '../core/constants.js'; // 各关卡 BGM 音量倍率（normal/laser/boss），可经 userConfig 热调
 
 // ===== 关卡和弦 / 贝斯 / 音序（MIDI 音高；A4=69=440Hz）=====
 const NORMAL_CHORDS = {
@@ -725,9 +725,9 @@ export class AudioManager {
     src.buffer = this._noiseBuffer(0.12);
     const lp = this.ctx.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.frequency.value = 3000;
+    lp.frequency.value = this._jitter(3000, 0.20);   // 第四十修：枪声也加抖动，连发不再是一成不变的「嗡嗡」
     const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.25, t);
+    g.gain.setValueAtTime(this._jitter(0.25, HIT_FEEDBACK.SOUND.VOLUME_JITTER), t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
     src.connect(lp).connect(g).connect(this.master);
     src.start(t); src.stop(t + 0.12);
@@ -747,6 +747,170 @@ export class AudioManager {
     osc.start(t); osc.stop(t + 0.15);
   }
 
+
+  // 第四十修 · 打击感：每次播放的微小音高/音量抖动。
+  //   高射速下若每次都完全相同，几十发叠起来就是一片「嗡嗡」白噪（听不出打中了什么）；
+  //   ±抖动让每一发都略有差异，是打击感里最便宜也最有效的一味。
+  _jitter(v, amt = HIT_FEEDBACK.SOUND.PITCH_JITTER) {
+    return v * (1 + (Math.random() * 2 - 1) * amt);
+  }
+
+  // 第四十修 · 打击感：普通命中（未击杀）—— 轻、短、亮的一记 tick。
+  //   与击杀音分开，玩家才能从听觉上区分「打中了」和「打死了」。
+  playHit() {
+    if (!this.ctx) return;
+    const S = HIT_FEEDBACK.SOUND;
+    const t = this.ctx.currentTime;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(this._jitter(S.HIT_VOLUME, S.VOLUME_JITTER), t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+    g.connect(this.master);
+    const o = this.ctx.createOscillator();
+    o.type = "triangle";
+    const f = this._jitter(1500, S.PITCH_JITTER);
+    o.frequency.setValueAtTime(f, t);
+    o.frequency.exponentialRampToValueAtTime(f * 0.55, t + 0.06);
+    o.connect(g);
+    o.start(t); o.stop(t + 0.06);
+  }
+
+  // 第四十修 · 打击感：击杀 —— 按敌人类型换音色，且连击越高音高越亮。
+  //   combo 由 game.js 维护（HIT_FEEDBACK.COMBO.WINDOW 秒内的连杀计数）。
+  playKill(kind = "basic", combo = 1) {
+    if (!this.ctx) return;
+    const S = HIT_FEEDBACK.SOUND, C = HIT_FEEDBACK.COMBO;
+    const steps = Math.max(0, Math.min(S.COMBO_MAX_STEP, combo - C.MIN_FOR_FEEDBACK + 1));
+    const mul = Math.pow(1 + S.COMBO_PITCH_STEP, steps);
+    const vol = this._jitter(S.KILL_VOLUME * (1 + Math.min(0.45, steps * 0.05)), S.VOLUME_JITTER);
+    this._killVoice(kind, this.ctx.currentTime, mul, vol);
+  }
+
+  // 第四十二修 · 连杀加速奖励音（game._bulletKill 满 10 连杀时调）。
+  //   设计意图：与「击杀 thump（低沉）」在频谱和走向上彻底分开 ——
+  //   全程走高音亮区、音高**上行**，一听就知道是「变强了」，不用看 UI。
+  //   三段：① 上行三连叮（D6→G6→C7）② 金属过载扫频（涡轮上来了）③ 收尾气流。
+  playRapidFire() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    // ① 上行三连
+    const seq = [1174.7, 1568.0, 2093.0];
+    for (let i = 0; i < seq.length; i++) {
+      const at = t + i * 0.06;
+      const o = this.ctx.createOscillator();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(seq[i], at);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(0.22, at + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.001, at + 0.18);
+      o.connect(g).connect(this.master);
+      o.start(at); o.stop(at + 0.2);
+    }
+    // ② 金属过载：锯齿上行 + 低通扫开
+    const o2 = this.ctx.createOscillator();
+    o2.type = 'sawtooth';
+    o2.frequency.setValueAtTime(220, t + 0.12);
+    o2.frequency.exponentialRampToValueAtTime(1320, t + 0.42);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(600, t + 0.12);
+    lp.frequency.exponentialRampToValueAtTime(7000, t + 0.42);
+    const g2 = this.ctx.createGain();
+    g2.gain.setValueAtTime(0.0001, t + 0.12);
+    g2.gain.linearRampToValueAtTime(0.16, t + 0.2);
+    g2.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+    o2.connect(lp).connect(g2).connect(this.master);
+    o2.start(t + 0.12); o2.stop(t + 0.52);
+    // ③ 收尾气流（噪声高通，短促）
+    const nz = this.ctx.createBufferSource();
+    nz.buffer = this._noiseBuffer(0.3);
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 1200;
+    const g3 = this.ctx.createGain();
+    g3.gain.setValueAtTime(0.0001, t + 0.1);
+    g3.gain.linearRampToValueAtTime(0.1, t + 0.16);
+    g3.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+    nz.connect(hp).connect(g3).connect(this.master);
+    nz.start(t + 0.1); nz.stop(t + 0.45);
+  }
+
+
+  // 击杀音色表：同一套「振荡器 + 噪声 + 包络」配方，靠波形/频率/时长区分敌种。
+  //   kind 取自 balloon.type.id（basic/ninja/ghost/octopus/shield/heart/chest/treasure/orb），
+  //   精英用 elite、Boss 用 boss、龙用 dragon；未收录的一律回落到基础怪音色。
+  _killVoice(kind, t, mul, vol) {
+    const ctx = this.ctx;
+    const out = ctx.createGain();
+    out.gain.value = vol;
+    out.connect(this.master);
+    const tone = (type, f0, f1, dur, amp) => {
+      const o = ctx.createOscillator();
+      o.type = type;
+      o.frequency.setValueAtTime(Math.max(1, f0 * mul), t);
+      if (f1) o.frequency.exponentialRampToValueAtTime(Math.max(1, f1 * mul), t + dur);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(amp, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      o.connect(g).connect(out);
+      o.start(t); o.stop(t + dur);
+    };
+    const noise = (dur, cutoff, amp, type) => {
+      const src = ctx.createBufferSource();
+      src.buffer = this._noiseBuffer(dur);
+      const f = ctx.createBiquadFilter();
+      f.type = type || "lowpass";
+      f.frequency.value = this._jitter(cutoff, 0.15);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(amp, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      src.connect(f).connect(g).connect(out);
+      src.start(t); src.stop(t + dur);
+    };
+    switch (kind) {
+      case "boss":
+      case "elite":
+        tone("sawtooth", 160, 55, 0.34, 1.0);   // 低沉下滑：重
+        tone("square", 240, 90, 0.30, 0.5);     // 叠加一层，更厚
+        noise(0.22, 1400, 0.7);                 // 噪声爆
+        break;
+      case "dragon":
+        tone("sawtooth", 120, 48, 0.40, 1.0);
+        noise(0.30, 900, 0.8);
+        break;
+      case "ninja":
+      case "eliteKnight":
+        tone("triangle", 2400, 1300, 0.18, 0.9); // 金属 ping
+        tone("square", 3600, 2000, 0.16, 0.35);
+        break;
+      case "ghost":
+        tone("sine", 780, 1560, 0.45, 0.8);      // 空灵上扫 + 长尾
+        tone("sine", 1040, 2080, 0.40, 0.35);
+        break;
+      case "octopus":
+        noise(0.24, 700, 0.9);                   // 湿润低通
+        tone("sine", 230, 85, 0.26, 0.8);        // 低频下滑
+        break;
+      case "shield":
+        tone("square", 380, 300, 0.24, 0.8);     // 不谐和双音 = 金属敲击
+        tone("square", 511, 403, 0.20, 0.5);
+        noise(0.12, 2600, 0.4, "highpass");
+        break;
+      case "heart":
+        tone("sine", 880, 1320, 0.22, 0.7);      // 明亮上行：治愈感
+        tone("sine", 1320, 1760, 0.20, 0.4);
+        break;
+      case "chest":
+      case "treasure":
+      case "orb":
+        tone("sine", 1046, 0, 0.10, 0.7);        // 金币三连（C6 / E6 / G6）
+        tone("sine", 1318, 0, 0.12, 0.6);
+        tone("sine", 1568, 0, 0.18, 0.5);
+        break;
+      default:                                     // basic / summoner / 未收录
+        tone("square", 200, 800, 0.15, 1.0);
+        break;
+    }
+  }
   // 手里剑投掷：短促 whoosh（带通噪声，频率上扫）
   playShurikenThrow() {
     if (!this.ctx) return;

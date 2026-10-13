@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { AIM, SHOOT } from '../src/core/constants.js';
 import { DEFAULT_SETTINGS } from '../src/core/settings.js';
 import {
-  familyFromProfiles, familyFromUA, getAimDeg, getDeviceFamily,
+  aimForceFromSearch, familyFromProfiles, familyFromUA, getAimDeg, getDeviceFamily,
   isUaPicoStrong, noteInputSource,
 } from '../src/vr/deviceProfile.js';
 import { InputManager } from '../src/vr/input.js';
@@ -115,4 +115,18 @@ test('第三十四修：A/B 键不再退出 VR（input 里已无退出分支）'
   assert.equal(typeof im._updateAimCalibration, 'undefined');   // 摇杆标定工具已删
   assert.equal(typeof im._refreshRayAims, 'undefined');
   assert.equal(InputManager.prototype._applyRayAim instanceof Function, true);  // 射线仍按补偿角刷新
+});
+
+// ---------- 第四十三修：?aim= 现场试角（只影响带参数的那台设备）----------
+
+test('URL 现场覆盖：?aim=x,y,z 与 ?aimx= 只覆盖写到的轴', () => {
+  assert.equal(aimForceFromSearch(''), null);
+  assert.equal(aimForceFromSearch('?cast=1&pc=192.168.31.228'), null, '没有 aim 参数就不覆盖');
+  assert.equal(aimForceFromSearch('?aim='), null, '空值不能当成 0（Number("") === 0 会误伤）');
+  assert.equal(aimForceFromSearch('?aimx=abc'), null, '非数字忽略');
+
+  assert.deepEqual(aimForceFromSearch('?aim=14,-14,0'), { x: 14, y: -14, z: 0 });
+  assert.deepEqual(aimForceFromSearch('?aim=20,,5'), { x: 20, z: 5 }, '空轴跳过、其余照旧');
+  assert.deepEqual(aimForceFromSearch('?aimx=20&aimy=-14'), { x: 20, y: -14 });
+  assert.deepEqual(aimForceFromSearch('?cast=1&aimx=-30'), { x: -30 });
 });

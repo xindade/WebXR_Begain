@@ -8,16 +8,23 @@ const CANVAS_H = 384;          // 画布 1024:384（≈2.67:1），与下方世�
 const WORLD_W = 3.0;           // 横幅世界宽度(m)：上机后按可视距离微调
 const WORLD_H = 1.125;         // 横幅世界高度(m) = WORLD_W × (CANVAS_H/CANVAS_W)
 const VIEW_DISTANCE = 3.0;     // 距相机前方距离(m)：横幅停在准星处
-const WIN_BANNER_DURATION = 10;// 持续秒数，到点自动退出游戏
+const WIN_BANNER_DURATION = 10;// 默认持续秒数；实际由构造参数传入（第三十九修，见下方 duration）
 
 export class WinBanner3D {
-  constructor(scene, camera, text, onExpire = null) {
+  /**
+   * @param {number} [duration] 横幅持续秒数（缺省 = WIN_BANNER_DURATION）。
+   *   ★ 第三十九修：改由 constants.MAGICIAN_BOSS.WIN_BANNER_SECONDS 传入 —— Boss 死亡后本局要
+   *   「直接结束」，横幅只是给玩家的通关一瞥，不再固定拖 10s。
+   */
+  constructor(scene, camera, text, onExpire = null, duration = WIN_BANNER_DURATION) {
     this.scene = scene;
     this.camera = camera;
     this.text = (text || '').split('\n');
     this._onExpire = onExpire;
     this._t = 0;
     this._done = false;
+    // <=0 由调用方（bossMagician._win）判掉不建横幅；这里只兜「传了非法值」→ 回默认 10s
+    this.duration = Number.isFinite(duration) ? Math.max(0, duration) : WIN_BANNER_DURATION;
 
     this.cv = document.createElement('canvas');
     this.cv.width = CANVAS_W; this.cv.height = CANVAS_H;
@@ -59,12 +66,12 @@ export class WinBanner3D {
     this.tex.needsUpdate = true;
   }
 
-  // 每帧把横幅放到相机正前方（准星处），并累计 10s 计时
+  // 每帧把横幅放到相机正前方（准星处），并累计 this.duration 秒计时
   update(dt) {
     this._followCamera();
     if (this._done) return;
     this._t += dt;
-    if (this._t >= WIN_BANNER_DURATION) {
+    if (this._t >= this.duration) {
       this._done = true;
       if (this._onExpire) this._onExpire();
     }

@@ -127,6 +127,7 @@ export class Balloon {
     if (t.behavior === 'chest') this._hopTimer = Math.random() * (t.hopInterval || 2);
 
     this._flash = 0;
+    this._lastDamage = 0; // 第四十修：上一次受击的实际伤害（伤害数字读取）
     this._hop = Math.random() * Math.PI * 2;
     // 立绘气球浮动（破「整齐划一」）：每怪独立的相位/幅度/频率 → 群体不再同步
     this._bobPhase = Math.random() * Math.PI * 2;
@@ -228,12 +229,14 @@ export class Balloon {
   }
 
   takeDamage(dmg, ignoreReduction = false) {
+    this._lastDamage = 0;                   // 第四十修：本次实际伤害（伤害数字用；未命中/无敌时保持 0）
     if (this.type.invincible) return false; // 聚宝盆：无敌，子弹不扣血
     if (!this.alive) return false;          // 已死亡：防止爆炸链重复触发 _onKilled 导致无限递归
     let final = dmg;
     if (this.damageReduction > 0 && (!ignoreReduction || this.isDragonPart))
       final = dmg * (1 - this.damageReduction);  // 95% 减伤 → 实际 5%（isDragonPart 强制减伤，含激光剑穿透）
     this.hp -= final;
+    this._lastDamage = final;               // 第四十修：减伤后的真实伤害，供伤害数字显示
     this._flash = 0.1;
     if (this._hpBar) {
       const k = Math.max(0, this.hp / this.maxHp);

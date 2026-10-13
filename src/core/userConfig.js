@@ -92,6 +92,9 @@ export const USER_CONFIG = {
       LOG_STEP: 0.5,
     },
 
+    // —— 收尾（第三十九修）：Boss 死亡 → 清场 → 横幅 WIN_BANNER_SECONDS 秒 → 结束本局（退出浏览器）——
+    WIN_BANNER_SECONDS: 5,   // 通关横幅持续（秒）；0 = 不显示横幅，Boss 一死立即结束本局
+
     // —— 召唤池（第三十八修）：场上维持 MAX 只（含 ELITE 只阶段精英怪），总数 < REFILL_AT 时补满 ——
     POOL: {
       MAX: 20,               // 场上上限（只）
@@ -171,7 +174,8 @@ export const USER_CONFIG = {
     SPAWN_OFFSET: 0.5,     // 子弹出生点前移距离（米）
     RAY_COLOR: 0xff2222,   // 右手射线颜色（红）
     RAY_LENGTH: 5,         // 射线可见长度（米）
-    RAY_COLOR_LEFT: 0x66ccff, // 左手射线颜色（青）
+    RAY_COLOR_LEFT: 0x66ccff, // 左手射线颜色（青；仅 OFFHAND_RAY=true 时可见）
+    OFFHAND_RAY: false,    // 第四十三修：非射击手是否也画射线。false = 只留主手那条（现场定稿）
     // —— 命中判定几何（仅 DepthSprite 2D立绘怪生效；3D模型怪走真实包围球，不受这两项影响）——
     // 立绘怪是永远朝相机的扁平卡片，命中体积是一个「竖薄板盒子」：
     //   范围大小(左右=上下半径) = effectiveRadius × tune.scale × extraScale × DEPTH_SPRITE.HIT_MUL + HIT_PAD
@@ -190,6 +194,13 @@ export const USER_CONFIG = {
   //   z = 翻滚（⚠ 不改变方向，只调方向请保持 0）
   // 改这里的数字 → 刷新页面即生效（本文件覆盖 constants.js 的同名键）。
   // 第三十四修：VR 内「摇杆标定工具」已按需求移除（不再占用左手摇杆 / 不再动 X 键）
+  // 第四十三修 · 现场快速试角（不用重打包、不用重发内容包）：
+  //   在头显浏览器的地址栏里加参数即可临时覆盖，例如
+  //     http://localhost:8080/?cast=1&pc=192.168.31.228&aim=14,-14,0      三轴一次写完
+  //     http://localhost:8080/?cast=1&pc=192.168.31.228&aimx=20&aimy=-14  只覆盖某几轴
+  //   它落到 AIM.FORCE（优先级最高、不落盘、刷新即丢）→ 只影响带着该参数的那台设备；
+  //   PICO 的启动地址不带它就是原样，调 Quest 时完全不必动 pico 槽的固化角。
+  //   调好了再写进下面的 BY_DEVICE[槽]（写进本文件要重发内容包，见 docs/tech/09）。
   //   ⇒ 各槽角度只由本表决定；要试新角度可用 FORCE，或从 git 历史取回标定工具。
   AIM: {
     ENABLED: true,   // 总开关：false → 恒用 SHOOT.RIGHT_PITCH_DEG（改造前行为）
@@ -454,8 +465,11 @@ export const USER_CONFIG = {
     MOVE_TIME: 1.0,              // 沿 +Z 移动时长（秒）
     PAUSE_TIME: 1.0,             // 到达终点后停顿（秒）
     FADE_TIME: 0.3,              // 淡出消失时长（秒）
+    LATCH_FACING: true,          // 第四十三修：越过玩家后冻结朝向（false=旧行为，穿过去会瞬间翻 180 度）
     HIT_MARGIN_XY: 1.3,          // 命中盒 XY 放大系数（1=完全贴合掌面）
     HIT_Z_BAND: 8,               // 命中盒 Z 半厚（米）：仅命中掌图当前 Z 前后 ±该值的敌人
+    MAX_DAMAGE_PER_FRAME: 6,     // 第四十二修：单帧最多结算几只怪（削「神掌一放就卡一下」的 GPU 尖峰）。
+                                 //   调大=更「同帧齐爆」但更容易在 Pico 上卡；调 0/1 = 最平滑。
     // —— 程序化 SDF 金掌（VFX_MODE='shader'）—— 不满意就把 VFX_MODE 改回 'texture' 一键回退
     VFX_MODE: 'texture', // 'texture'=优化抠图的 JPG 掌图（当前默认）；'canvas'=Canvas 矢量金掌；'shader'=SDF 金掌
     // —— JPG 抠图优化参数（改完刷新页面即生效）——
@@ -622,6 +636,87 @@ export const USER_CONFIG = {
     HANDOFF_DELAY_S: 0.08,                    // 播完后画面静止多久再加载关卡（秒）：调大=更稳但静止更久
     DISPOSE_DELAY_S: 2.0,                     // 画面摘除后延迟多久真正回收解码器（秒）：藏进穿云里
 },
+  // ==================== 打击感：命中/击杀音效 + 手柄震动（第四十修） ====================
+  // 覆盖 constants.js 的 HIT_FEEDBACK。只写想改的键，其余保持默认。
+  //   HIT_VOLUME    普通命中音音量（默认 0.16，比击杀轻很多 —— 高射速下才不糊）
+  //   KILL_VOLUME   击杀音音量（默认 0.34）
+  //   PITCH_JITTER  每次播放音高随机 ±8%（消除「机关枪嗡嗡」的关键；调 0 = 关闭抖动）
+  //   COMBO_*       连击窗口 / 起效连击数 / 音高上爬步长
+  //   HAPTIC        手柄震动四档（命中/击杀/精英/受伤）与最小间隔；ENABLED:false 可整体关闭
+  // HIT_FEEDBACK: {
+  //   SOUND: { HIT_VOLUME: 0.16, KILL_VOLUME: 0.34, PITCH_JITTER: 0.08, VOLUME_JITTER: 0.15 },
+  //   COMBO: { WINDOW: 1.5, MIN_FOR_FEEDBACK: 3, MAX: 99 },
+  //   HAPTIC: { ENABLED: true, MIN_GAP: 0.05 },
+  // },
+
+  // ==================== 伤害数字（第四十修） ====================
+  // 覆盖 constants.js 的 DAMAGE_NUMBER。颜色分档：每满 STEP(=100) 伤害加深一档。
+  //   想要「每 50 加深一次」→ 改 STEP: 50；不想看到数字 → ENABLED: false（保留计分与音效）。
+  //   COLORS 是数组，写了就整体替换（顺序 = 由浅到深）。
+  // DAMAGE_NUMBER: {
+  //   ENABLED: true,
+  //   STEP: 100,
+  //   SIZE: 0.30,             // 数字世界高度(m)
+  //   LIFE: 0.75,             // 存活秒数
+  //   AGGREGATE_WINDOW: 0.14, // 同一只怪的合并窗口(s)：调大 = 数字跳得更粗、更少
+  //   POOL: 24,               // 同时存在的数字上限
+  //   UPLOAD_PER_FRAME: 6,    // 每帧最多上传几张数字贴图（第四十二修：神掌同帧几十个数字的尖峰）
+  // },
+
+  // ==================== 档2 打击感视觉层（第四十一修） ====================
+  // 覆盖 constants.js 的 FX。四项：曳光 / 命中火花 / 击杀碎片 / 枪口焰。
+  //   全部走 InstancedMesh + 预分配池；ENABLED:false 即整项关闭（关掉后连实例都不创建）。
+  //   想更狠：调大 SPARK.SIZE / DEBRIS.SIZE、提高 DEBRIS.COUNT 上限；
+  //   想省性能：先把 DEBRIS.POOL 降到 60、SPARK.POOL 降到 32，再考虑关掉 SPARK。
+  // FX: {
+  //   TRACER: { ENABLED: true, LENGTH: 0.55, WIDTH: 0.022, OPACITY: 0.55 },
+  //   SPARK:  { ENABLED: true, POOL: 64, COUNT: [3, 5], LIFE: 0.14, SIZE: 0.055, SPEED: 3.2 },
+  //   DEBRIS: { ENABLED: true, POOL: 120, COUNT: [6, 10], ELITE_MUL: 1.6, LIFE: 0.55, SIZE: 0.075, GRAVITY: 9.0 },
+  //   MUZZLE: { ENABLED: true, POOL: 2, LIFE: 0.05, SIZE: 0.22 },
+  //   MUZZLE: { ENABLED: true, POOL: 2, LIFE: 0.05, SIZE: 0.22, FORWARD: 0.20 },
+  //   //  TRACER.MIN_BACK：尾迹「后拖」的最短长度（米，第四十二修）——不足就不画。
+  //   //    出生点在枪管内部，照常拖满 LENGTH 会看到曳光穿到枪管后方；调大=更提前消失。
+  //   //  MUZZLE.FORWARD：枪口焰沿枪口方向再前移的距离（米）——枪管长就调大。
+  // },
+
+  // ==================== 关卡时长与精英波前移（第四十一修） ====================
+  // 覆盖 constants.js 的 LEVEL_SECONDS。只作用于普通关/危机关（机制关 3/9/15 与 Boss 关 6/12/18 没有倒计时）。
+  //   精英波三期（ELITE_WINDOW：5/20/40s）会按「本关时长 ÷ REF_SECONDS」等比前移，无需单独配。
+  //   BY_LEVEL 里删掉某关（或写 0）= 该关回落到 REF_SECONDS。
+  // LEVEL_SECONDS: {
+  //   REF_SECONDS: 60,
+  //   BY_LEVEL: { 1: 40, 2: 40, 4: 40, 5: 40, 7: 50, 8: 50, 10: 50, 11: 50 },
+  // },
+
+  // ==================== 中场预警横幅（第四十二修） ====================
+  // 覆盖 constants.js 的 MID_WARNING。普通关/危机关**过半**时在准星正前方弹 2 秒「更强的敌人来袭」。
+  //   AT     触发点 = 本关时间窗 × AT（0.5 = 刚好过半；调 0.75 = 更靠后）
+  //   SECONDS 停留时长（秒）；DIST 出现在准星前方多远（米）；WIDTH 横幅宽度（米）
+  //   ENABLED: false 可整体关掉（机制关 3/9/15 与 Boss 关 6/12/18 本来就不会弹）
+  // MID_WARNING: { ENABLED: true, AT: 0.5, SECONDS: 2, DIST: 2.6, WIDTH: 2.2, TEXT: '更强的敌人来袭' },
+
+  // ==================== 连杀加速（第四十二修 · 第四十三修改红点环） ====================
+  // 覆盖 constants.js 的 RAPID_FIRE。连续用**子弹**击杀 10 个敌人 → 射速 ×1.5 持续 3 秒 + 奖励音。
+  //   只认子弹击杀：技能/如来神掌/激光剑杀的不计数（也不打断连杀）。
+  //   GAP             距上次子弹击杀超过该秒数就清零（别调太小，否则很难凑满 10 个）
+  //   MULT            射速倍率（1.5 = 2 发/秒 → 3 发/秒）；SECONDS 持续秒数；KILLS 触发连杀数
+  //   BOOST_CARRY_MAX 第四十三修：加速期间最多只能再攒这么多个（默认 5）——
+  //                   修掉「一边加速一边继续杀 → 无限续杯」；剩下的要等加速结束再重新连杀。
+  //   COUNTER 枪身红点环（第四十三修，替换原「枪管大牌子」）：
+  //           ALONG 环心位置(0=枪托 0.5=正中 1=枪口)、RING_FRAC/RING_RADIUS 环半径、
+  //           DOT_FRAC/DOT_SIZE 点径、DOTS 点数(0=取 KILLS)、COLOR/COLOR_BOOST 颜色、
+  //           FLASH_TIME/FLASH_SCALE 集齐后「闪一下」的时长与放大倍数
+  //   MIST    加速期间向后飘的雾（表现「枪已经加速」）：COUNT 雾团数、LIFE 单团存活、
+  //           SIZE 单团大小(0=自动)、SPEED 后飘速度、OPACITY 浓度；
+  //           性能吃紧就把 MIST.ENABLED 设 false（或 COUNT: 0）——红点环不受影响。
+  // RAPID_FIRE: {
+  //   ENABLED: true, KILLS: 10, GAP: 6, MULT: 1.5, SECONDS: 3, BOOST_CARRY_MAX: 5,
+  //   COUNTER: { ENABLED: true, DOTS: 0, ALONG: 0.5, RING_RADIUS: 0, RING_FRAC: 1.45,
+  //              DOT_SIZE: 0, DOT_FRAC: 0.28, FLASH_TIME: 0.28, FLASH_SCALE: 2.6 },
+  //   MIST: { ENABLED: true, COUNT: 8, LIFE: 0.85, INTERVAL: 0.10, SIZE: 0, SPEED: 1.5,
+  //           SPREAD: 0.35, COLOR: 0xbfe9ff, OPACITY: 0.34 },
+  // },
+
   // ==================== 直播推流（?cast=1 时生效） ====================
   // 覆盖 constants.js 的 CAST。本文件在 PC 端 CONFIG_MANIFEST 里 → 改这里会由 EXE 自动
   // 下发到头显覆盖层，**不用重打包 APK**（纯本地模式仍走 assets，需重打包）。

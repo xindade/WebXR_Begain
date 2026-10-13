@@ -65,6 +65,49 @@ function initOnce() {
   if (_inited) return;
   _inited = true;
   _ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  // 第四十三修：URL 现场覆盖（?aim=x,y,z）→ 写进 AIM.FORCE（取值链路的最高优先级、不落盘）
+  try {
+    const search = (typeof location !== 'undefined' && location.search) || '';
+    const f = aimForceFromSearch(search);
+    if (f) {
+      AIM.FORCE = Object.assign({}, AIM.FORCE || {}, f);
+      if (typeof console !== 'undefined') console.log('[AIM] URL 覆盖生效 AIM.FORCE =', JSON.stringify(f));
+    }
+  } catch (e) { /* 没有 location 的环境（单测）忽略 */ }
+}
+
+/**
+ * 解析现场 URL 的瞄准角覆盖（第四十三修）。纯函数，便于单测。
+ *   · `?aim=14,-14,0`   —— x,y,z 三轴一次写完（缺的轴用默认值）
+ *   · `?aimx=14&aimz=3` —— 只覆盖某几轴（其余轴保持设备槽默认值）
+ * 返回值落到 AIM.FORCE：**只影响带着该参数的那台设备** —— PICO 的启动地址不带它，
+ * 就完全不受影响（也就不必为了调 Quest 而改动 PICO 的固化角）。
+ * @returns {{x?:number,y?:number,z?:number}|null}
+ */
+export function aimForceFromSearch(search) {
+  const s = String(search || '');
+  if (!s) return null;
+  let q;
+  try { q = new URLSearchParams(s); } catch (e) { return null; }
+  const out = {};
+  let hit = false;
+  const triple = q.get('aim');
+  if (triple) {
+    const parts = String(triple).split(',');
+    for (let i = 0; i < AIM_AXES.length; i++) {
+      const raw = parts[i];
+      if (raw == null || String(raw).trim() === '') continue;   // 空轴 = 不覆盖（Number('') === 0 会误伤）
+      const v = Number(raw);
+      if (Number.isFinite(v)) { out[AIM_AXES[i]] = v; hit = true; }
+    }
+  }
+  for (const ax of AIM_AXES) {
+    const raw = q.get('aim' + ax);
+    if (raw == null || String(raw).trim() === '') continue;
+    const v = Number(raw);
+    if (Number.isFinite(v)) { out[ax] = v; hit = true; }
+  }
+  return hit ? out : null;
 }
 
 function normalizeSlot(v) {

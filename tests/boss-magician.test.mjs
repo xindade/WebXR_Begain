@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { MagicianBoss, introPose, planRefill } from '../src/game/bossMagician.js';
+import { WinBanner3D } from '../src/game/winBanner.js';
 import { MAGICIAN_BOSS } from '../src/core/constants.js';
 
 // 第三十八修：第18关魔术师 Boss
 //   ① 开场演出时间轴（念白 → 0.6s 飞回 Boss 位 → 瞬间变大 ×2）
 //   ② 召唤池（场上维持 20 只、其中 3 只阶段精英怪；少于 5 只才补满；切阶段只换精英种类不清场）
-// 本文件不测渲染，只测时间轴与召唤池这两套纯逻辑/状态机。
+//   ③ 收尾（第三十九修）：Boss 死亡立刻清场（召唤物 + 在飞光点）、通关横幅时长
+// 本文件不测渲染，只测时间轴/召唤池/收尾这三套纯逻辑与状态机。
 
 const DT = 1 / 60;
 
@@ -30,6 +32,10 @@ function makeWaves() {
         return b;
       },
     },
+    _winBanner: null,                 // 第18关通关横幅（bossMagician._win 写入；timeout 由 game 驱动）
+    _cancelled: [],                   // 被 _cancelPendingGroup 撤销的分组（第三十九修：通关清场）
+    _spawnGroups: [],                 // 每个召唤物落地时的 group 标记
+    _cancelPendingGroup(tag) { this._cancelled.push(tag); },
     getPlayerPos: () => new THREE.Vector3(0, 1.4, 0),
     getPlayerDPS: () => 0,
     damagePlayer: () => {},
@@ -37,6 +43,7 @@ function makeWaves() {
     onWinExit: () => {},
     bossSpawned: false,
     _queueSpawn: (type, pos, opts) => {
+      waves._spawnGroups.push(opts && opts.group);
       const b = {
         type, alive: true, hp: 100, maxHp: 100, controlled: false,
         mesh: new THREE.Object3D(), takeDamage() {},
@@ -208,4 +215,70 @@ test('召唤池：SPAWN_ENEMIES=false 时完全不召唤', () => {
   } finally {
     MAGICIAN_BOSS.SPAWN_ENEMIES = old;
   }
+});
+// ===================== ③ 收尾（第三十九修） =====================
+
+test('Boss 死亡立刻清场：召唤物全部移除 + 在飞光点撤销', () => {
+  const waves = makeWaves();
+  const boss = new MagicianBoss(waves);
+  boss._sizeY = 1;
+  boss.onOpeningVoiceEnd();          // 结束开场演出 → 进激光阶段（召唤池开始工作）
+  // 注意：不要先 step —— 激光阶段一进就会把召唤池补满到 MAX(20)，测试要的是「可控的几只」
+  for (let i = 0; i < 4; i++) boss._spawnMinion(i === 0);   // 3 普通 + 1 精英
+  const minions = boss._minions.slice();
+  assert.equal(minions.length, 4, '先确认场上确实有召唤物');
+  assert.ok(minions.every((b) => waves.list.includes(b)));
+
+  boss._proxy.alive = false;         // 模拟代理被击杀
+  boss.update(DT);                   // → _win()
+
+  assert.equal(boss._disposed, true, 'Boss 应已 dispose');
+  assert.equal(waves.cleared, true, '应标记 cleared（供 game 判定通关）');
+  assert.equal(waves.magicianCleared, true, '应显式标记第18关已清（挡住抽卡/毕业汇总）');
+  assert.equal(boss._minions.length, 0, '召唤物清单应清空');
+  for (const m of minions) assert.ok(!waves.list.includes(m), '召唤物应从场上移除（否则横幅期间还在打玩家）');
+  assert.ok(waves._cancelled.includes('magicianSub'), '在飞光点应被撤销');
+  assert.ok(waves._spawnGroups.includes('magicianSub'), '召唤物应带 magicianSub 分组');
+});
+
+test('通关横幅时长 = MAGICIAN_BOSS.WIN_BANNER_SECONDS；0 = 不建横幅直接结束本局', () => {
+  const old = MAGICIAN_BOSS.WIN_BANNER_SECONDS;
+  try {
+    MAGICIAN_BOSS.WIN_BANNER_SECONDS = 3;
+    let waves = makeWaves();
+    let boss = new MagicianBoss(waves);
+    boss._sizeY = 1;
+    boss.onOpeningVoiceEnd();
+    boss._proxy.alive = false;
+    boss.update(DT);
+    assert.ok(waves._winBanner, '应建出通关横幅');
+    assert.equal(waves._winBanner.duration, 3, '横幅时长应取配置值');
+
+    MAGICIAN_BOSS.WIN_BANNER_SECONDS = 0;
+    let exited = 0;
+    waves = makeWaves();
+    waves.onWinExit = () => { exited++; };
+    boss = new MagicianBoss(waves);
+    boss._sizeY = 1;
+    boss.onOpeningVoiceEnd();
+    boss._proxy.alive = false;
+    boss.update(DT);
+    assert.equal(waves._winBanner, null, '时长 0 不应建横幅');
+    assert.equal(exited, 1, 'Boss 一死就应直接结束本局（回调 onWinExit）');
+  } finally {
+    MAGICIAN_BOSS.WIN_BANNER_SECONDS = old;
+  }
+});
+
+test('WinBanner3D：按传入时长到期（缺省仍是 10s，只回调一次）', () => {
+  const scene = new THREE.Scene();
+  const cam = new THREE.PerspectiveCamera();
+  let expired = 0;
+  const b = new WinBanner3D(scene, cam, 'A\nB', () => { expired++; }, 2.5);
+  for (let i = 0; i < 152; i++) b.update(DT);      // 2.5s（DT=1/60 累加有浮点误差，多走两帧）
+  assert.equal(expired, 1, '到 2.5s 应到期');
+  b.update(DT);
+  assert.equal(expired, 1, '到期只回调一次');
+  const d = new WinBanner3D(scene, cam, 'A');
+  assert.equal(d.duration, 10, '缺省 = 10s');
 });

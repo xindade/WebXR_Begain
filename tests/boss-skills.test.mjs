@@ -34,6 +34,7 @@ for (const skill of ['buddha', 'sword']) {
       Object.assign(game, {
         balloons, player: { skillDamageMul: 1 }, _addScore(value) { score += value; },
         _buddhaHit: new Set(),
+        _buddhaQueue: [],
         _buddhaFx: { update: () => false, isDamaging: true, scale: 1, position: new THREE.Vector3() },
         leftSword: { getBlade(hilt, tip) { hilt.set(0, 0, -1); tip.set(0, 0, 1); } },
         _hilt: new THREE.Vector3(), _tip: new THREE.Vector3(), _gameTime: 1,

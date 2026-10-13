@@ -245,6 +245,55 @@ export function preCaptureDepthSprite(url, radius) {
   }).then(() => true).catch(() => false);
 }
 
+/**
+ * ★ 第三十九修：预热「模型首次上屏」的一次性开销 —— 纹理上传 + 着色器编译。
+ *
+ * 为什么需要：GLB 的 parse（loadGLB）只把几何/材质对象解出来；真正的纹理上传（gl.texImage2D）
+ *   与 program 链接都发生在**第一次渲染该模型那一帧** —— 在 PICO 上就是玩家看到的「Boss 一登场
+ *   卡一下」（第18关的开场演出正好压在那一帧，尤其明显）。
+ * 做法：把 gltf.scene 的克隆体放进临时场景，逐个 initTexture（上传） + compile（编译），
+ *   **不渲染、不回读** —— 成本远低于一次 DepthSprite 抓帧（那种要 12 帧离屏渲染 + readPixels）。
+ * 静默失败：预热只是优化，任何一步出错都不影响开怪。
+ *
+ * @param {string} url GLB 路径（与 loadGLB 同一套缓存 key）
+ * @returns {Promise<boolean>} 是否预热成功（仅供日志/调试，调用方无需 await）
+ */
+export function warmModelGpu(url) {
+  if (!_renderer || !url) return Promise.resolve(false);
+  return loadGLB(url).then((gltf) => {
+    const root = gltf.scene;
+    const texs = new Set();
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) {
+        if (!m) continue;
+        for (const k of Object.keys(m)) {
+          const v = m[k];
+          if (v && v.isTexture) texs.add(v);
+        }
+        // 自定义 ShaderMaterial：贴图挂在 uniforms 里（本项目 DepthSprite 走这条）
+        if (m.uniforms) {
+          for (const k of Object.keys(m.uniforms)) {
+            const u = m.uniforms[k];
+            const v = u && u.value;
+            if (v && v.isTexture) texs.add(v);
+          }
+        }
+      }
+    });
+    for (const t of texs) { try { _renderer.initTexture(t); } catch (e) { /* 单张失败不影响其余 */ } }
+    // 着色器：克隆体入临时场景编译一次。各实例材质虽各自 clone，但 shader/defines 相同
+    // → three 按 program cache key 复用，编译一次即可，之后开怪不再有编译尖峰。
+    try {
+      const tmp = new THREE.Scene();
+      tmp.add(root.clone(true));
+      _renderer.compile(tmp, new THREE.PerspectiveCamera());
+    } catch (e) { /* 编译失败就按未预热处理 */ }
+    return true;
+  }).catch(() => false);
+}
+
 // 龙身/龙爪混合外观装配（龙 Boss 掉帧修复的「外观升级」版）。
 // kind:
 //   'model'    → 挂模型节点（默认 DRAGON.NODE_MODEL，可被 modelUrl 覆盖），taper*nodeScale 经 extraScale 应用

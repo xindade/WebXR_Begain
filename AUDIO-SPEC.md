@@ -30,7 +30,7 @@
                     │   静止 0.18 / 切轨 duck 到 0.02       │
                     └──────────────┬───────────────────────┘
                                    ▼
-   音效 shoot/pop ──────────▶ master (GainNode, 0.5) ──▶ destination
+   音效 shoot/hit/kill/pop ─▶ master (GainNode, 0.5) ──▶ destination
 ```
 
 - 音效**不经过** `bgmBus`，避免切轨 duck 把枪声一起压掉。
@@ -121,7 +121,7 @@ _noiseBuffer(dur):                              // 单声道白噪声
 
 ## 4. 音色库（合成配方）
 
-共 19 个 BGM 音色 + 2 个音效。除注明外，输出一律接 `bgmBus`。
+共 19 个 BGM 音色 + 6 个音效方法（`shoot` / `hit` / `kill`（9 种敌种音色）/ `pop` / `shurikenThrow` / `shurikenHit`）。除注明外，输出一律接 `bgmBus`。
 `gain` 为调用方传入值；`t` 为音符起始绝对时间。
 
 ### 4.1 鼓组
@@ -324,8 +324,35 @@ for i in 0..2: _taiko(t + 1.0 + i*0.18, 0.45)   // 三连太鼓
 
 | 方法 | 配方 |
 |---|---|
-| `playShoot()` 射击 | 白噪 0.12s → `lowpass 3000` → `0.25 → expRamp(0.001, +0.12)` |
-| `playPop()` 气球爆 | `square`，`200 → 800`（0.12s）→ `0.3 → expRamp(0.001, +0.15)` |
+| `playShoot()` 射击 | 白噪 0.12s → `lowpass (3000 × 抖动)` → `(0.25 × 音量抖动) → expRamp(0.001, +0.12)` |
+| `playPop()` 气球爆（机制/演出路径仍在用） | `square`，`200 → 800`（0.12s）→ `0.3 → expRamp(0.001, +0.15)` |
+| `playShurikenThrow()` 手里剑投掷 | 白噪 0.18s → `bandpass (1200 → 3500, Q=0.8)` → `0.18 → expRamp(0.001, +0.18)` |
+| `playShurikenHit()` 手里剑命中玩家 | `triangle 2400 → 1400` ＋ `square 3600 → 2100`（各 0.18s，方波支路增益 0.4）→ `0.22 → expRamp(0.001, +0.18)` |
+| `playHit()` 普通命中 **（第四十修）** | `triangle`，`1500 × 抖动 → 825 × 抖动`（0.06s）→ `(0.16 × 音量抖动) → expRamp(0.001, +0.06)` |
+| `playKill(kind, combo)` 击杀 **（第四十修）** | `steps = clamp(combo - 3 + 1, 0, 8)`；`mul = 1.06^steps`；`vol = 抖动(0.34 × (1 + min(0.45, steps × 0.05)))`；再交 `_killVoice` 按 `kind` 选下列音色 |
+
+**抖动工具（第四十修）**：`_jitter(v, amt = HIT_FEEDBACK.SOUND.PITCH_JITTER) = v × (1 + rand(-1,1) × amt)`。
+每次播放音高/音量轻微随机，消除高射速（16 发/秒）下的「机关枪嗡嗡」—— 这是打击感里最便宜的一味。
+`amt = 0` 即回到完全确定的旧行为。
+
+**`_killVoice(kind, t, mul, vol)` 击杀音色表（第四十修）** —— 全部由 `振荡器/噪声 + 增益包络` 合成，
+频率均乘 `mul`；包络统一为 `setValueAtTime(amp) → expRamp(0.001, t + dur)`：
+
+| `kind` | 配方（f0→f1, 时长, 幅度） | 听感 |
+|---|---|---|
+| `basic`（默认；未收录敌种也走它） | `square` 200→800, 0.15s | 原气球爆 |
+| `ghost` | `sine` 780→1560, 0.45s, 0.8 ＋ `sine` 1040→2080, 0.40s, 0.35 | 空灵长尾 |
+| `octopus` | 白噪 0.24s → `lowpass 700` ＋ `sine` 230→85, 0.26s, 0.8 | 湿润 |
+| `ninja` / `eliteKnight` | `triangle` 2400→1300, 0.18s ＋ `square` 3600→2000, 0.16s | 金属 ping |
+| `shield` | `square` 380→300 ＋ `square` 511→403 ＋ 白噪 0.12s → `highpass 2600` | 金属敲击 |
+| `heart` | `sine` 880→1320, 0.22s ＋ `sine` 1320→1760, 0.20s | 明亮上行 |
+| `chest` / `treasure` / `orb` | `sine` 1046 / 1318 / 1568 三连（0.10 / 0.12 / 0.18s） | 金币 |
+| `elite` / `boss` | `sawtooth` 160→55, 0.34s ＋ `square` 240→90, 0.30s ＋ 白噪 0.22s → `lowpass 1400` | 低沉重击 |
+| `dragon` | `sawtooth` 120→48, 0.40s ＋ 白噪 0.30s → `lowpass 900` | 更重 |
+
+`kind` 由 `game.js` 的 `_killSoundKind()` 决定，优先级：`isBoss > isDragonPart > isElite > type.id > behavior`。
+噪声分支的低通截止频率同样过 `_jitter(±15%)`。参数集中在 `constants.js` 的 `HIT_FEEDBACK`，
+`userConfig.js` 的 `HIT_FEEDBACK` 可热调（详见 [docs/tech/14](./docs/tech/14-打击感与伤害数字.md)）。
 
 ---
 
@@ -526,6 +553,9 @@ linearRamp(0.18, now + 0.55)      // 再 0.37s 回到正常
 | `game.js:414` | `_updateBossIntensity(dt)` | 在 `_updatePlaying` 首行调用 |
 | `game.js:516` | `setIntensity(0.35)` | 第 15 关安全解谜期 |
 | `game.js:546` | `setIntensity(1)` | 第 9 关走格子阶段 |
+| `game.js:546` | `setIntensity(1)` | 第 9 关走格子阶段 |
+| `game.js` `_damageFeedback()` **（第四十修）** | `playHit()` ＋ `damageNumbers.spawn()` | 子弹 / 激光剑 / 如来神掌三条命中路径共用 |
+| `game.js` `_killFeedback()` **（第四十修）** | `playKill(kind, combo)` | 位于 `_onKilled()` 首行 —— 所有击杀路径共享；连击计数在 `_bumpCombo()` |
 
 ---
 
@@ -535,14 +565,16 @@ linearRamp(0.18, now + 0.55)      // 再 0.37s 回到正常
 
 | 文件 | 用途 |
 |---|---|
-| `index.html` | 三张卡片独立播放/停止，含变体切换、强度预设、步进灯、Boss 进场按钮 |
-| `sync.js` | 读取 `src/vr/audio.js` 原样内嵌生成 `index.html`（改音频后跑一次即同步） |
-| `smoke.js` | DOM + Web Audio 桩回归测试 |
+| `index.html` | 三张卡片独立播放/停止，含变体切换、强度预设、步进灯、Boss 进场按钮；另有**打击感音效试听区**（第四十修：射击 / 命中 / 9 种敌种击杀 / 连击演示） |
+| `sync.js` | 读取 `src/vr/audio.js` 内嵌生成 `index.html`（改音频后跑一次即同步）。会剥离裸 `import`/`export`，并把 `constants.js` 的常量（含 userConfig 覆盖后的实际值）内联成 shim —— 否则 `file://` 直开的普通脚本会因裸 `import` 语法错误而整页失效 |
+| `smoke.js` | DOM + Web Audio 桩回归测试：三轨发声 + Boss 分层递增 + 打击感音效按钮逐个出声 |
 
 ```bash
 node tools/bgm-preview/sync.js     # 改完 audio.js 后重新生成试听页
-node tools/bgm-preview/smoke.js    # 回归：三轨是否发声 + Boss 分层是否递增
+node tools/bgm-preview/smoke.js    # 回归：三轨是否发声 + Boss 分层是否递增 + 打击感音效
 ```
+
+两个脚本都是 ESM（`package.json` 里 `"type": "module"`），直接 `node <路径>` 运行即可，不要改成 `require`。
 
 `smoke.js` 的 Boss 分层测试直接驱动 `_playStep` 跑满 4 小节并统计音频节点，
 当前基线（4 小节 64 步）：
@@ -599,6 +631,11 @@ node tools/bgm-preview/smoke.js    # 回归：三轨是否发声 + Boss 分层�
 | 压迫感释放节奏 | `breather` 的 `s >= 14` 阈值（越早越长的留白） |
 | Boss 升压快慢 | `constants.js` 的 `START_INTENSITY` / `TIME_TO_MAX` / `RISE_RANGE` |
 | 切轨过渡时长 | `_duck()` 的 0.18 / 0.55 |
+| 切轨过渡时长 | `_duck()` 的 0.18 / 0.55 |
+| 命中音 / 击杀音音量 | `HIT_FEEDBACK.SOUND.HIT_VOLUME` / `KILL_VOLUME`（第四十修） |
+| 「机关枪嗡嗡」 | `HIT_FEEDBACK.SOUND.PITCH_JITTER`（**改 0 = 关闭抖动，回到改前手感**） |
+| 连击升调幅度 / 起效连击数 | `HIT_FEEDBACK.SOUND.COMBO_PITCH_STEP` / `COMBO.MIN_FOR_FEEDBACK` |
+| 某个敌种的击杀音色 | `audio.js` 的 `_killVoice()` switch 分支 |
 | 性能不够 | 调低 `setIntensity` 上限，关闭十六分层（boss 的 3c、6 层） |
 
 ---
@@ -610,3 +647,5 @@ node tools/bgm-preview/smoke.js    # 回归：三轨是否发声 + Boss 分层�
 | 激光关 0.5 档未接线 | 规格中 `inten ≥ 0.5` 的"驱赶期"层（副脉冲 + 踩镲）在代码里**没有对应赋值点**。当前 laser 强度实际只走 `0.2 → 0.35`（第 15 关解谜）或 `0.2 → 1.0`（第 9 关走格子），中间的 0.5 档从未触发。如需"驱赶期升压"，应在 `game.js` 激光驱赶阶段开始时补一次 `setIntensity(0.5)`。 |
 | normal 无强度分层 | 设计如此，普通关不随强度变化，试听页该滑块对普通关无效。 |
 | 无音量持久化 | 主音量固定 0.5，未做用户设置持久化。 |
+| 无音量持久化 | 主音量固定 0.5，未做用户设置持久化。 |
+| 手柄震动未实机验证 | 第四十修新增的 `HIT_FEEDBACK.HAPTIC` 走 `hapticActuators[0].pulse()` / `vibrationActuator` 双路径，**Pico 部分机型可能不支持**（此时静默跳过）。现场若完全无震动，先确认是机型限制而非代码问题。 |

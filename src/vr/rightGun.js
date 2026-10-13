@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { loadGLB, cloneGLBScene } from '../game/glbCache.js';
 import { GUN, GUN_MODES, INPUT, SKILL_HINT } from '../core/constants.js';
 import { SkillHintPanel } from './skillHint.js';
+import { StreakCounter } from './streakCounter.js';   // 第四十二修：枪管连杀计数
 
 // 右手柄 AK 枪模型：加载 Ak枪.glb → 幂等挂到右手柄(grip) → 每帧从 GUN 配置应用变换
 // 纯视觉叠加，不影响射击/碰撞/血量逻辑。
@@ -20,6 +21,7 @@ export class RightGun {
     this._recoilPitch = 0;           // 当前后坐力：绕本地 X 上抬角（弧度，枪口跳）
     this._lastShots = 0;             // 上一帧记录的开火计数（用于检测本帧新开了几枪）
     this.skillHint = new SkillHintPanel();  // 技能就绪提示面板（右手枪中央，红框闪3下）
+    this.streak = new StreakCounter();      // 枪管连杀计数（第四十二修，纯视觉）
     this._load();
   }
 
@@ -30,10 +32,13 @@ export class RightGun {
       (gltf) => {
         this.model = cloneGLBScene(gltf);
         this.root.add(this.model);
+        this.streak.attach(this.root);       // 连杀计数：挂到枪的持有层
+        this.streak.place(this.model);       // 按模型包围盒自动标定到枪管上（第四十二修）
         window.__pageLog?.info('[RightGun] AK 枪模型加载完成');
       },
       (err) => {
         console.error('[RightGun] 模型加载失败:', err);
+        this.streak.attach(this.root);       // 模型挂了也把计数挂上（place 会走固定枪管位兜底）
         window.__pageLog?.error('[RightGun] AK 枪加载失败：' + (err?.message || err));
         const box = new THREE.Mesh(
           new THREE.BoxGeometry(0.1, 0.1, 0.4),
@@ -56,6 +61,8 @@ export class RightGun {
     }
     if (SKILL_HINT.DEBUG && input) this.skillHint.debugMove(input, dt);  // 调试：左手柄摇杆/XY键 实时微调提示框位置（调参用）
     if (game) { this.skillHint.update(dt, game); }  // 每帧驱动闪烁/就绪状态（game 直接传给面板绘制）
+    this.streak.attach(this.root);          // 幂等：挂到枪上（等模型/手柄就绪）
+    this.streak.update(dt, game);           // 连杀计数（值没变则完全不重绘，零纹理上传）
   }
 
   // 后坐力：在 _applyTransform 把基准变换重置后，叠加一层「后退 + 枪口上跳」，并指数回正。
