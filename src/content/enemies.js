@@ -29,7 +29,7 @@ export const ENEMY_TYPES = {
   },
   // —— 03 盾兵怪（骑士模型 + 会旋转的盾牌组成）——
   shield: {
-    id: 'shield', name: '盾兵怪',
+    id: 'shield', name: '盾甲兵',
     hp: 300, speed: 1.0, radius: 0.9, score: 18,
     behavior: 'shield', selfDamage: 10,
     model: 'Model/骑士.glb',          // 主体：骑士模型
@@ -39,7 +39,7 @@ export const ENEMY_TYPES = {
   },
   // —— 04 心型怪 ——
   heart: {
-    id: 'heart', name: '心型怪',
+    id: 'heart', name: '治疗术士',
     hp: 1000, speed: 0, radius: 0.9, score: 40,
     behavior: 'heal', selfDamage: 0,
     scale: 3,   // 缩放倍率(单位:倍)：与忍者/幽灵/章鱼同类精英同放大3倍 → 视觉 + 受击范围 同步放大（治疗光环 healRadius 固定 6m，不受影响）
@@ -51,7 +51,7 @@ export const ENEMY_TYPES = {
   },
   // —— 05 忍者怪 ——
   ninja: {
-    id: 'ninja', name: '忍者怪',
+    id: 'ninja', name: '忍者队长',
     hp: 500, speed: 1.5, radius: 0.6, score: 24,
     behavior: 'ninja', selfDamage: 5,
     scale: 3,   // 精英怪整体放大3倍：视觉(mesh.scale) + 受击范围(effectiveRadius/hitRadius) 同步放大
@@ -83,7 +83,7 @@ export const ENEMY_TYPES = {
     noHealthBar: true,
   },
   ghost: {
-    id: 'ghost', name: '幽灵怪',
+    id: 'ghost', name: '幽灵法师',
     hp: 800, speed: 0, radius: 0.8, score: 34,
     behavior: 'ghost', selfDamage: 10,
     scale: 3,   // 同上：放大3倍 + 受击范围同步
@@ -115,7 +115,7 @@ export const ENEMY_TYPES = {
   },
   // —— 10 章鱼怪 ——
   octopus: {
-    id: 'octopus', name: '章鱼怪',
+    id: 'octopus', name: '章鱼将军',
     hp: 1000, speed: 1.0, radius: 0.9, score: 30,
     behavior: 'octopus', selfDamage: 5,
     scale: 3,   // 缩放倍率(单位:倍)：精英怪整体放大3倍 → 视觉 + 受击范围 同步放大；不写则默认 1 倍
@@ -138,7 +138,7 @@ export const ENEMY_TYPES = {
   // 复用骑士模型，behavior=basic 直冲玩家，普通体型（scale:1，覆盖 Boss 的 3）。
   // 与盾兵怪同为「骑士模型 + scale:1」分支（见 balloons.js 的 knightTuning 覆盖），但行为不同（盾兵自转盾、精英直冲）。
   eliteKnight: {
-    id: 'eliteKnight', name: '精英骑士',
+    id: 'eliteKnight', name: '铁甲兵',
     hp: 500, speed: 0.5, radius: 0.9, score: 60,
     behavior: 'basic', selfDamage: 5,
     model: 'Model/骑士.glb',

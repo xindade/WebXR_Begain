@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ENEMY_TYPES } from '../content/enemies.js';
-import { BALLOON, MOVE, SHURIKEN, PROJECTILE } from '../core/constants.js';
+import { BALLOON, MOVE, SHURIKEN, PROJECTILE, ELITE_LABEL } from '../core/constants.js';
+import { ELITE_DISPLAY_NAME } from '../content/spawnDirector.js';
 import { attachBalloonModel, fitToRadius, loadBalloonModel, attachDragonSegment, hideLoadDot } from './balloonModels.js';
 
 // 程序化笑脸贴图（按颜色缓存）——占位怪也复用调色板
@@ -40,8 +41,16 @@ export class Balloon {
     if (opts && opts.hp != null) { this.maxHp = opts.hp; this.hp = opts.hp; }
     this.isElite = !!(opts && opts.isElite);
     this.speed = t.speed;
+    // 第四十七修：精英体型倍数（sizeMul）与定速（speed）由 waves._eliteOpts 传入；
+    //   这里只负责「按倍数把模型/占位/盾/血条/命中球一起放大」。
+    //   ⚠ sizeMul 是**总体型倍数**（覆盖 ENEMY_TYPES 的 scale），不与 t.scale 相乘：
+    //     enemies.js 里 heart/ninja/ghost/octopus 已写 scale:3（「精英怪整体放大 3 倍」），
+    //     再乘一次 SIZE_MUL 就成 9 倍（半径 5~8m、贴脸糊屏），故「显式倍数优先、否则退回 t.scale」。
+    const _explicitSize = (opts && Number.isFinite(opts.sizeMul) && opts.sizeMul > 0) ? opts.sizeMul : 0;
+    this.sizeMul = _explicitSize > 0 ? _explicitSize : (t.scale || 1);   // 总体型倍数（含 t.scale）
+    if (opts && Number.isFinite(opts.speed) && opts.speed > 0) this.speed = opts.speed;
     this.radius = t.radius;
-    this.effectiveRadius = t.radius * (t.scale || 1); // 碰撞/分离/血条用的实际半径
+    this.effectiveRadius = t.radius * this.sizeMul; // 碰撞/分离/血条用的实际半径（sizeMul 已含 t.scale）
     this.healthBarRadius = t.barRadius != null ? t.barRadius : t.radius; // 血条宽度半径(米)：默认=基础半径(不含 scale)。血条是 mesh.scale 子节点，会被 scale 放大 → 最终宽度≈模型直径，各型一致；可用 barRadius 单独覆盖
     this.hitRadius = this.effectiveRadius;            // 子弹命中球半径（模型加载后按视觉尺寸放大；占位怪构造里再放大）
     this.score = t.score;
@@ -92,12 +101,20 @@ export class Balloon {
       this._makeNameLabel(t.name); // 需求④：占位怪加名牌，防止混淆
     }
 
+    // 精英名牌（第四十六修）：有模型的小怪平时不挂名牌 —— 精英必须挂
+    //   （红字 + 描边 + 半透明底），否则玩家分不清「这只和别的不一样」，
+    //   也不可能知道该先打谁（治疗术士 / 盾甲兵 / 章鱼将军的优先级全靠它传达）。
+    if (this.isElite && ELITE_LABEL.ENABLED && t.model) {
+      this._makeNameLabel(ELITE_DISPLAY_NAME[t.id] || t.name, ELITE_LABEL);
+    }
+
     // 盾兵怪：在骑士模型基础上附加「会旋转的盾牌」（绕骑士旋转，挡子弹）
     if (t.shieldModel) this._buildShield(t);
 
     // 血条：所有非基础怪显示（含盾兵/召唤/心/忍者/宝箱/幽灵/龙头/聚宝盆/章鱼）；龙身(noHealthBar)除外——龙用全局血量池
     if (t.id !== 'basic' && !t.noHealthBar) this._makeHealthBar(this.healthBarRadius);
-    if (t.scale) this.mesh.scale.setScalar(t.scale);
+    // 第四十七修：体型倍数统一作用在 mesh 上（子节点一起放大）；this.sizeMul 已含 t.scale
+    if (this.sizeMul !== 1) this.mesh.scale.setScalar(this.sizeMul);
 
     // 幽灵怪：默认隐身，仅在自身蓄力攻击（最后 ghostFireCharge 秒）时显形 ——
     // 显形期就是玩家的攻击窗口（隐身期间子弹打不中，见 game._collide 的 revealed 过滤）
@@ -159,22 +176,37 @@ export class Balloon {
     this.hitRadius = this.effectiveRadius * 2.2; // 占位胶囊+眼睛视觉高于球体，放大命中球直到上半身
   }
 
-  // 占位怪名牌：半透明底 + 白字，挂在气球上方；Sprite 始终朝向相机，depthTest 关闭永不被遮挡
-  _makeNameLabel(text) {
+  // 名牌：半透明底 + 文字，挂在怪上方；Sprite 始终朝向相机，depthTest 关闭永不被遮挡
+  //   第四十六修：支持样式（精英 = 红字 + 深色描边；占位怪仍用旧的白字样式）。
+  _makeNameLabel(text, style = null) {
+    const S = style || {};
+    const W = S.CANVAS_W || 256, H = S.CANVAS_H || 64;
     const c = document.createElement('canvas');
-    c.width = 256; c.height = 64;
+    c.width = W; c.height = H;
     const x = c.getContext('2d');
-    x.fillStyle = 'rgba(0,0,0,0.55)';
-    x.fillRect(0, 0, 256, 64);
-    x.fillStyle = '#ffffff';
-    x.font = 'bold 38px sans-serif';
+    x.fillStyle = S.BG || 'rgba(0,0,0,0.55)';
+    x.fillRect(0, 0, W, H);
+    x.font = S.FONT || 'bold 38px sans-serif';
     x.textAlign = 'center'; x.textBaseline = 'middle';
-    x.fillText(text, 128, 34);
+    const by = H * 0.54;                       // 基线略低一点，视觉居中（描边会比字高一点）
+    if (S.OUTLINE) {                           // 描边先画，再压字 —— 远看也认得出
+      x.lineWidth = S.OUTLINE_W || 6;
+      x.strokeStyle = S.OUTLINE;
+      x.lineJoin = 'round';
+      x.strokeText(text, W / 2, by);
+    }
+    x.fillStyle = S.COLOR || '#ffffff';
+    x.fillText(text, W / 2, by);
     const tex = new THREE.CanvasTexture(c);
     const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
     const sp = new THREE.Sprite(mat);
-    sp.scale.set(1.4, 0.35, 1);
-    sp.position.y = this.radius * 2.6 + 0.3;
+    const sc = S.SCALE || [1.4, 0.35];
+    // 第四十七修：名牌是 mesh 的子节点 → 会被 sizeMul 一起放大。这里按倒数缩回去，
+    //   让「3 倍体型的精英」名牌**世界尺寸与普通怪一致**（否则字大到糊脸）。
+    const inv = this.sizeMul || 1;
+    sp.scale.set(sc[0] / inv, sc[1] / inv, 1);
+    // 挂在怪顶：用 effectiveRadius（含 scale 放大）算高度，3 倍体型的精英也贴得住
+    sp.position.y = ((this.effectiveRadius || this.radius) * 2.6 + 0.3 + (S.Y_PAD || 0)) / inv;
     sp.renderOrder = 999;
     this.mesh.add(sp);
     this.label = sp;

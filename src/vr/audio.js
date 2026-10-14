@@ -785,6 +785,45 @@ export class AudioManager {
     this._killVoice(kind, this.ctx.currentTime, mul, vol);
   }
 
+  // 第四十六修 · 三层出怪音（光点飞出时）：白（杂鱼）/ 蓝（无技能精英）/ 紫红（有技能精英）
+  //   三者音高与厚度递增 —— 玩家不看画面也能听出「来的是哪一层」。
+  playLayerSpawn(layer) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const cfg = layer === 'skill' ? { f: 392.0, d: 0.22, g: 0.16, type: 'sawtooth' }
+      : layer === 'mini' ? { f: 261.6, d: 0.18, g: 0.13, type: 'triangle' }
+        : { f: 196.0, d: 0.10, g: 0.05, type: 'sine' };
+    const o = this.ctx.createOscillator();
+    o.type = cfg.type;
+    o.frequency.setValueAtTime(cfg.f, t);
+    o.frequency.exponentialRampToValueAtTime(cfg.f * (layer === 'trash' ? 1 : 1.5), t + cfg.d);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(cfg.g, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.001, t + cfg.d + 0.06);
+    o.connect(g).connect(this.master);
+    o.start(t); o.stop(t + cfg.d + 0.08);
+  }
+
+  // 第四十六修 · 精英批次清空 → 金点引导前的上扬提示音（C5→G5→C6）
+  playEliteWipe() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const seq = [523.3, 784.0, 1046.5];
+    for (let i = 0; i < seq.length; i++) {
+      const at = t + i * 0.075;
+      const o = this.ctx.createOscillator();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(seq[i], at);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(0.18, at + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, at + 0.3);
+      o.connect(g).connect(this.master);
+      o.start(at); o.stop(at + 0.32);
+    }
+  }
+
   // 第四十二修 · 连杀加速奖励音（game._bulletKill 满 10 连杀时调）。
   //   设计意图：与「击杀 thump（低沉）」在频谱和走向上彻底分开 ——
   //   全程走高音亮区、音高**上行**，一听就知道是「变强了」，不用看 UI。

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { DAMAGE_NUMBER } from '../core/constants.js';
+import { DAMAGE_NUMBER, ELITE_FEEDBACK } from '../core/constants.js';
 
 // 伤害数字（第四十修）。
 //   命中/击杀时在怪物头顶弹出伤害数值，配合「档1 打击感」给玩家即时的数值反馈。
@@ -60,7 +60,7 @@ export class DamageNumbers {
     this.group.add(sprite);
     return {
       sprite, canvas, ctx: canvas.getContext('2d'), tex,
-      key: null, alive: false, kill: false, _texDirty: true,
+      key: null, alive: false, kill: false, elite: false, _texDirty: true,
       t: 0, life: DAMAGE_NUMBER.LIFE, rise: DAMAGE_NUMBER.RISE,
       pos: new THREE.Vector3(), value: 0, scale: DAMAGE_NUMBER.SIZE,
     };
@@ -104,6 +104,7 @@ export class DamageNumbers {
       e.value += value;          // 合并：数字累加，而不是在高射速下刷一屏
       e.t = 0;
       e.kill = e.kill || kill;
+      e.elite = e.elite || !!opts.elite;   // 第四十六修：精英数字保持金色
       e.pos.copy(worldPos);
       this._draw(e);
       return e;
@@ -119,6 +120,7 @@ export class DamageNumbers {
     e.life = DAMAGE_NUMBER.LIFE * (kill ? 1.25 : 1);
     e.rise = DAMAGE_NUMBER.RISE * (kill ? 1.2 : 1);
     e.value = value;
+    e.elite = !!opts.elite;   // 第四十六修：精英伤害数字转金
     e.pos.copy(worldPos);
     e.sprite.position.copy(e.pos);
     e.sprite.visible = true;
@@ -144,10 +146,13 @@ export class DamageNumbers {
     ctx.lineJoin = 'round';
     ctx.lineWidth = DAMAGE_NUMBER.STROKE_PX;
     // 高档位改金色描边：暴击级伤害更醒目
-    ctx.strokeStyle = tier >= DAMAGE_NUMBER.BIG_TIER ? DAMAGE_NUMBER.BIG_STROKE : DAMAGE_NUMBER.STROKE;
+    //   第四十六修：精英伤害数字**整条转金**（不再按数值分档判色），让「打精英」一眼可辨
+    const elite = !!e.elite;
+    ctx.strokeStyle = elite ? ELITE_FEEDBACK.GOLD_STROKE
+      : (tier >= DAMAGE_NUMBER.BIG_TIER ? DAMAGE_NUMBER.BIG_STROKE : DAMAGE_NUMBER.STROKE);
     const text = String(amount);
     ctx.strokeText(text, W / 2, H / 2);
-    ctx.fillStyle = hexColor(damageColorOf(amount));
+    ctx.fillStyle = elite ? ELITE_FEEDBACK.GOLD : hexColor(damageColorOf(amount));
     ctx.fillText(text, W / 2, H / 2);
     // 纹理上传（节流，见 _flushUploads）：先补上一帧欠的账，再传自己
     this._flushUploads(e);   // 补上一帧欠的账（不含自己）

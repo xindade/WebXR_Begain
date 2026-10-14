@@ -121,7 +121,7 @@ export const AIM = {
   DEVICE: null,      // null / 'auto' = 自动识别；识别不准时钉死 'pico' | 'quest' | 'steamvr' | 'unknown'（优先级最高）
   BY_DEVICE: {
     pico:    { x: -27, y: 0,   z: 0 },   // PICO 4 实测（本机基准），勿随意改
-    quest:   { x: 14,  y: -14, z: 0 },   // Quest / Quest 2 / 3 / Pro：2026-09-24 Quest 3 上机实测
+    quest:   { x: -14, y: -14, z: 0 },   // Quest / Quest 2 / 3 / Pro：2026-10-14 现场复核修正（原 14 俯角符号写反）
     steamvr: { x: -27, y: -2,  z: 0 },   // Vive / Index / WMR（占位值，待实测）
     unknown: { x: -27, y: 0,   z: 0 },   // 兜底：识别不出设备时用
   },
@@ -967,6 +967,106 @@ export const SPAWN_RING = {
 };
 
 // ============================================================
+// ============================================================
+// 精英名牌（第四十六修）—— 有模型的小怪平时不挂名牌，**精英必须挂**，否则玩家分不清
+//   红字 + 深色描边 + 半透明底；实现见 balloons._makeNameLabel(text, style)。
+//   显示名见 content/spawnDirector.js 的 ELITE_DISPLAY_NAME（铁甲兵/盾甲兵/治疗术士/幽灵法师/忍者队长/章鱼将军）。
+// ============================================================
+export const ELITE_LABEL = {
+  ENABLED: true,
+  COLOR: '#ff4d4d',          // 字色（红）
+  OUTLINE: '#2b0000',        // 描边色
+  OUTLINE_W: 7,              // 描边宽度（画布像素）
+  BG: 'rgba(24,0,0,0.55)',   // 半透明底
+  CANVAS_W: 384,             // 名牌画布宽（像素）
+  CANVAS_H: 96,              // 名牌画布高（像素）
+  FONT: 'bold 52px sans-serif',
+  SCALE: [1.9, 0.48],        // Sprite 世界尺寸（米）
+  Y_PAD: 0.3,                // 怪顶之上的额外抬升（米）
+};
+
+// ============================================================
+// 三层出怪（第四十六修）—— 时间轴脚本与层定义见 content/spawnDirector.js
+//   trash 白光点（DPS 内外圈滴流）/ mini 蓝光点（无技能精英）/ skill 紫红光点（有技能精英）
+//   merge = 清场融合：清掉场上非精英 + 补足光点 → 汇聚成大号层色光点（waves._fuseSpawn）
+//   ⚠ 只作用于「有关卡脚本」的普通关（本轮 1/2/4/5）；机制关与 Boss 关不参与。
+// ============================================================
+export const SPAWN_LAYER = {
+  ENABLED: true,      // 总开关：false → 全部走旧的三期脉冲（ELITE_SCHEDULE），便于对照与回退
+  LAYER_GAP: 4,       // 两层之间的最小间隔（秒）：防同帧齐发（现在三期是独立 if，会同帧叠）
+  MAX_ELITES: 6,      // 同屏精英总数上限（各层合计；到上限则本次事件跳过）
+                      //   ⚠ 是「安全网」不是节奏工具：脚本批次必须能出得来（第4关 20s 批可能还活着）
+  FUSE_CLEAR: true,   // merge 时是否清掉场上非精英（关闭则只补光点，不清场）
+};
+
+// ============================================================
+// 精英强化（第四十七~四十八修）—— 体型 / 血量 / 出生距离 / 移动速度
+//
+// ★ 第四十八修起**分两档**（现场实测返工：第四十七修让全员都吃强化，中段精英变成打不动的墙）——
+//   ① 末尾精英（关卡脚本里带 goldReturn 的那一批：横幅 → 清场融合 → 金点 → 抽卡）= 本表全部生效；
+//   ② 普通精英（前面零星出现的，如 L2/L5 每 10s 一只、L4 的 2 只直出）= 原生体型 / 原生速度 /
+//      固定血量 ELITE_BASE_HP[型]（见 waves._eliteOpts 的 !climax 分支）。
+//
+//   末尾批的口径：体型 ×SIZE_MUL；出生点放远且「10 秒只走到场地的 2/3」（速度由距离反推）；
+//   血量 = clamp(本批基础血量 × HP_MUL, DPS × HP_MIN_SECONDS, DPS × HP_MAX_SECONDS) ——
+//   上限是**可击杀保证**（最难也就打 HP_MAX_SECONDS 秒纯输出），下限是**仪式感**（不会一秒蒸发）。
+//   ⚠ SIZE_MUL 的「总体型」语义由 balloons.js 兜底：显式倍数优先、覆盖 enemies.js 的 scale，
+//     否则 heart/ninja/ghost/octopus（本就 scale:3）会叠成 9 倍；普通精英传 1 也是同一机制。
+//   实现：content/spawnDirector.js 的 isClimaxEvent / climaxEliteHp / eliteTravelSpeed（纯函数，有单测），
+//        调用点 waves._eliteOpts，落点 balloons 的 sizeMul / speed / hp 构造参数。
+// ============================================================
+export const ELITE_TUNING = {
+  SIZE_MUL: 3,             // 末尾精英**总体型**倍数（模型 / 命中球 / 血条 / 盾一起放大；名牌按倒数缩回原大）
+                           //   ⚠ 是「覆盖」不是「相乘」：心/忍者/幽灵/章鱼本来就带 scale:3，
+                           //     再乘一次会变 9 倍（半径 5~8m、糊脸）→ 见 balloons.js 的 _explicitSize。
+  SPAWN_DIST: 24,          // 末尾精英出生距离（米）：原 15 → 24（放远，给玩家反应时间）
+  SPAWN_SPREAD: 9,         // 末尾精英出生散布（米）：随距离等比放大（原 6）
+  TRAVEL_SECONDS: 10,      // 「10 秒」基准
+  TRAVEL_FRACTION: 2 / 3,  // 10 秒内走过的路程比例（2/3 → 剩下的 1/3 再走 5 秒）
+  HP_MUL: 2,               // 末尾批血量基准：本批基础血量之和 × 该系数（再被下面两行夹住）
+  HP_MIN_SECONDS: 2.5,     // 「纯输出秒数」下限：DPS 再高也不会一秒蒸发（仪式感）
+  HP_MAX_SECONDS: 6,       // 「纯输出秒数」上限 ★ 可击杀保证：再难的批也只打 6 秒纯输出
+};
+
+// ============================================================
+// 精英反馈（第四十六修）—— 让玩家感到「构筑生效」
+//   精英伤害数字转金 + 积分 ×SCORE_MUL（基础分 = ENEMY_TYPES[type].score）。
+//   击杀音色与重震动沿用第四十修的 _killSoundKind（精英本来就单列 'elite'）。
+// ============================================================
+export const ELITE_FEEDBACK = {
+  SCORE_MUL: 2,            // 精英击杀积分倍率
+  GOLD: '#ffd700',         // 精英伤害数字金色
+  GOLD_STROKE: '#7a4b00',  // 金色描边（比字深，拉出对比）
+};
+
+// ============================================================
+// 金点引导（第四十六修）—— 精英批次清空 → 金点飞向选项卡位置 → 消失并弹出三张选项卡
+//   位置 = CARD 的固定世界坐标（(0, CARD.ROW_Y, CARD.ROW_Z)）；纯表现，不触发额外的抽卡次数。
+// ============================================================
+export const GOLD_ORB = {
+  ENABLED: true,
+  COLOR: 0xffd54a,   // 金色
+  SIZE: 0.3,         // 光点半径 m
+  SPEED: 6,          // 飞行速度 m/s
+  DUR_MIN: 0.35,     // 飞行时长下限 s
+  DUR_MAX: 1.6,      // 飞行时长上限 s
+  HOLD: 0.28,        // 到达后原地停留多久再消失/开卡 s
+};
+
+// ============================================================
+// 治疗线（第四十六修）—— 治疗术士（heart）与它正在治疗的怪之间
+//   一条绿线 + 沿线上飘的绿色加号（表现；治疗逻辑仍是 ENEMY_TYPES.heart 的 healAura/healRadius）。
+// ============================================================
+export const HEAL_LINK = {
+  ENABLED: true,
+  COLOR: 0x51cf66,
+  OPACITY: 0.55,
+  PLUS_COUNT: 3,     // 每条线上的加号数
+  PLUS_SPEED: 0.55,  // 加号沿线的移动速度（归一化 / 秒）
+  PLUS_SIZE: 0.26,   // 加号世界尺寸 m
+  MAX_TARGETS: 4,    // 同一只治疗术士最多连几条线（性能兜底）
+};
+
 // 关卡时长（第四十一修）—— 按关卡给「停止补怪时间窗」，取代原来的全局 60s
 //   语义未变：时间窗到点后不再补怪，场上清空即通关（见 waves._updateDpsSpawn）。
 //   只作用于普通关 / 危机关；机制关(3/9/15)与 Boss 关(6/12/18)没有倒计时，不在此表。
@@ -1001,7 +1101,10 @@ export function levelTimeScale(n) { return levelSecondsOf(n) / LEVEL_SECONDS.REF
 //   实现在 src/game/warningBanner.js；触发判据在 game._updatePlaying（每关只弹一次，_midWarned 把关）。
 // ============================================================
 export const MID_WARNING = {
-  ENABLED: true,
+  // 第四十七修（用户要求）：**关闭** —— 「更强的敌人来袭」这条横幅去掉，只保留三层出怪里的
+  //   「前方 / 左边 / 右边精英来袭」（复用同一个 Sprite，见 game._showBanner）。
+  //   判定与文案都还在，现场想临时看回来改 true 即可。
+  ENABLED: false,
   AT: 0.5,             // 触发点 = 本关时间窗(levelSecondsOf) × AT（0.5 = 刚好过半）
   SECONDS: 2,          // 横幅停留总时长 s（含淡入淡出）
   FADE_IN: 0.25,       // 淡入时长 s

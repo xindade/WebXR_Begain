@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { FX } from '../core/constants.js';
+import { FX, HEAL_LINK } from '../core/constants.js';
 
 // ============================================================
 // 打击感视觉层（档2 · 第四十一修）：曳光 / 命中火花 / 击杀碎片 / 枪口焰
@@ -283,6 +283,115 @@ export class MuzzleFlash {
   }
 }
 
+// ---------------------------------------------------------------- 治疗线（第四十六修）
+// 治疗术士（heart）与它正在治疗的怪之间画一条绿线，线上有绿色加号朝目标飘。
+//   · 线：每条一个 Line（2 顶点 buffer），共用一份材质；
+//   · 加号：每条线 PLUS_COUNT 个 Sprite（贴图缓存、各自一份材质以便独立透明度）；
+//   · 全部对象池化（按需增长到 MAX_TARGETS 条），帧内不 new。
+const _plusTexCache = { tex: null };
+function plusTexture() {
+  if (_plusTexCache.tex) return _plusTexCache.tex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const x = c.getContext('2d');
+  x.clearRect(0, 0, 64, 64);
+  x.strokeStyle = '#51cf66';
+  x.lineWidth = 12; x.lineCap = 'round';
+  x.beginPath(); x.moveTo(32, 12); x.lineTo(32, 52); x.moveTo(12, 32); x.lineTo(52, 32); x.stroke();
+  _plusTexCache.tex = new THREE.CanvasTexture(c);
+  _plusTexCache.tex.colorSpace = THREE.SRGBColorSpace;
+  return _plusTexCache.tex;
+}
+
+export class HealLinkFx {
+  constructor(scene, cfg = HEAL_LINK) {
+    this.scene = scene;
+    this.cfg = cfg;
+    this.lines = [];
+    this._t = 0;
+    this._mat = new THREE.LineBasicMaterial({
+      color: cfg.COLOR, transparent: true, opacity: cfg.OPACITY, depthWrite: false, depthTest: false,
+    });
+    this._tex = plusTexture();
+  }
+
+  _grow() {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    const line = new THREE.Line(geo, this._mat);
+    line.frustumCulled = false;
+    line.renderOrder = 998;
+    this.scene.add(line);
+    const sprites = [];
+    for (let i = 0; i < this.cfg.PLUS_COUNT; i++) {
+      const mat = new THREE.SpriteMaterial({ map: this._tex, transparent: true, depthTest: false, depthWrite: false });
+      const sp = new THREE.Sprite(mat);
+      sp.scale.set(this.cfg.PLUS_SIZE, this.cfg.PLUS_SIZE, 1);
+      sp.visible = false;
+      sp.renderOrder = 999;
+      this.scene.add(sp);
+      sprites.push(sp);
+    }
+    this.lines.push({ line, geo, sprites, a: new THREE.Vector3(), b: new THREE.Vector3(), phase: Math.random() });
+  }
+
+  /** pairs = [{ a, b }] 世界坐标（立即拷贝，调用方可用复用向量） */
+  set(pairs) {
+    if (!this.cfg || this.cfg.ENABLED === false || !pairs) { this.hideAll(); return; }
+    const n = Math.min(pairs.length, this.cfg.MAX_TARGETS);
+    while (this.lines.length < n) this._grow();
+    for (let i = 0; i < this.lines.length; i++) {
+      const L = this.lines[i];
+      if (i >= n) { L.line.visible = false; for (const sp of L.sprites) sp.visible = false; continue; }
+      L.a.copy(pairs[i].a);
+      L.b.copy(pairs[i].b);
+      const attr = L.geo.attributes.position;
+      attr.setXYZ(0, L.a.x, L.a.y, L.a.z);
+      attr.setXYZ(1, L.b.x, L.b.y, L.b.z);
+      attr.needsUpdate = true;
+      L.geo.computeBoundingSphere();
+      L.line.visible = true;
+      for (const sp of L.sprites) sp.visible = true;
+    }
+  }
+
+  hideAll() {
+    for (const L of this.lines) {
+      L.line.visible = false;
+      for (const sp of L.sprites) sp.visible = false;
+    }
+  }
+
+  update(dt) {
+    this._t += dt;
+    for (const L of this.lines) {
+      if (!L.line.visible) continue;
+      const step = this.cfg.PLUS_COUNT > 1 ? 1 / this.cfg.PLUS_COUNT : 1;
+      for (let i = 0; i < L.sprites.length; i++) {
+        const u = ((this._t * this.cfg.PLUS_SPEED + L.phase + i * step) % 1 + 1) % 1;
+        const sp = L.sprites[i];
+        sp.position.set(
+          L.a.x + (L.b.x - L.a.x) * u,
+          L.a.y + (L.b.y - L.a.y) * u,
+          L.a.z + (L.b.z - L.a.z) * u);
+        sp.material.opacity = Math.sin(u * Math.PI) * 0.95;   // 两端淡、中间亮
+      }
+    }
+  }
+
+  clear() { this.hideAll(); }
+
+  dispose() {
+    for (const L of this.lines) {
+      this.scene.remove(L.line);
+      L.geo.dispose();
+      for (const sp of L.sprites) { this.scene.remove(sp); sp.material.dispose(); }
+    }
+    this.lines.length = 0;
+    this._mat.dispose();
+  }
+}
+
 // ---------------------------------------------------------------- 汇总门面
 export class FxEffects {
   constructor(scene) {
@@ -291,6 +400,7 @@ export class FxEffects {
     this.sparks = new ParticlePool(scene, FX.SPARK, dotGeo());
     this.debris = new ParticlePool(scene, FX.DEBRIS, boxGeo());
     this.muzzleFx = new MuzzleFlash(scene, FX.MUZZLE);
+    this.healLink = new HealLinkFx(scene, HEAL_LINK);   // 第四十六修：治疗线 + 绿色加号
   }
 
   /** 命中火花：colorHex 省略用配置里的默认暖金 */
@@ -303,10 +413,14 @@ export class FxEffects {
 
   muzzle(pos, dir) { this.muzzleFx.flash(pos, dir); }
 
+  /** 治疗线（第四十六修）：pairs = [{a,b}] 世界坐标；每帧调一次（空数组 = 全隐藏） */
+  healLinks(pairs) { this.healLink.set(pairs); }
+
   update(dt) {
     this.sparks.update(dt);
     this.debris.update(dt);
     this.muzzleFx.update(dt);
+    this.healLink.update(dt);
   }
 
   clear() {
@@ -314,6 +428,7 @@ export class FxEffects {
     this.sparks.clear();
     this.debris.clear();
     this.muzzleFx.clear();
+    this.healLink.clear();
   }
 
   dispose() {
@@ -321,5 +436,6 @@ export class FxEffects {
     this.sparks.dispose();
     this.debris.dispose();
     this.muzzleFx.dispose();
+    this.healLink.dispose();
   }
 }

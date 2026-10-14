@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM, SPAWN_RING, levelSecondsOf, levelTimeScale } from '../core/constants.js';
+import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM, SPAWN_RING, SPAWN_LAYER, ELITE_TUNING, levelSecondsOf, levelTimeScale } from '../core/constants.js';
+import { scriptFor, scriptEventTimes, layerOfType, comboTotal, DIR_TEXT, FUSE, LAYER, isClimaxEvent, climaxEliteHp, eliteTravelSpeed } from '../content/spawnDirector.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { ELITE_SCHEDULE, ELITE_WINDOW, ELITE_BASE_HP } from '../content/eliteMonsters.js';
 import { isBoss } from '../content/levels.js';
@@ -11,6 +12,11 @@ import { MagicianBoss } from './bossMagician.js';
 const SUMMON_MINION_DISTANCE = 1.5; // 小兵出生在召唤者「身后」的距离(m)：调大 → 离本体更远
 const SUMMON_MINION_SPREAD   = 3.0; // 小兵出生点相对身后的左右/前后随机偏移(m)：调大 → 散布更开
 const SUMMON_RESPAWN_DELAY   = 1.5; // 小兵死亡后延迟重生间隔(s)：调大 → 补怪更慢
+
+// 普通精英（第四十八修：非末尾批）的出生口径 —— 沿用第四十七修之前的写死值：
+//   只有末尾精英才「放远 + 加宽散布」（ELITE_TUNING.SPAWN_DIST / SPAWN_SPREAD）。
+const PLAIN_ELITE_DIST   = 15;   // 普通精英出生距离(m)
+const PLAIN_ELITE_SPREAD = 6;    // 普通精英出生散布(m)
 
 // 出怪光点：最近传送门计算用临时量（_nearestPortal 内循环即消费，勿存引用）
 const _portalTmp = new THREE.Vector3();
@@ -33,6 +39,17 @@ export class WaveManager {
     this._eliteElapsed = 0;          // 精英波独立计时（秒），与 mode 的 elapsed 解耦
     this._elitePlan = null;          // 本关排程（ELITE_SCHEDULE[n] 或 null）
     this._eliteFired = null;         // {early,mid,late} 各期是否已触发
+    // —— 三层出怪时间轴（第四十六修，见 content/spawnDirector.js）——
+    this._script = null;             // 本关编排脚本（null = 走旧的三期脉冲）
+    this._scriptElapsed = 0;         // 脚本计时（秒，独立于 mode 的 elapsed）
+    this._scriptPrev = 0;            // 上一帧的脚本秒数（用于取 (prev, now] 区间到期的事件）
+    this._lastEliteLayerAt = -99;    // 上次生成精英的脚本秒（层间隔节流）
+    this._fuseGroups = [];           // 清场融合演出队列（见 _fuseSpawn / _updateFuseGroups）
+    this._dripStopped = false;       // 第四十七修：金点批清空后停掉本关杂鱼滴流（见 _updateEliteWatch）
+    this._eliteWatch = [];           // 待观察批次（该层清空 → 金点飞选项卡，见 _updateEliteWatch）
+    this._trashMul = 1;              // 杂鱼密度倍率（L1 前 30s ×1.5）
+    this._trashMulUntil = 0;         // 倍率截止脚本秒（0 = 不限）
+    this.hooks = {};                 // game 注入的表现回调：banner(text) / goldToCards()
     // —— 新调度（DPS 内外圈）状态 ——
     this.levelScale = SPAWN_RING.LEVEL_BASE; // 关卡常数
     this.baseSpawn = 0;          // 基础出怪量
@@ -109,7 +126,14 @@ export class WaveManager {
     this.spawnTimer = 0;
     // 精英波初始化：Boss/激光关无排程（ELITE_SCHEDULE 不含这些关 → null），普通/危机关按表载入
     this._eliteElapsed = 0;
-    this._elitePlan = ELITE_SCHEDULE[level.n] || null;
+    // 第四十六修：有关卡脚本 → 走三层时间轴；旧的三期脉冲让位（两套都出怪会翻倍）
+    this._script = (SPAWN_LAYER.ENABLED && !isBoss(level)) ? scriptFor(level.n) : null;
+    this._scriptElapsed = 0; this._scriptPrev = 0; this._lastEliteLayerAt = -99;
+    this._fuseGroups.length = 0; this._eliteWatch.length = 0;
+    this._trashMul = (this._script && this._script.trashMul) || 1;
+    this._trashMulUntil = (this._script && this._script.trashMulUntil) || 0;
+    this._dripStopped = false;   // 第四十七修：每关复位（金点批清空后才置 true）
+    this._elitePlan = this._script ? null : (ELITE_SCHEDULE[level.n] || null);
     this._eliteFired = this._elitePlan ? { early: false, mid: false, late: false } : null;
     // 重置脸谱 Boss 状态（防止上一关残留引用）
     this.faceBoss = null;
@@ -232,7 +256,7 @@ export class WaveManager {
       from.distanceTo(pos) / PORTAL_BEAM.SPEED,
       PORTAL_BEAM.DUR_MIN, PORTAL_BEAM.DUR_MAX
     );
-    const mesh = this._makeBeamMesh();
+    const mesh = this._makeBeamMesh(opts.color, opts.size);
     mesh.position.copy(from);
     this.scene.add(mesh);
     this._pendingSpawns.push({
@@ -242,6 +266,7 @@ export class WaveManager {
       summonOwner: opts.summonOwner || null,
       group: opts.group || null,
       ring: opts.ring || null,   // 'inner' | 'outer'：供 _pendingInRing 统计
+      balloon: opts.balloon || null,   // 第四十六修：构造参数（精英用 { hp, isElite }）
     });
     return null;   // 已入队，无 balloon 引用
   }
@@ -258,10 +283,11 @@ export class WaveManager {
   }
 
   // 光点 mesh：小球 + AdditiveBlending 发光
-  _makeBeamMesh() {
-    const geo = new THREE.SphereGeometry(PORTAL_BEAM.SIZE, 10, 8);
+  //   第四十六修：可指定颜色（三层出怪：trash 白 / mini 蓝 / skill 紫红）与尺寸（融合大光点）
+  _makeBeamMesh(color, size) {
+    const geo = new THREE.SphereGeometry(size || PORTAL_BEAM.SIZE, 10, 8);
     const mat = new THREE.MeshBasicMaterial({
-      color: PORTAL_BEAM.COLOR,
+      color: color != null ? color : PORTAL_BEAM.COLOR,
       transparent: true,
       opacity: PORTAL_BEAM.OPACITY,
       blending: THREE.AdditiveBlending,
@@ -277,7 +303,7 @@ export class WaveManager {
       return null;
     }
     if (item.mesh) this._removeBeam(item.mesh);
-    const b = this.balloons.spawn(item.type, item.pos);
+    const b = this.balloons.spawn(item.type, item.pos, item.balloon || null);
     if (item.onSpawn) item.onSpawn(b);
     return b;
   }
@@ -315,6 +341,15 @@ export class WaveManager {
     for (const it of this._pendingSpawns) if (it.mesh) this._removeBeam(it.mesh);
     this._pendingSpawns = [];
     this._bossQueued = false;
+    // 第四十六修：融合演出与批次观察也要清（切关/回菜单/死亡重开）
+    if (this._fuseGroups) {
+      for (const g of this._fuseGroups) {
+        for (const it of g.items || []) if (it.mesh) this._removeBeam(it.mesh);
+        if (g.big) this._removeBeam(g.big);
+      }
+      this._fuseGroups.length = 0;
+    }
+    if (this._eliteWatch) this._eliteWatch.length = 0;
   }
 
   // 批量取消某组光点（脸谱阶段切换/清场用）
@@ -382,6 +417,33 @@ export class WaveManager {
     return t ? t.hp : 500;
   }
 
+  /**
+   * 精英的构造参数（体型 / 血量 / 移动速度）—— 第四十八修起**分两档**：
+   *
+   * <p>① 末尾精英（climax）：关卡脚本里带 goldReturn 的那一批（横幅 + 清场融合 + 金点抽卡）。
+   *   体型 ×SIZE_MUL、出生点放远、定速（10 秒走 2/3）；
+   *   血量 = clamp(本批基础血量 × HP_MUL, DPS×HP_MIN_SECONDS, DPS×HP_MAX_SECONDS) ——
+   *   上限就是「可击杀保证」（纯输出最多 HP_MAX_SECONDS 秒），下限是「仪式感」。
+   *
+   * <p>② 普通精英：原生体型（sizeMul:1 —— 连敌种自带的 scale 也压回 1）、原生速度、
+   *   固定血量 ELITE_BASE_HP[型]。它只是「比杂鱼厚一点的怪」，不该吃掉玩家一大半输出，
+   *   更不能把关卡堵死（第四十七修现场踩过：全员 DPS 血量 → 中段精英也变墙）。
+   */
+  _eliteOpts(type, combos, climax) {
+    if (!climax) {
+      return { isElite: true, hp: this._eliteBaseHP(type), sizeMul: 1 };
+    }
+    const list = combos || [];
+    const batchBaseTotal = list.reduce((s, c) => s + this._eliteBaseHP(c.type) * (c.count || 0), 0);
+    const dps = this.hooks.playerDps ? this.hooks.playerDps() : 0;
+    return {
+      isElite: true,
+      hp: climaxEliteHp(this._eliteBaseHP(type), batchBaseTotal, dps, ELITE_TUNING),
+      sizeMul: ELITE_TUNING.SIZE_MUL,
+      speed: eliteTravelSpeed(ELITE_TUNING),
+    };
+  }
+
   // 每帧推进精英波计时，按时间窗触发三期（前期5s/中期20s/后期40s，进入即生成一次）
   _updateEliteWaves(dt) {
     if (!this._elitePlan || !this._eliteFired) return;
@@ -393,43 +455,291 @@ export class WaveManager {
     if (!this._eliteFired.late  && e >= W.late)  { this._eliteFired.late  = true; this._fireElitePhase('late'); }
   }
 
-  // 触发某期精英波：按各敌种分别计算血量并逐个生成组合敌种
-  // ⚠️ 血量按「敌种」分别计算（互不串用）：HP(某型) = ELITE_BASE_HP[该型]（固定默认血量，已去掉「增幅血量」DPS 缩放）。
-  //   · 例：L02 后期 shield=2000、eliteKnight=1000（各型按自己默认血量，互不串用）。
+  // 触发某期精英波（7~17 关的旧三期脉冲）：按各敌种分别生成组合敌种
+  // ⚠️ 第四十八修：三期里只有「后期」算关卡收尾 → 只有它拿末尾精英的规格（体型/远距/DPS 血量）；
+  //   前期/中期回到原生口径，不再变成打不动的墙。
   _fireElitePhase(phase) {
     const plan = this._elitePlan[phase];
     if (!plan) return;
-    const positions = this._eliteSpawnPositions(plan.dir, plan.combos);
+    const climax = phase === 'late';
+    const positions = this._eliteSpawnPositions(plan.dir, plan.combos, climax);
     let pi = 0;
     for (const combo of plan.combos) {
-      // 本型血量 = 该型默认血量（ELITE_BASE_HP），不随玩家 DPS 缩放
-      const hp = this._eliteBaseHP(combo.type);
+      // 第四十六修：hp/isElite 在**构造时**传入（onSpawn 里赋值的话，名牌在构造阶段已经建完了）
+      const balloon = this._eliteOpts(combo.type, plan.combos, climax);
       for (let k = 0; k < combo.count; k++) {
         const pos = positions[pi++ % positions.length];
-        this._queueSpawn(combo.type, pos, {
-          onSpawn: (b) => {
-            b.maxHp = hp; b.hp = hp;     // 用按型计算的血量覆盖基础血量
-            b.isElite = true;
-          },
-        });
+        this._queueSpawn(combo.type, pos, { balloon });
       }
     }
   }
 
   // 按方向生成一组出生点（精英波在指定方位成簇出现）
   //   front      → 正前方(0°)     frontLeft → 前偏左(-45°)   frontRight → 前偏右(+45°)
-  _eliteSpawnPositions(dir, combos) {
+  _eliteSpawnPositions(dir, combos, climax = false) {
     const total = combos.reduce((s, c) => s + c.count, 0);
     let centerDeg, arcDeg;
     if (dir === 'frontLeft')       { centerDeg = -45; arcDeg = 70; }
     else if (dir === 'frontRight') { centerDeg =  45; arcDeg = 70; }
     else                           { centerDeg =   0; arcDeg = 70; } // front
     const out = [];
-    const r0 = ENEMY_TYPES[combos[0]?.type]?.radius || 0.9;
+    // 第四十八修：只有末尾批放远 + 放大「避让半径」（体型 ×SIZE_MUL）；普通精英沿用原口径
+    //   （15m / 散布 6 / 按敌种自带 scale 算避让半径）。
+    const type = ENEMY_TYPES[combos[0]?.type];
+    // 普通精英渲染成 1 倍（见 _eliteOpts 的 sizeMul:1）→ 避让半径也按 1 倍算，别用敌种自带 scale
+    const r0 = ((type && type.radius) || 0.9) * (climax ? ELITE_TUNING.SIZE_MUL : 1);
+    const dist = climax ? ELITE_TUNING.SPAWN_DIST : PLAIN_ELITE_DIST;
+    const spread = climax ? ELITE_TUNING.SPAWN_SPREAD : PLAIN_ELITE_SPREAD;
     for (let i = 0; i < total; i++) {
-      out.push(this._spawnPos(r0, { dist: 15, spread: 6, centerDeg, arcDeg }));
+      out.push(this._spawnPos(r0, { dist, spread, centerDeg, arcDeg }));
     }
     return out;
+  }
+
+  // ============================================================
+  // 三层出怪时间轴（第四十六修）—— 关卡脚本见 content/spawnDirector.js
+  //   与旧的三期脉冲的区别：
+  //     · 逐关手写的**事件表**（横幅 / 精英批次 / 开局批量杂鱼）；
+  //     · 层色光点（trash 白 / mini 蓝 / skill 紫红）；
+  //     · 三种出现方式：portal（传送门飞光点）/ merge（清场融合）/ direct；
+  //     · 节流：同帧最多一层、层间 ≥ SPAWN_LAYER.LAYER_GAP、同屏精英 ≤ MAX_ELITES、本层 ≤ capOnField；
+  //     · 批次清空 → 金点飞向选项卡并开抽卡（hooks.goldToCards）。
+  // ============================================================
+
+  // 每帧推进脚本：取 (上一帧, 本帧] 区间内到期的事件并执行
+  _updateSpawnScript(dt) {
+    if (!this._script) return;
+    this._scriptElapsed += dt;
+    const from = this._scriptPrev, to = this._scriptElapsed;
+    if (to > from) {
+      for (const ev of this._script.events) {
+        for (const _t of scriptEventTimes(ev, from, to)) this._runScriptEvent(ev);
+      }
+      if (this._trashMulUntil && to >= this._trashMulUntil) { this._trashMul = 1; this._trashMulUntil = 0; }
+    }
+    this._scriptPrev = to;
+  }
+
+  _runScriptEvent(ev) {
+    if (!ev) return;
+    if (ev.do === 'banner') {
+      const text = ev.text || (DIR_TEXT[ev.dir] ? DIR_TEXT[ev.dir] + '精英来袭' : '');
+      if (text && this.hooks.banner) this.hooks.banner(text);
+      return;
+    }
+    if (ev.do === 'trashBurst') { this._trashBurst(ev.count || 6); return; }
+    if (ev.do === 'elite') { this._spawnEliteEvent(ev); return; }
+    if (ev.do === 'clearTrash') { this._clearTrash(); return; }
+  }
+
+  // 开局批量杂鱼（第四关用）：内外圈交替撒 N 只基础怪
+  _trashBurst(count) {
+    const n = Math.max(1, Math.round(count));
+    for (let i = 0; i < n; i++) {
+      const inner = i % 2 === 0;
+      this._queueSpawn('basic', this._spawnPos(ENEMY_TYPES.basic.radius, {
+        dist: inner ? SPAWN_RING.INNER_RADIUS : SPAWN_RING.OUTER_RADIUS,
+        spread: inner ? SPAWN_RING.INNER_SPREAD : SPAWN_RING.OUTER_SPREAD,
+      }), { ring: inner ? 'inner' : 'outer' });
+    }
+    this.audio?.playLayerSpawn?.('trash');
+    this.log && this.log(`[出怪] 开局杂鱼批量 ${n} 只`);
+  }
+
+  // 清掉场上全部非精英（不结算积分 —— 它们是被「吸收」进融合光点的）
+  _clearTrash() {
+    for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+      const b = this.balloons.list[i];
+      if (b.alive && !b.isElite && !b.isBoss) this.balloons.remove(b);
+    }
+    for (let i = this._pendingSpawns.length - 1; i >= 0; i--) {
+      const it = this._pendingSpawns[i];
+      if (it.group === 'fuse') continue;
+      if (it.mesh) this._removeBeam(it.mesh);
+      this._pendingSpawns.splice(i, 1);
+    }
+  }
+
+  // 场上精英总数（各层合计）
+  _countElites() {
+    let n = 0;
+    for (const b of this.balloons.list) if (b.alive && b.isElite) n++;
+    return n;
+  }
+
+  // 某层场上数量（按敌种→层映射）
+  _countLayer(layer) {
+    let n = 0;
+    for (const b of this.balloons.list) if (b.alive && layerOfType(b.type.id) === layer) n++;
+    return n;
+  }
+
+  // 生成一批精英（含节流）
+  _spawnEliteEvent(ev) {
+    const combos = ev.combos || [];
+    const total = comboTotal(combos);
+    if (total <= 0) return;
+    const layer = layerOfType(combos[0].type);
+    // 节流①：同屏精英上限
+    if (this._countElites() + total > SPAWN_LAYER.MAX_ELITES) {
+      this.log && this.log(`[出怪] 同屏精英已达上限 ${SPAWN_LAYER.MAX_ELITES}，跳过本批`);
+      return;
+    }
+    // 节流②：层间最小间隔（防同帧齐发）
+    if (this._scriptElapsed - this._lastEliteLayerAt < SPAWN_LAYER.LAYER_GAP) {
+      this.log && this.log('[出怪] 距上一批精英过近，跳过本批');
+      return;
+    }
+    // 节流③：本层同屏上限（脚本 capOnField）
+    if (ev.capOnField && this._countLayer(layer) >= ev.capOnField) return;
+    this._lastEliteLayerAt = this._scriptElapsed;
+
+    // 第四十八修：末尾批（goldReturn）才吃强化；其余走原生口径
+    const climax = isClimaxEvent(ev);
+    const positions = this._eliteSpawnPositions(ev.dir, combos, climax);
+    const color = LAYER[layer] ? LAYER[layer].color : null;
+    // hold：merge 批会让杂鱼滴流暂停（清场后别马上又涌杂鱼，注意力留给精英）
+    this._eliteWatch.push({ layer, gold: !!ev.goldReturn, seen: false, t: 0, hold: ev.via === 'merge' });
+    this.audio?.playLayerSpawn?.(layer);
+    if (ev.via === 'merge') this._fuseSpawn(ev, positions, color, layer);
+    else {
+      let pi = 0;
+      for (const c of combos) {
+        for (let k = 0; k < c.count; k++) {
+          this._queueElite(c.type, positions[pi++ % positions.length], color, combos, climax);
+        }
+      }
+    }
+    this.log && this.log(`[出怪] ${DIR_TEXT[ev.dir] || ''}${layer} 层来袭${climax ? '（末尾·强化）' : ''}：`
+      + combos.map((c) => `${c.type}×${c.count}`).join(' + ') + `（${ev.via || 'portal'}）`);
+  }
+
+  // 单只精英：走光点入队（血量/体型/速度见 _eliteOpts；isElite 供名牌/计数）
+  _queueElite(type, pos, color, combos, climax) {
+    this._queueSpawn(type, pos, { color, balloon: this._eliteOpts(type, combos, climax) });
+  }
+
+  // 原地直接生成（融合落地用；不经光点）
+  _spawnEliteNow(type, pos, combos, climax) {
+    return this.balloons.spawn(type, pos, this._eliteOpts(type, combos, climax));
+  }
+
+  // 清场融合：场上非精英化光点（不结算）+ 不足补足 FUSE.COUNT（从最近传送门）→ 汇聚 → 大光点落地
+  _fuseSpawn(ev, positions, color, layer) {
+    const fusePos = new THREE.Vector3();
+    for (const p of positions) fusePos.add(p);
+    fusePos.multiplyScalar(1 / Math.max(1, positions.length));
+    fusePos.y = 1.2;   // 汇聚点抬到接近视线高度，视觉更“聚”
+
+    const origins = [];
+    if (SPAWN_LAYER.FUSE_CLEAR) {
+      for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+        const b = this.balloons.list[i];
+        if (!b.alive || b.isElite || b.isBoss) continue;
+        if (origins.length < FUSE.COUNT) origins.push(b.mesh.position.clone());
+        this.balloons.remove(b);          // 直接移除 = 不结算积分（用户确认第 3 条）
+      }
+    }
+    // 不足 → 从最近传送门补足（用户：「如果光点小于5个，则从传送门新增光点」）
+    const portals = this.getPortals ? this.getPortals() : null;
+    if (portals && portals.length) {
+      const near = this._nearestPortal(portals, fusePos);
+      const from = near ? near.getWorldPos(new THREE.Vector3()) : null;
+      while (origins.length < FUSE.COUNT && from) {
+        origins.push(from.clone().add(new THREE.Vector3(
+          (Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 1.4)));
+      }
+    }
+    // 融合期间不再冒杂鱼（清掉未落地的旧光点，只保留融合自己的）
+    for (let i = this._pendingSpawns.length - 1; i >= 0; i--) {
+      const it = this._pendingSpawns[i];
+      if (it.group === 'fuse') continue;
+      if (it.mesh) this._removeBeam(it.mesh);
+      this._pendingSpawns.splice(i, 1);
+    }
+    const items = [];
+    for (const o of origins) {
+      const mesh = this._makeBeamMesh(0xffffff, FUSE.ORB_SIZE);
+      mesh.position.copy(o);
+      this.scene.add(mesh);
+      items.push({ mesh, from: o.clone() });
+    }
+    this._fuseGroups.push({
+      phase: 'in', t: FUSE.IN_DUR, items, fusePos,
+      out: { combos: ev.combos || [], positions, color, layer, climax: isClimaxEvent(ev) },
+      big: null, home: null, bigFrom: null,
+    });
+    this.log && this.log(`[出怪] 清场融合：${origins.length} 个光点汇聚 → ${ev.combos.map((c) => c.type + '×' + c.count).join(' + ')}`);
+  }
+
+  // 融合演出推进：in（各光点飞向汇聚点）→ out（大号层色光点飞向出生点）→ 落地生成整批精英
+  _updateFuseGroups(dt) {
+    for (let i = this._fuseGroups.length - 1; i >= 0; i--) {
+      const g = this._fuseGroups[i];
+      g.t -= dt;
+      const dur = g.phase === 'in' ? FUSE.IN_DUR : FUSE.OUT_DUR;
+      const k = THREE.MathUtils.clamp(1 - g.t / dur, 0, 1);
+      const e = k * k * (3 - 2 * k);   // smoothstep
+      if (g.phase === 'in') {
+        for (const it of g.items) {
+          it.mesh.position.set(
+            it.from.x + (g.fusePos.x - it.from.x) * e,
+            it.from.y + (g.fusePos.y - it.from.y) * e,
+            it.from.z + (g.fusePos.z - it.from.z) * e);
+        }
+        if (g.t <= 0) {
+          for (const it of g.items) this._removeBeam(it.mesh);
+          g.items.length = 0;
+          g.phase = 'out'; g.t = FUSE.OUT_DUR;
+          g.home = (g.out.positions[0] || g.fusePos).clone();
+          g.bigFrom = g.fusePos.clone();
+          g.big = this._makeBeamMesh(g.out.color, FUSE.ORB_SIZE * FUSE.OUT_MUL);
+          g.big.position.copy(g.fusePos);
+          this.scene.add(g.big);
+        }
+      } else {
+        if (g.big) {
+          g.big.position.set(
+            g.bigFrom.x + (g.home.x - g.bigFrom.x) * e,
+            g.bigFrom.y + (g.home.y - g.bigFrom.y) * e,
+            g.bigFrom.z + (g.home.z - g.bigFrom.z) * e);
+        }
+        if (g.t <= 0) {
+          if (g.big) this._removeBeam(g.big);
+          let pi = 0;
+          const ps = g.out.positions;
+          for (const c of g.out.combos) {
+            for (let kk = 0; kk < c.count; kk++) {
+              this._spawnEliteNow(c.type, ps[pi++ % ps.length], g.out.combos, g.out.climax);
+            }
+          }
+          this._fuseGroups.splice(i, 1);
+        }
+      }
+    }
+  }
+
+  // 批次观察：该层先出现精英、随后清空 → 触发金点（hooks.goldToCards）
+  //   用「层」而不是「逐只跟踪」：光点落地前拿不到 balloon 引用，按层判定最稳。
+  _updateEliteWatch(dt) {
+    for (let i = this._eliteWatch.length - 1; i >= 0; i--) {
+      const w = this._eliteWatch[i];
+      w.t += dt;
+      const alive = this._countLayer(w.layer);
+      if (!w.seen) {
+        if (alive > 0) w.seen = true;
+        else if (w.t > 8) this._eliteWatch.splice(i, 1);   // 兜底：8s 还没见到 → 丢弃
+        continue;
+      }
+      if (alive > 0) continue;
+      this._eliteWatch.splice(i, 1);
+      if (!w.gold) continue;
+      // 第四十七修：金点批清空 = 本关的爽点结束 —— 顺手把剩余杂鱼收掉并停掉滴流，
+      //   修掉「弹了选项卡之后还在冒杂鱼、清完又弹第二次选项卡」的观感。
+      this._clearTrash();
+      this._dripStopped = true;
+      if (this.hooks.goldToCards) this.hooks.goldToCards();
+    }
   }
 
   // ===== 脸谱 Boss（单 Boss 多阶段循环）=====
@@ -564,7 +874,9 @@ export class WaveManager {
     const col = cell % cols;                      // 0..2
     const centerRow = (rows - 1) / 2;             // 1
     const centerCol = (cols - 1) / 2;             // 1
-    const type = (row === centerRow && col === centerCol) ? 'knight' : 'basic';
+    // 第四十六修：中心格改用 eliteKnight（铁甲兵）—— 与 1/2/4/5 关的精英同模型、同体型、
+    //   同行为、同名牌（旧的 'knight' 是骑士 Boss 类型，之前得在下面手工缩体型 + 重建血条）。
+    const type = (row === centerRow && col === centerCol) ? 'eliteKnight' : 'basic';
     const b = this.faceBoss;
     const s = (sideIdx === 0) ? -1 : 1;           // 左 = -X，右 = +X
     // 侧阵中心 X：偏离 Boss；中心行基准 Z：Boss 前方一个行距，整体朝玩家递进
@@ -578,16 +890,10 @@ export class WaveManager {
       group: 'faceSub',
       effect: PORTAL_BEAM.APPLY_FACE_SUB,
       check: () => !!b && b.alive && this.balloons.list.includes(b),
+      balloon: (type === 'eliteKnight') ? { isElite: true } : null,   // 铁甲兵：带名牌（第四十六修）
       onSpawn: (m) => {
-        // knight 默认按 Boss 体型生成（spawn 时已用 Boss 半径建了超长血条）→ 缩为正常体型，并重建血条匹配新体型
-        if (type === 'knight') {
-          m.radius = 0.9; m.effectiveRadius = 0.9; m.hitRadius = 0.9;
-          m.mesh.scale.setScalar(1);
-          // 重建血条：丢弃 spawn 时按 Boss 体型建的超长血条，改以缩小后的 effectiveRadius(0.9) 重建
-          // → 长度≈体型；扣血偏移 -(1-k)*effectiveRadius 与半宽一致，显示为从右往左缩减
-          if (m._hpBar) { m.mesh.remove(m._hpBar); m._hpBar = null; m._hpFg = null; }
-          m._makeHealthBar(m.effectiveRadius);
-        }
+        // 第四十六修：中心格已是 eliteKnight（radius 0.9 / scale 1 / 血条按普通体型）——
+        //   不再需要旧的「按 Boss 体型生成后手工缩体型 + 重建血条」那套特判。
         m.controlled = true;           // 召唤阶段受控不动
         m.isFaceSub = true;            // 标记为脸谱 Boss 子实体
         m.faceBossRef = b;             // 指向 Boss（击杀时扣 Boss 血量）
@@ -890,7 +1196,11 @@ export class WaveManager {
     if (!this.level || this.cleared) return;
 
     // 精英波叠加（独立于普通出怪；Boss/激光关 _elitePlan 为 null，无操作）
-    if (!isBoss(this.level)) this._updateEliteWaves(dt);
+    //   第四十六修：有关卡脚本 → 三层时间轴；否则旧的 ELITE_SCHEDULE 三期脉冲
+    if (this._script) this._updateSpawnScript(dt);
+    else if (!isBoss(this.level)) this._updateEliteWaves(dt);
+    this._updateFuseGroups(dt);   // 清场融合演出（光点汇聚 → 大光点落地 → 精英出现）
+    this._updateEliteWatch(dt);   // 批次清空 → 金点飞向选项卡（开抽卡）
 
     // 正常测试模式：升级式同屏出怪（boss 关不会走到这里，startLevel 已分流）
     if (this.mode === 'normalTest') {
@@ -998,6 +1308,10 @@ export class WaveManager {
   // 每帧滴流补怪：按内外圈缺口大小，优先补缺口大的环，一次一只，受 REFILL_COOLDOWN 节流
   _refillDrip(dt) {
     const S = SPAWN_RING;
+    // 第四十六修：融合精英批在场期间暂停杂鱼滴流（清场 → 注意力集中在精英上）
+    if (this._eliteWatch && this._eliteWatch.some((w) => w.hold)) return;
+    // 第四十七修：金点批清空后本关不再补杂鱼（见 _updateEliteWatch）
+    if (this._dripStopped) return;
     this.spawnTimer -= dt;
     if (this.spawnTimer > 0) return;
 
@@ -1005,8 +1319,9 @@ export class WaveManager {
     const outerAlive  = this.balloons.count - innerAlive;  // 内圈以外均算外圈（含 9~15m 过渡带）
     const pendInner   = this._pendingInRing('inner');
     const pendOuter   = this._pendingInRing('outer');
-    const innerNeed   = this.innerQuota - (innerAlive + pendInner); // 含飞行光点防超量排队
-    const outerNeed   = this.outerQuota - (outerAlive + pendOuter);
+    const _mul = this._trashMul || 1;   // 第四十六修：脚本期的杂鱼密度倍率（L1 前 30s ×1.5）
+    const innerNeed   = this.innerQuota * _mul - (innerAlive + pendInner); // 含飞行光点防超量排队
+    const outerNeed   = this.outerQuota * _mul - (outerAlive + pendOuter);
     if (innerNeed <= 0 && outerNeed <= 0) { this.spawnTimer = 0.1; return; }
 
     const type = S.pool[(Math.random() * S.pool.length) | 0] || 'basic';

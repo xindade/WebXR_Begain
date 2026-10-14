@@ -20,10 +20,11 @@ import { Portal } from './portal.js';
 import { BuddhaFx } from './buddhaFx.js';
 import { LEVELS, isLaser, isBoss } from '../content/levels.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
+import { scriptFor } from '../content/spawnDirector.js';
 import { ELITE_SCHEDULE } from '../content/eliteMonsters.js';
 import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO, HIT_FEEDBACK, FX, MID_WARNING, RAPID_FIRE, levelSecondsOf } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO, HIT_FEEDBACK, FX, MID_WARNING, RAPID_FIRE, levelSecondsOf, CARD, GOLD_ORB, ELITE_FEEDBACK, HEAL_LINK } from '../core/constants.js';
 import { DamageNumbers } from './damageNumbers.js';
 import { FxEffects } from './fx.js';
 import { WarningBanner3D, midWarningDue } from './warningBanner.js';  // 第四十二修：中场预警横幅
@@ -158,6 +159,12 @@ export class Game {
     this.fx = new FxEffects(world.scene);   // 档2 打击感视觉层（第四十一修）：曳光/火花/碎片/枪口焰
     this._tailDir = new THREE.Vector3();    // 曳光方向临时向量（避免每帧 new）
     this.midWarning = new WarningBanner3D(world.scene, world.camera); // 中场预警横幅（第四十二修）：每关过半弹一次
+    // —— 第四十六修：三层出怪 / 精英反馈 / 金点引导 ——
+    this._skillLocked = false;       // 第4关开局锁技能（横幅结束解锁，见 _updatePlaying）
+    this._skillUnlockAt = 0;         // 解锁的脚本秒
+    this._goldOrbs = [];             // 引导金点（批次清空 → 飞向选项卡 → 开抽卡）
+    this._midDraftPending = false;   // 关卡中途抽卡进行中（挡住同帧的通关抽卡）
+    this._levelClearHeld = false;    // 本关已通关，但被中途抽卡/金点在飞挡住
     this.combo = 0;              // 连击计数：HIT_FEEDBACK.COMBO.WINDOW 秒内的连续击杀数
     this._comboUntil = 0;        // 连击失效时刻（this._gameTime 基准）
     this._hapticAt = { HIT: -99, KILL: -99, ELITE: -99, HURT: -99 }; // 各档震动上次触发时刻（节流用）
@@ -168,6 +175,7 @@ export class Game {
     this._rapidUntil = 0;         // 射速加速结束时刻（_gameTime 基准）
     this._rapidMul = 1;           // 当前生效的射速倍率（1=无加成），交给 input.setFireRateMul
     this._midWarned = false;      // 本关是否已弹过中场预警（_loadLevel 复位）
+    this._draftsThisLevel = 0;    // 第四十七修：本关已开过的抽卡次数（一关只给一次，_clearRoundExtras 复位）
     this._buddhaQueue = [];       // 如来神掌分帧结算队列（第四十二修，见 _drainBuddhaQueue）
     this.enemyFreeze = 0;        // 定身咒计时(s)：>0 时敌人暂停行动（Boss 仅前 50% 时长）
     this.selectedSkill = 'scatter'; // 当前装备技能：前期默认「积分散射」；第三关选卡后可替换为 lightsaber/freeze/buddha，左手柄 grip 触发
@@ -296,6 +304,7 @@ export class Game {
     this.hud.setHp(this.player.hp, this.player.maxHp);
     this.audio?.unlock();
     this._clearExplosions();
+    this._clearRoundExtras();     // 第四十六修：清金点/治疗线/技能锁
     this.damageNumbers.clear();   // 新一局：清掉上一局残留的伤害数字
     this.fx.clear();              // 档2：一并清掉上一局残留的曳光/火花/碎片/枪口焰
     this.midWarning?.hide();      // 第四十二修：收掉上一局残留的中场预警横幅
@@ -824,6 +833,7 @@ export class Game {
     this.vignette.clear();
     this.bullets.clear();
     this._clearExplosions();
+    this._clearRoundExtras();     // 第四十六修：清金点/治疗线/技能锁
     this.damageNumbers.clear();   // 回菜单：清伤害数字
     this.fx.clear();              // 档2：一并清掉特效残留
     this.midWarning?.hide();      // 第四十二修：回菜单收掉中场预警横幅
@@ -914,6 +924,19 @@ export class Game {
     // 切关复位射速：玩家 fireRate（发/秒）落到真实节流源（2 发/秒基线，射速卡 +2 叠加）
     this.input?.setFireRate(this.player.fireRate);
     this.laserMode = isLaser(lv);   // 机制关标记（几何实例由下面任务表建）
+
+    // ===== 第四十六修 · 三层出怪：表现回调 + 第4关技能锁 =====
+    //   waves 只管调度与光点，横幅与「金点→抽卡」这类表现由 game 提供（见 waves.hooks）。
+    this._clearRoundExtras();
+    if (this.waves) {
+      this.waves.hooks.banner = (text) => this._showBanner(text);
+      this.waves.hooks.goldToCards = () => this._goldToCards();
+      // 第四十七修：精英血量按「玩家当前 DPS」结算（waves._eliteOpts），口径与 _playerDPS 一致
+      this.waves.hooks.playerDps = () => this._playerDPS();
+    }
+    const _scr = scriptFor(lv.n);
+    this._skillUnlockAt = (_scr && _scr.skillLockUntil) || 0;
+    this._skillLocked = this._skillUnlockAt > 0;   // 第4关：进关即锁，横幅结束解锁
 
     // ===== 第四十五修 · 开场穿云：先起雾「盖章」，再把本关构建分帧做完 =====
     //   现场：开场影片播完 / 每次切关各卡一下。根因是「本关场景构建 + 首帧着色器编译」全挤在
@@ -1076,8 +1099,8 @@ export class Game {
       for (const url of FACE_BOSS.MODELS) addUrl(url, true);   // 脸谱三张 + 扇子：登场首帧前预热 GPU
       addUrl(FACE_BOSS.FAN_MODEL, true);
       addUrl(ENEMY_TYPES.flagMask.model);
-      addType('basic');   // 蓝阶段 3×3 小怪 GLB + 立绘抓帧
-      addType('knight');  // 蓝阶段中心格骑士
+      addType('basic');       // 蓝阶段 3×3 小怪 GLB + 立绘抓帧
+      addType('eliteKnight'); // 蓝阶段中心格 = 铁甲兵（第四十六修：与 1/2/4/5 关的精英一致）
       q.push({ url: FACE_BOSS.BLACK_CLONE_MODEL, radius: ENEMY_TYPES.blackMaskClone.radius, capture: true });
     } else if (lv.boss === 'dragon') {
       addUrl(DRAGON.HEAD_MODEL, true);            // 第12关龙 Boss 龙头 GLB（未被 main 预载）+ GPU 预热
@@ -1271,6 +1294,8 @@ export class Game {
     // 通关横幅（魔术师Boss）：始终驱动，10s 后自动退出（不依赖关卡/抽卡状态）
     if (this.waves && this.waves._winBanner) this.waves._winBanner.update(dt);
     this.midWarning?.update(dt);   // 第四十二修：中场预警横幅（淡入→停留→淡出，到点自动隐藏）
+    this._updateGoldOrbs(dt);      // 第四十六修：引导金点飞向选项卡（到点开抽卡）
+    this._updateHealLinks();       // 第四十六修：治疗术士的治疗线（表现）
     this.vignette.update(dt);   // 命中着色：上色→褪色，结束后自动隐藏
     this._updateFx(dt);         // 档2：曳光/火花/碎片/枪口焰（帧末取位，与弹头不会错位）
   }
@@ -1418,12 +1443,17 @@ export class Game {
 
     // 选中技能：冷却递减；左手柄 grip(或桌面 F)请求释放 → 冷却就绪则触发
     this.skillCooldown = Math.max(0, this.skillCooldown - dt);
-    if (this.input.consumeSkill() && this.selectedSkill && this.skillCooldown <= 0) this._triggerSelectedSkill();
+    // 第四十六修：第4关开局锁技能（提示「快使用技能」结束后解锁）—— 请求照常消费，只是丢弃，防误按后延迟触发
+    if (this._skillLocked && this.waves && this.waves._scriptElapsed >= this._skillUnlockAt) {
+      this._skillLocked = false;
+      this.log('[技能] 解锁（第4关提示结束）');
+    }
+    if (this.input.consumeSkill() && !this._skillLocked && this.selectedSkill && this.skillCooldown <= 0) this._triggerSelectedSkill();
     const skillLabel = this.selectedSkill === 'buddha' ? '如来神掌'
                      : this.selectedSkill === 'lightsaber' ? '激光剑'
                      : this.selectedSkill === 'scatterburst' ? '散射强化'
                      : this.selectedSkill === 'scatter' ? '积分散射' : null;
-    this.hud.setSkill(skillLabel, this.skillCooldown, this._skillCdTotal());
+    this.hud.setSkill(this._skillLocked ? '技能锁定（等提示结束）' : skillLabel, this.skillCooldown, this._skillCdTotal());
 
     // 激光剑「5秒伤害状态」：完全展开那一刻才起算 DURATION 秒（展开动画 0.5+0.2+0.5 不计入）
     if (this.leftSword.active) {
@@ -1492,7 +1522,15 @@ export class Game {
     // 第18关魔术师Boss：通关横幅激活期间不走抽卡，改由横幅 10s 计时自动退出
     // 第18关魔术师 Boss：本关通关不走抽卡/毕业汇总（_winBanner 在跑横幅，或已击杀待收尾）
     //   —— 第三十九修：即使 WIN_BANNER_SECONDS=0（不建横幅）也要挡住，否则同一帧又去开抽卡界面。
-    if (cleared && !(this.waves && (this.waves._winBanner || this.waves.magicianCleared))) { this._enterCard(); }
+    if (cleared && !(this.waves && (this.waves._winBanner || this.waves.magicianCleared))) {
+      // 第四十六修：金点正在飞 / 中途抽卡已开 → 先挂起，等它们收尾（_onMidCardDone / 金点落地后补）
+      if (this._goldOrbs.length || this._midDraftPending) this._levelClearHeld = true;
+      else if (this._draftsThisLevel > 0) {
+        // 第四十七修：本关已经抽过卡（精英清场那次）→ 不再弹第二次，但关卡照常推进
+        this.log('本关已抽过卡（精英清场）→ 直接进入下一关');
+        this._onCardDone();
+      } else this._enterCard();
+    }
   }
 
   // 基础怪群体语音：场上存活基础怪(排除龙身部件)≥ 阈值时播放一次，停顿 PAUSE 秒后再判断
@@ -1807,7 +1845,8 @@ export class Game {
       this.balloons.remove(balloon);
       return;
     }
-    this._addScore(balloon.score);
+    // 第四十六修：精英击杀积分 ×ELITE_FEEDBACK.SCORE_MUL（构筑生效的正反馈）
+    this._addScore(balloon.isElite ? Math.round((balloon.score || 0) * ELITE_FEEDBACK.SCORE_MUL) : balloon.score);
     this.dda?.notifyKill();   // DDA：记录一次击杀，用于滑窗击杀率统计
 
     // 龙 Boss 关：每消灭1个基础怪(basic, 非龙部件) → 通知龙 Boss 计数（每5个扣1%总血量）
@@ -1868,7 +1907,7 @@ export class Game {
     if (this.damageNumbers) {
       this._fxPos.copy(balloon.mesh.position);
       this._fxPos.y += (balloon.effectiveRadius || 0.5) + 0.35;   // 抬到头顶，别糊在模型里
-      this.damageNumbers.spawn(this._fxPos, dealt, { key: balloon, kill: killed });
+      this.damageNumbers.spawn(this._fxPos, dealt, { key: balloon, kill: killed, elite: !!balloon.isElite });
     }
     if (!killed) {
       this.audio?.playHit();
@@ -2270,6 +2309,7 @@ export class Game {
     this.vignette.clear();
     this.bullets.clear();
     // 不调 _clearExplosions()：让死亡爆炸特效在 0.4s 内自然消亡
+    this._clearRoundExtras();     // 第四十六修：清金点/治疗线/技能锁
     this.damageNumbers.clear();   // 死亡重开：清伤害数字，避免跨重开残留
     this.fx.clear();              // 档2：一并清掉特效残留
     this.midWarning?.hide();      // 第四十二修：重开收掉中场预警横幅
@@ -2343,12 +2383,136 @@ export class Game {
     }
   }
 
-  _enterCard() {
+  // ============================================================
+  // 第四十六修 · 三层出怪的表现层（调度与光点在 waves.js / content/spawnDirector.js）
+  // ============================================================
+
+  /** 出怪编排的提示横幅：复用中场预警那套 Sprite（已支持任意文案），可一关多次调用 */
+  _showBanner(text) {
+    if (!text) return;
+    this.midWarning?.show(text);
+    this.log('[提示] ' + text);
+  }
+
+  /** 清掉本轮的引导金点 / 治疗线 / 技能锁 / 挂起标记（回菜单、重开、新一局、切关都调） */
+  _clearRoundExtras() {
+    for (const o of this._goldOrbs) {
+      this.world.scene.remove(o.mesh);
+      o.mesh.geometry.dispose();
+      o.mesh.material.dispose();
+    }
+    this._goldOrbs.length = 0;
+    this.fx?.healLinks([]);
+    this._skillLocked = false;
+    this._skillUnlockAt = 0;
+    this._midDraftPending = false;
+    this._levelClearHeld = false;
+    this._draftsThisLevel = 0;   // 第四十七修：一关一次（见 _enterCard / 通关分支）
+  }
+
+  /** 精英批次清空 → 金点从准星前方飞向选项卡位置（CARD 的固定世界坐标）→ 消失并弹出三张选项卡 */
+  _goldToCards() {
+    if (!GOLD_ORB.ENABLED) { this._enterMidCard(); return; }
+    this.audio?.playEliteWipe();
+    const from = new THREE.Vector3();
+    this.world.camera.getWorldPosition(from);
+    const dir = new THREE.Vector3();
+    this.world.camera.getWorldDirection(dir);
+    dir.negate();                       // 相机前向是 -Z（getWorldDirection 给 +Z，同 _enterCard 的处理）
+    from.addScaledVector(dir, 1.2);
+    from.y -= 0.35;
+    const to = new THREE.Vector3(0, CARD.ROW_Y, CARD.ROW_Z);
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(GOLD_ORB.SIZE, 12, 10),
+      new THREE.MeshBasicMaterial({
+        color: GOLD_ORB.COLOR, transparent: true, opacity: 0.95,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }));
+    mesh.position.copy(from);
+    this.world.scene.add(mesh);
+    const dur = THREE.MathUtils.clamp(from.distanceTo(to) / GOLD_ORB.SPEED, GOLD_ORB.DUR_MIN, GOLD_ORB.DUR_MAX);
+    this._goldOrbs.push({ mesh, from, to, dur, t: dur, hold: 0 });
+    this.log('精英批次清空：金点飞向选项卡');
+  }
+
+  _updateGoldOrbs(dt) {
+    for (let i = this._goldOrbs.length - 1; i >= 0; i--) {
+      const o = this._goldOrbs[i];
+      if (o.t > 0) {
+        o.t -= dt;
+        const k = THREE.MathUtils.clamp(1 - o.t / o.dur, 0, 1);
+        const e = k * k * (3 - 2 * k);
+        o.mesh.position.set(
+          o.from.x + (o.to.x - o.from.x) * e,
+          o.from.y + (o.to.y - o.from.y) * e,
+          o.from.z + (o.to.z - o.from.z) * e);
+        if (o.t <= 0) o.hold = GOLD_ORB.HOLD;
+        continue;
+      }
+      o.hold -= dt;
+      if (o.hold > 0) continue;
+      this.world.scene.remove(o.mesh);
+      o.mesh.geometry.dispose();
+      o.mesh.material.dispose();
+      this._goldOrbs.splice(i, 1);
+      this._enterMidCard();       // 原地消失 → 三张选项卡出现
+    }
+  }
+
+  /** 治疗线（表现）：治疗术士与 healRadius 内最近的怪之间连线 + 绿色加号（healRadius 不乘 scale） */
+  _updateHealLinks() {
+    if (!HEAL_LINK.ENABLED) return;
+    const pairs = [];
+    const list = this.balloons.list;
+    for (const b of list) {
+      if (!b.alive || b.behavior !== 'heal' || !b.type) continue;
+      const r = b.type.healRadius || 6;
+      const near = [];
+      for (const t of list) {
+        if (t === b || !t.alive) continue;
+        const d = b.mesh.position.distanceTo(t.mesh.position);
+        if (d <= r) near.push({ d, t });
+      }
+      if (!near.length) continue;
+      near.sort((a, c) => a.d - c.d);
+      const n = Math.min(near.length, HEAL_LINK.MAX_TARGETS);
+      for (let i = 0; i < n; i++) pairs.push({ a: b.mesh.position, b: near[i].t.mesh.position });
+    }
+    this.fx?.healLinks(pairs);
+  }
+
+  // 关卡中途抽卡（精英批次清空 → 金点落地后调用）：与通关抽卡同一套卡池，但**不推进关卡**
+  _enterMidCard() {
+    if (this.state !== 'playing') return;
+    // 第四十七修：一关只给一次抽卡 —— 本关已经开过（金点落地时本关已经通了之类）就不再开第二次
+    if (this._draftsThisLevel > 0) { this.log('本关已抽过卡（精英清场）→ 不再重复开卡'); return; }
+    this._midDraftPending = true;
+    this._enterCard(true);
+  }
+
+  // 中途抽卡收尾：回到游戏；若本关此时其实已经通了，再补上通关抽卡
+  _onMidCardDone() {
+    this.player.forceSingleShot = false;
+    this.hud.clearMessage();
+    this._midDraftPending = false;
+    this.log('中途抽卡完成，继续本关');
+    this.state = 'playing';
+    if (this._levelClearHeld) {
+      this._levelClearHeld = false;
+      // 第四十七修：本关的抽卡刚在「精英清场」时用掉了（这次中途抽卡就是它）→ 直接推进，
+      //   不再补一次通关抽卡（否则就是玩家反馈的「一局两次选项卡」）。
+      this.log('本关已抽过卡（精英清场）→ 直接进入下一关');
+      this._onCardDone();
+    }
+  }
+
+  _enterCard(mid = false) {
+    this._draftsThisLevel = (this._draftsThisLevel || 0) + 1;  // 第四十七修：一关一次（通关分支据此跳过第二次）
     this._clearExplosions();
     this.state = 'card';
     this.bullets.clear(); // 清掉上一波残留子弹，避免误击卡气球
     this.player.forceSingleShot = true; // 抽卡期间强制单发，避免多重射击扇形误选邻卡
-    this.log('波次清空，选择强化');
+    this.log(mid ? '精英批次清空，选择强化（中途）' : '波次清空，选择强化');
     const pp = this._playerPos();
     this.world.camera.getWorldDirection(this._fwd);
     this._fwd.negate(); // 相机/手柄前向为 -Z，getWorldDirection 返回 +Z，需取反，否则卡牌会生成在身后
@@ -2397,7 +2561,7 @@ export class Game {
       onCollect: (id) => this._collectedCards.push(id), // 本局收集：供第18关汇总
     };
     this.hud.message('选择强化', '射击对应气球进行选择（3 选 1）', '#ffd43b');
-    this.cards.open(pp, this._fwd.clone(), this._cardState, () => this._onCardDone());
+    this.cards.open(pp, this._fwd.clone(), this._cardState, () => (mid ? this._onMidCardDone() : this._onCardDone()));
   }
 
   // 第18关通关：汇总本局获得的所有选项卡并展示，随后进入通关结算
