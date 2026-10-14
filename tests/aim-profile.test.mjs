@@ -79,8 +79,8 @@ test('第三十四修：设备里残留的 aim-xyz 旧标定值已失效，角�
   AIM.DEVICE = null;
 });
 
-test('Quest 槽 = 2026-09-24 上机实测的固化角（14 / -14 / 0）', () => {
-  assert.deepEqual({ ...AIM.BY_DEVICE.quest }, { x: 14, y: -14, z: 0 });
+test('Quest 槽 = 2026-10-14 现场复核修正的固化角（-14 / -14 / 0）', () => {
+  assert.deepEqual({ ...AIM.BY_DEVICE.quest }, { x: -14, y: -14, z: 0 });
 });
 
 test('射线与子弹共用同一补偿角，且 z(roll) 不改变方向', () => {

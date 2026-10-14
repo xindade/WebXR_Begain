@@ -11,8 +11,8 @@
 //
 // 用法：
 //   node tools/set-aim.js                          查看四个槽当前的角度（只读）
-//   node tools/set-aim.js quest 14 -14 0           写 quest 槽（x=俯仰 y=偏航 z=翻滚）
-//   node tools/set-aim.js quest 14                 只改 x（没写的轴保持原样）
+//   node tools/set-aim.js quest -14 -14 0           写 quest 槽（x=俯仰 y=偏航 z=翻滚）
+//   node tools/set-aim.js quest -14                只改 x（没写的轴保持原样）
 //   node tools/set-aim.js pico -27 0 0 --dry       只打印将改成什么，不落盘
 //   node tools/set-aim.js --file <path> ...        改别的 userConfig.js（如 EXE 指向的游戏目录里的那份）
 //
@@ -100,7 +100,7 @@ function main() {
     axes[k] = Number(given[k]);
     if (!Number.isFinite(axes[k])) { console.error('[x] ' + k + ' 不是数字：' + given[k]); return 1; }
   }
-  if (!Object.keys(axes).length) { console.error('[x] 至少要给一个轴，例如：node tools/set-aim.js quest 14 -14 0'); return 1; }
+  if (!Object.keys(axes).length) { console.error('[x] 至少要给一个轴，例如：node tools/set-aim.js quest -14 -14 0'); return 1; }
   const hit = findSlot(raw, slot);
   if (!hit) {
     console.error('[x] userConfig.js 里没找到 BY_DEVICE.' + slot + ' —— 请手工加一行 ' + slot + ': { x: 0, y: 0, z: 0 },');

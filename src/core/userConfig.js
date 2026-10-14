@@ -217,7 +217,7 @@ export const USER_CONFIG = {
   // 第三十四修：VR 内「摇杆标定工具」已按需求移除（不再占用左手摇杆 / 不再动 X 键）
   // 第四十三修 · 现场快速试角（不用重打包、不用重发内容包）：
   //   在头显浏览器的地址栏里加参数即可临时覆盖，例如
-  //     http://localhost:8080/?cast=1&pc=192.168.31.228&aim=14,-14,0      三轴一次写完
+  //     http://localhost:8080/?cast=1&pc=192.168.31.228&aim=-14,-14,0      三轴一次写完
   //     http://localhost:8080/?cast=1&pc=192.168.31.228&aimx=20&aimy=-14  只覆盖某几轴
   //   它落到 AIM.FORCE（优先级最高、不落盘、刷新即丢）→ 只影响带着该参数的那台设备；
   //   PICO 的启动地址不带它就是原样，调 Quest 时完全不必动 pico 槽的固化角。
@@ -228,7 +228,7 @@ export const USER_CONFIG = {
     DEVICE: null,    // null / 'auto' = 自动识别；识别不准时钉死：'pico' | 'quest' | 'steamvr' | 'unknown'
     BY_DEVICE: {
       pico:    { x: -27, y: 0,   z: 0 },   // PICO 4 实测基准，勿随意改
-      quest:   { x: 14,  y: -14, z: 0 },   // Quest：2026-09-24 在 Quest 3 上机实测（原 -15/-8 只是占位值）
+      quest:   { x: -14, y: -14, z: 0 },   // Quest：2026-10-14 现场复核为 -14/-14/0（原 14 俯角符号写反）
       steamvr: { x: -27, y: -2,  z: 0 },   // ← 占位值，待实测（Vive / Index / WMR 共用本槽）
       unknown: { x: -27, y: 0,   z: 0 },   // 兜底：识别不出设备时用
     },

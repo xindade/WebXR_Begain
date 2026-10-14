@@ -21,7 +21,7 @@ const FIXTURE = [
   "  ENABLED: true,",
   "  BY_DEVICE: {",
   "    pico:    { x: -27, y: 0,   z: 0 },   // PICO 4 实测基准，勿随意改",
-  "    quest:   { x: 14,  y: -14, z: 0 },   // Quest 3 上机实测",
+  "    quest:   { x: -14, y: -14, z: 0 },   // Quest 3 上机实测",
   "    steamvr: { x: -27, y: -2,  z: 0 },",
   "    unknown: { x: -27, y: 0,   z: 0 },",
   "  },",
@@ -31,7 +31,7 @@ const FIXTURE = [
 test('瞄准角：读出四个槽的 x/y/z', () => {
   const s = AIM.readSlots(FIXTURE);
   assert.deepEqual(s.pico, { x: -27, y: 0, z: 0 });
-  assert.deepEqual(s.quest, { x: 14, y: -14, z: 0 });
+  assert.deepEqual(s.quest, { x: -14, y: -14, z: 0 });
   assert.deepEqual(s.steamvr, { x: -27, y: -2, z: 0 });
   assert.deepEqual(s.unknown, { x: -27, y: 0, z: 0 });
 });
@@ -39,9 +39,9 @@ test('瞄准角：读出四个槽的 x/y/z', () => {
 test('瞄准角：只改目标槽的目标轴，其余内容（注释/格式/别的槽）一字不动', () => {
   const r = AIM.applyPatch(FIXTURE, { quest: { x: 20 } });
   assert.equal(r.report[0].changed, true);
-  assert.deepEqual(r.report[0].before, { x: 14, y: -14, z: 0 });
+  assert.deepEqual(r.report[0].before, { x: -14, y: -14, z: 0 });
   assert.deepEqual(r.report[0].after, { x: 20, y: -14, z: 0 });
-  assert.ok(r.text.includes('    quest:   { x: 20,  y: -14, z: 0 },   // Quest 3 上机实测'), '原位替换、保留注释与对齐');
+  assert.ok(r.text.includes('    quest:   { x: 20, y: -14, z: 0 },   // Quest 3 上机实测'), '原位替换、保留注释');
   assert.ok(r.text.includes('    pico:    { x: -27, y: 0,   z: 0 },   // PICO 4 实测基准，勿随意改'), '别的槽不动');
   assert.deepEqual(AIM.readSlots(r.text).pico, { x: -27, y: 0, z: 0 });
   // 幂等：同样的 patch 再套一次，文本不再变化
@@ -51,7 +51,7 @@ test('瞄准角：只改目标槽的目标轴，其余内容（注释/格式/别
 test('瞄准角：负值 / 小数 / 多槽一次写完', () => {
   const r = AIM.applyPatch(FIXTURE, { pico: { x: -12.5, z: 3 }, quest: { y: -14 } });
   assert.deepEqual(AIM.readSlots(r.text).pico, { x: -12.5, y: 0, z: 3 });
-  assert.deepEqual(AIM.readSlots(r.text).quest, { x: 14, y: -14, z: 0 });
+  assert.deepEqual(AIM.readSlots(r.text).quest, { x: -14, y: -14, z: 0 });
   assert.equal(AIM.applyPatch(r.text, { pico: { x: -12.5, z: 3 }, quest: { y: -14 } }).text, r.text);
 });
 
