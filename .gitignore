@@ -13,3 +13,7 @@ release/
 # Python 字节码缓存（tools/cap-round.py 跑一次就会生成）
 __pycache__/
 *.pyc
+# 平台内容包部署密码（本机私密，绝不入库）—— 由 tools/deploy-content.ps1 读取
+deploy-password.txt
+deploy-password*.txt
+!deploy-password.example.txt

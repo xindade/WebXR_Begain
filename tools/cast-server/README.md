@@ -499,6 +499,24 @@ tools/cast-server/content/1.0.0/src/core/userConfig.js
 `content/` 在 `.gitignore` 里（**发布产物不入库**）。所以服务器上 `git pull` **不会**带来内容，
 每次更新配置后必须：
 
+**★ 一键部署（推荐）**：Windows 上不用手工 scp —— 脚本会「重建内容包 → 逐个 sha256 比对服务器清单
+→ **只上传变化的文件** → 重启服务 → 回读清单自动复核」，密码从本地 txt 读（不用装 sshpass）。
+
+```powershell
+cd E:\AI_Work\WebXR_Begain_Platform
+powershell -ExecutionPolicy Bypass -File tools\deploy-content.ps1 -DryRun   # 先看要传什么（不需要密码）
+powershell -ExecutionPolicy Bypass -File tools\deploy-content.ps1           # 真部署
+```
+
+- 配置：`tools/cast-server/deploy-password.txt`（**已 gitignore**，模板见同目录 `deploy-password.example.txt`，
+  只有 `password=` 那一行必须改）。也可用 `-ConfigFile` 指定，或设 `WEBVR_DEPLOY_PASSWORD` 环境变量。
+- 实测收益：只改了一个 `spawnDirector.js` 时，8 个文件里**只传 1 个**（+ `ver.json`），不再整目录 `scp -r`。
+- `-InstallKey`：把本机 `~\.ssh\id_rsa.pub` 装进服务器 `authorized_keys` 并**实测** `BatchMode=yes` 是否真的通了 ——
+  跑过一次之后这个脚本就不需要密码了。
+- 参数：`-Ver <版本>` / `-NoSync` / `-NoRestart` / `-Force`（全量重传）/ `-DryRun`。
+
+下面 ① ② 是等价的手工命令（Linux/macOS 或排障时用）：
+
 **① 只更新内容（改了 `src/content/**` 或 `userConfig.js`）**：
 
 ```bash

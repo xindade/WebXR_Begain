@@ -170,17 +170,27 @@ powershell -ExecutionPolicy Bypass -File build-apk.ps1     # 出 app-debug.apk
 
 | 改了什么 | 需要重出 EXE？ | 需要重出 APK？ | 说明 |
 |---|---|---|---|
-| 游戏 `src/**`（JS/着色器） | ❌ | ⚠ 通常**不需要** | APK 的 `GameServer` 发现 PC 后会 **`proxyStatic` 代理实时取最新代码**；改 JS 后 PICO 刷新页面即可 |
-| 游戏资源（GLB/图片/影片） | ❌ | ⚠ 同上 | 同上，走代理 |
+| 游戏 `src/**`（JS/着色器）、`index.html` | ❌ | ✅ **必须** | 第二十二修后 APK **包内优先**（`GameServer` 先读 `assets/game`）、PC 已停托管整站 ⇒ 改 JS 只能 `sync-assets.ps1` + 重打 APK |
+| 游戏资源（GLB/图片/影片） | ❌ | ✅ **必须** | 同上：资源也在 `assets/game` 里，包内那份就是头显实际跑的那份 |
+| 轻量配置 `src/content/**` + `src/core/userConfig.js` | ❌ | ❌ | **唯一例外**：走**服务器清单覆盖层**（头显只认下发、不回落 assets）⇒ 改它要 `sync-content.js` + 传服务器，不用重打包 |
 | **PC 端 `tools/cast-pc/` 的渲染层/主进程** | ✅ **必须** | ❌ | `asar: true` → 代码在 `app.asar` 内，不重打包不生效 |
 | PC 端 EXE 配置（游戏目录等） | ❌（重开改配置即可） | ❌ | 配置持久化，不走打包 |
 | **APK 的 Java 代码 / Manifest / 依赖** | ❌ | ✅ **必须** | 属原生层 |
-| **离线使用（不连 PC）** | — | ✅ 必须 | 代理取不到时只能靠 APK 内自带副本，故资源变了要 `sync-assets.ps1` + 重打包 |
+| **离线使用（不连 PC）** | — | ✅ 必须 | 现已是**常态**：页面与资源都从 `assets/game` 出，PC 只提供信令 + 轻量配置清单 |
 
-**一句话**：`src/**` 交给 EXE 实时托管，改 JS 一般不用重打包；
-**改 APK 的 Java / 改 EXE 的渲染层**才必须重打包。
+**一句话（第二十二修后的现行口径）**：游戏本体（`src/**` + `index.html` + 资源）**只存在于 APK 的 `assets/game`**，
+改它就得 `sync-assets.ps1` + 重打 APK；只有「轻量配置」（`src/content/**`、`userConfig.js`）走服务器清单，改它不用重打；
+**改 APK 的 Java / 改 EXE 的渲染层**则分别要重打 APK / EXE。
 
 > 若改了 `sync-assets.ps1` 的排除规则或删了资源，记得重跑同步脚本并重出 APK，否则 APK 里还是旧副本。
+
+> ⚠ **2026-10-14 修正**：本表与「踩坑清单」原先写的「改 `src/**` 不用重打 APK，靠 `proxyStatic` 实时代理」
+> 是**第二十二修（2026-09-23）之前**的规则。第二十二修同时改了 PC 端 `currentServeRoot()`（打包版只托管
+> `resources/game-cfg`，而 `extraResources` 里**没有游戏 JS**）与 `GameServer.java`（包内优先，PC 代理降级为兜底），
+> 从此游戏 JS 的唯一来源就是 `assets/game` ⇒ **改游戏代码必须重打 APK**；
+> 判据不是「有没有动 `tools/`」，而是「改的文件是否被打进 `assets/game`」。
+> 附录的第二十二修小节当时已写对，只有本表漏改，故在此更正
+> （实证：`assets/game/src/game/game.js` 的时间戳总在出包前几分钟 —— 上一轮能测到横幅/神掌，就是重打过 APK 的）。
 
 ---
 
@@ -189,7 +199,7 @@ powershell -ExecutionPolicy Bypass -File build-apk.ps1     # 出 app-debug.apk
 | 现象 | 真因 | 结论 |
 |---|---|---|
 | PC 端 EXE 起来后 PC 大屏黑屏 | `world.sky` 挂在 `ambient` 组下，组被隐藏 → 子节点不渲染 | 临时把 sky **reparent 到 scene 根**渲染后再挂回；**绝不能** `ambient.visible=true`（几百个标注 Sprite 吃光 GPU） |
-| 改 JS 后头显没变化 | 以为要重打包，其实应走代理 | 先确认 PC 已发现 + `proxyStatic` 生效，PICO 刷新即可 |
+| 改 JS 后头显没变化 | 头显跑的是 APK 包内 `assets/game` 那份 —— 「PC 代理实时取代码」是第二十二修前的旧路，现只剩「包内找不到才兜底」 | 重跑 `tools/cast-apk/sync-assets.ps1` + `build-apk.ps1`，卸旧包再 `adb install -r` 新包 |
 | 改了 EXE 渲染层却没生效 | `asar:true`，改动没进包 | 重跑 `npm run dist` |
 | `robocopy` 被当失败 | 退出码 1/2/3 是「已复制」 | 只在 `>= 8` 时判失败 |
 | `gradlew` 卡在下载发行版 | 离线/内网无法拉 `-bin` | 让脚本优先用 `~/.gradle/wrapper/dists` 里缓存的 `gradle.bat` |

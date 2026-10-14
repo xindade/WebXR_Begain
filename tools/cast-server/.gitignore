@@ -24,3 +24,7 @@ xlang/build/
 *.log
 node_modules/
 .DS_Store
+# 平台内容包部署密码（本机私密，绝不入库）—— 由 tools/deploy-content.ps1 读取
+deploy-password.txt
+deploy-password*.txt
+!deploy-password.example.txt
