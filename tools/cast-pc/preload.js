@@ -14,6 +14,11 @@ contextBridge.exposeInMainWorld('castCfg', {
   // ⚠ 渲染进程只能「读状态 + 触发动作」，判定逻辑全在 main.js —— 界面改不了门禁结果。
   // 平台参数（文档第 4 条）：界面顶部显示平台带了什么参数（房间号 / 平台 IP / 游戏名）
   platformGet: () => ipcRenderer.invoke('platform:get'),
+  // 瞄准补偿角（第四十五修）：PC 界面直接填各设备槽的 x/y/z。
+  //   get = 读「头显此刻会拿到的四个槽（含已套用的覆盖）」；set = 保存（只改填了的轴）。
+  //   判定与落盘全在 main.js（渲染进程改不了门禁，也不会拿到密钥）。
+  aimGet: () => ipcRenderer.invoke('aim:get'),
+  aimSet: (patch) => ipcRenderer.invoke('aim:set', patch || {}),
   // 本局放行（第十八修）：PC 大屏上的「开始本局 / 结束本局」= 平台「开始游戏 / 结束游戏」信号。
   // 头显页面（src/main.js 的主控门禁）每 2 秒问一次 /api/master/allow，只有 armed=true 才给
   // 「进入 VR」按钮 —— 故这个按钮就是现场唯一可靠的开局信号源（平台对我们零「开始」下行）。

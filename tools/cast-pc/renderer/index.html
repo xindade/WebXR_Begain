@@ -56,6 +56,20 @@
     #mftbox code { background: #23232e; padding: 1px 6px; border-radius: 4px;
                    color: #ffd43b; font-family: Consolas, monospace; font-size: 11px; }
 
+    /* ★ 第四十五修：手柄瞄准补偿角 —— 现场在 PC 上直接填，头显里一个字都不用打。
+       为什么放这儿：头显浏览器里打字极难（VR 软键盘基本不可用），而 PICO / Quest 的
+       targetRay↔grip 约定不同 ⇒ 瞄准角必须按设备分开存（详见 docs/设备识别与瞄准角度.md）。 */
+    #aimbox { flex: 0 0 auto; padding: 8px 14px; background: #12161c;
+              border-bottom: 1px solid #2c2c3a; font-size: 12px; line-height: 1.7;
+              display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    #aimbox input { background: #23232e; color: #e6e6e6; border: 1px solid #2c2c3a;
+                    border-radius: 4px; padding: 3px 6px; font-size: 12px; width: 64px;
+                    font-family: Consolas, 'Courier New', monospace; text-align: center; }
+    #aimbox .aimslot { color: #8ea2c8; font-weight: 700; }
+    #aimbox .gs { color: #51cf66; }
+    #aimbox .gb { color: #ff6b6b; }
+    #aimbox .dim { color: #888; }
+
     /* 授权（License）：本机是「直播端」，它自己必须先被授权。
        ★ 兜底 0 天 ⇒ 这里一旦不是「有效」，头显一律启动不了。所以这一栏要一眼能看明白，
          并且把「剩余天数」「一键续期」「填激活码」都放在最显眼处。 */
@@ -101,7 +115,8 @@
     /* —— 纯净模式：只保留游戏画面（★ 默认开启）——
        按 H 切换（状态存 localStorage，下次启动保持）；按 F 切换全屏。
        排查时按 H 唤回面板，或用启动参数 --panels（= ?pure=0）强制显示完整面板。 */
-    body.pure #bar, body.pure #cfgbox, body.pure #guardbox, body.pure #licbox, body.pure #logbox { display: none !important; }
+    body.pure #bar, body.pure #cfgbox, body.pure #guardbox, body.pure #licbox, body.pure #logbox,
+    body.pure #aimbox { display: none !important; }
     /* ★ 第二十二修（档1）：「游戏目录」这类运维面板在正式包里彻底不显示（按 H 也不露），
        只在启动参数 --panels 时出现（见 main.js 的 PANELS）。 */
     body.no-cfg #cfgbox { display: none !important; }
@@ -199,6 +214,22 @@
       <button id="licRenew" class="sec">立即续期</button>
       <button id="licReload" class="sec">重载文件</button>
       <span id="licDev" class="dim">设备指纹 …</span>
+    </div>
+    <!-- ★ 第四十五修：手柄瞄准补偿角（度）。留空 = 该轴不改（保持配置文件里的值）。
+         保存后本机覆盖表立即生效，并换局号让头显下次问配置时整包重下；
+         要永久生效（进仓库 / 上服务器）请用 tools/set-aim.js 或同步 content 包。 -->
+    <div id="aimbox">
+      <span>手柄瞄准角（度）：</span>
+      <span class="aimslot">PICO</span>
+      <input id="aimPicoX" type="number" step="1" placeholder="x" title="俯仰 x（负=射线下压，主要调这个）" />
+      <input id="aimPicoY" type="number" step="1" placeholder="y" title="偏航 y（负=左偏）" />
+      <input id="aimPicoZ" type="number" step="1" placeholder="z" title="翻滚 z（不改变方向，保持 0）" />
+      <span class="aimslot">Quest</span>
+      <input id="aimQuestX" type="number" step="1" placeholder="x" title="俯仰 x" />
+      <input id="aimQuestY" type="number" step="1" placeholder="y" title="偏航 y" />
+      <input id="aimQuestZ" type="number" step="1" placeholder="z" title="翻滚 z" />
+      <button id="aimSave">保存</button>
+      <span id="aimStatus" class="dim">读取中…</span>
     </div>
     <div id="guardbox">
       <span>启动授权（头显只能在「平台客户端拉起 + 本机放行」时启动）：</span>

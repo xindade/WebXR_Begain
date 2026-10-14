@@ -697,6 +697,63 @@ el('cfgApply').onclick = async () => {
   }
 };
 
+// ——————————————— 手柄瞄准角（第四十五修） ———————————————
+// 现场在 PC 上填 PICO / Quest 的 x,y,z（头显里打字极难，见 docs/设备识别与瞄准角度.md）。
+// 留空 = 该轴不改；保存后主进程会换局号 ⇒ 头显下次问配置时整包重下。
+// 判定/落盘/下发前套用全在 main.js（本进程只负责填数字与显示结果）。
+const AIM_INPUTS = {
+  pico:  { x: 'aimPicoX',  y: 'aimPicoY',  z: 'aimPicoZ' },
+  quest: { x: 'aimQuestX', y: 'aimQuestY', z: 'aimQuestZ' },
+};
+function renderAim(st) {
+  const slots = (st && st.slots) || {};
+  for (const slot of Object.keys(AIM_INPUTS)) {
+    const a = slots[slot];
+    for (const k of ['x', 'y', 'z']) {
+      const inp = el(AIM_INPUTS[slot][k]);
+      if (!inp) continue;
+      inp.value = a && Number.isFinite(a[k]) ? String(a[k]) : '';
+    }
+  }
+  const s = el('aimStatus');
+  if (!s) return;
+  if (!st || !st.source) { s.className = 'gb'; s.textContent = '✗ 取不到 userConfig.js（配置未就绪）'; return; }
+  s.className = 'gs';
+  s.textContent = `✓ 生效来源：${st.source === 'manifest' ? '服务器清单缓存' : '本地配置目录'}`;
+}
+async function refreshAim() {
+  const s = el('aimStatus');
+  if (!window.castCfg || !window.castCfg.aimGet) { if (s) s.textContent = '（preload 未启用）'; return; }
+  try { renderAim(await window.castCfg.aimGet()); } catch (e) { /* 忽略 */ }
+}
+if (el('aimSave')) el('aimSave').onclick = async () => {
+  const st = el('aimStatus');
+  if (!window.castCfg || !window.castCfg.aimSet) { log('当前未启用 preload，无法保存瞄准角', 'l-bad'); return; }
+  const patch = {};
+  for (const slot of Object.keys(AIM_INPUTS)) {
+    const ax = {};
+    for (const k of ['x', 'y', 'z']) {
+      const raw = (el(AIM_INPUTS[slot][k]).value || '').trim();
+      if (!raw) continue;                       // 留空 = 不改该轴
+      const n = Number(raw);
+      if (!Number.isFinite(n)) { st.className = 'gb'; st.textContent = `✗ ${slot}.${k} 不是数字：${raw}`; return; }
+      ax[k] = n;
+    }
+    if (Object.keys(ax).length) patch[slot] = ax;
+  }
+  if (!Object.keys(patch).length) { log('瞄准角：没有填任何数值（留空 = 不改该轴）', 'l-warn'); return; }
+  st.className = 'dim'; st.textContent = '保存中…';
+  try {
+    const r = await window.castCfg.aimSet(patch);
+    if (!r || !r.ok) { st.className = 'gb'; st.textContent = `✗ ${(r && r.msg) || '保存失败'}`; return; }
+    renderAim(r);
+    log(`瞄准角已保存：${JSON.stringify(patch)}；落盘 ${r.written.length} 处。`
+      + '头显下次问配置（平台重新点「启动游戏」）即生效。', 'l-ok');
+    if (!r.written.length) log('⚠ 没写进任何文件（只在本机覆盖表里）：本机 EXE 下发生效；要永久生效请同步到服务器 content 包。', 'l-warn');
+  } catch (e) {
+    st.className = 'gb'; st.textContent = `✗ ${e.message}`;
+  }
+};
 // ——————————————— 授权面板（License） ———————————————
 // 本机（直播端）**自己**的授权状态。★ 兜底 0 天 ⇒ 这里不合法，头显一律启动不了，
 // 所以「头显为什么起不来」的第一嫌疑人永远是这一栏 —— 特意放在最上面一排。
@@ -849,6 +906,7 @@ if (window.castCfg && window.castCfg.onGuardLog) {
 
 connect();
 refreshCfg();
+refreshAim();          // 第四十五修：瞄准角（PC 界面直接填）
 refreshGuard();
 refreshLicense();
 setInterval(refreshLicense, 60000);   // 剩余天数会走，每分钟刷一次（主进程 6h 才真去联网）

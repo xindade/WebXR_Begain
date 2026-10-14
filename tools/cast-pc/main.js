@@ -36,6 +36,7 @@ const path = require('path');
 const os = require('os');
 const https = require('https');
 const { listenWithFallback } = require('./lib/net-listen.cjs');   // ★ 第三十七修：端口 fallback（见 lib/net-listen.cjs）
+const AIMCFG = require('./lib/aim-config.cjs');                  // ★ 第四十五修：瞄准补偿角（PC 界面直接改，见下）
 
 // —— WebRTC：关掉 mDNS 候选混淆 ——
 // Chrome 默认把 host candidate 的真实 IP 换成 xxx.local，跨设备解析失败就连不上。
@@ -142,6 +143,59 @@ function saveConfig(cfg) {
     fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
   } catch (e) { console.warn('[cast-pc] 写配置失败：', e.message); }
+}
+// ————————— 瞄准补偿角（第四十五修）：PC 界面直接改，头显里一个字都不用打 —————————
+// 为什么存「覆盖表」而不是直接改文件：正式包走的是**服务器清单**——userConfig.js 落在
+// userData/manifest/ 里，而且每次启动 + 每局结束都会重拉一份，直接改那份文件会被下一次拉取冲掉。
+// 所以改成三层：
+//   ① 覆盖表落本机 userData/cast-pc-config.json（重启 EXE 依然有效）；
+//   ② **下发给头显前套用覆盖**（/api/config/dump 与 /src/core/userConfig.js 两条路，见 applyAimOverride）；
+//   ③ 保存时顺带 best-effort 写盘（游戏目录那份 = 可提交 / 可上传服务器的那份）。
+// 现场流程：本窗口填 pico / quest 的角度 → 保存 → 平台重新点「启动游戏」→ 头显拿到新角。
+let AIM_OVERRIDE = AIMCFG.sanitize(loadConfig().aim);
+
+function saveAimOverride(next) {
+  AIM_OVERRIDE = AIMCFG.sanitize(next);
+  const cfg = loadConfig();
+  cfg.aim = AIM_OVERRIDE;
+  saveConfig(cfg);
+  return AIM_OVERRIDE;
+}
+
+/** 把覆盖表套到 userConfig.js 文本上（路径对不上 / 没有覆盖时原样返回） */
+function applyAimOverride(rel, text) {
+  const r = String(rel || '').split(path.sep).join('/');
+  if (r !== AIMCFG.AIM_REL || !Object.keys(AIM_OVERRIDE).length) return text;
+  try {
+    const out = AIMCFG.applyPatch(text, AIM_OVERRIDE).text;
+    return typeof out === 'string' ? out : text;
+  } catch (e) {
+    console.warn("[cast-pc] 套用瞄准角覆盖失败（按原样下发）：" + e.message);
+    return text;
+  }
+}
+
+/** 目标文件候选（顺序 = 优先级）：清单缓存（头显真正拿到的） > 游戏目录（可提交/可上传的那份） */
+function aimFiles() {
+  const out = [];
+  if (MANIFEST_ON && MANIFEST.ok) out.push(path.join(MANIFEST_DIR, AIMCFG.AIM_REL));
+  if (CONFIG_ROOT) out.push(path.join(CONFIG_ROOT, AIMCFG.AIM_REL));
+  return out;
+}
+
+/** 头显此刻会拿到的四个槽（含已套用的覆盖）+ 来源，供界面显示 */
+function aimCurrent() {
+  for (const f of aimFiles()) {
+    try {
+      if (!fs.existsSync(f)) continue;
+      const text = applyAimOverride(AIMCFG.AIM_REL, fs.readFileSync(f, 'utf8'));
+      return {
+        source: f.startsWith(MANIFEST_DIR) ? 'manifest' : 'local', file: f,
+        slots: AIMCFG.readSlots(text), override: AIM_OVERRIDE,
+      };
+    } catch (e) { /* 试下一个 */ }
+  }
+  return { source: null, file: null, slots: AIMCFG.readSlots(''), override: AIM_OVERRIDE };
 }
 // ⚠ 第二十二修：不再要求外部目录含 index.html（那是路径②时代「整站托管」的判据）。
 //   现在外部目录只用来**覆盖配置**，判据与内置目录一致 = 有配置树即可（hasConfigTree，见下）。
@@ -267,6 +321,18 @@ function sendFile(res, file) {
     'Cache-Control': 'no-cache',
   });
   fs.createReadStream(file).pipe(res);
+}
+
+// 第四十五修：内容被「瞄准角覆盖」改写过的文本响应（与 sendFile 同头，直接写 Buffer）
+function sendText(res, file, text) {
+  const ext = path.extname(file).toLowerCase();
+  const buf = Buffer.from(String(text), 'utf8');
+  res.writeHead(200, {
+    'Content-Type': MIME[ext] || 'application/octet-stream',
+    'Content-Length': buf.length,
+    'Cache-Control': 'no-cache',
+  });
+  res.end(buf);
 }
 
 // ————————————————————————— 信令状态 —————————————————————————
@@ -622,6 +688,30 @@ app.whenReady().then(() => {
       return { ok: false, msg: '无有效 patch' };
     });
 
+    // ——— IPC：瞄准补偿角（第四十五修）—— PC 界面直接填 pico / quest 的 x,y,z ———
+    //   只覆盖「填了的轴」：留空 = 该轴保持配置文件里的值（所以可以一次只调一个轴）。
+    ipcMain.handle('aim:get', () => aimCurrent());
+    ipcMain.handle('aim:set', (_e, patch) => {
+      const clean = AIMCFG.sanitize(patch);
+      if (!Object.keys(clean).length) return { ok: false, msg: '没有要改的角度（pico/quest 的 x/y/z 至少填一个）' };
+      const next = {};
+      for (const s of Object.keys(AIM_OVERRIDE)) next[s] = { ...AIM_OVERRIDE[s] };
+      for (const s of Object.keys(clean)) next[s] = { ...(next[s] || {}), ...clean[s] };
+      saveAimOverride(next);
+      const written = [];
+      for (const f of aimFiles()) {
+        try {
+          if (!fs.existsSync(f)) continue;
+          const before = fs.readFileSync(f, 'utf8');
+          const after = AIMCFG.applyPatch(before, clean).text;
+          if (after !== before) { fs.writeFileSync(f, after, 'utf8'); written.push(f); }
+        } catch (e) { console.warn('[cast-pc] 瞄准角落盘失败（' + f + '）：' + e.message); }
+      }
+      rotateSession('EXE 界面改了瞄准补偿角');   // 换局号 ⇒ 头显下次问配置时整包重下（不换它会一直用缓存）
+      console.log("[cast-pc] 瞄准补偿角已保存：" + JSON.stringify(clean) + "；落盘 " + written.length + " 处"
+        + (written.length ? ("（" + written.join(" | ") + "）") : "（无 —— 只在本机覆盖表里，仍会随下发生效）"));
+      return { ok: true, written, ...aimCurrent() };
+    });
     // ——— IPC：启动授权（白名单 / 自动登记 / 配对窗口） ———
     ipcMain.handle('guard:get', () => ({
       secret: GUARD.secret,
@@ -1598,6 +1688,13 @@ function handleManifestStatic(req, res, pathname) {
     res.end();
     return;
   }
+  // ★ 第四十五修：瞄准补偿角覆盖（PC 界面填的）在出盘前套用 —— 清单缓存里那份是服务器版本，
+  //   覆盖表让「现场调的角度」立刻生效，且不惧清单重拉。
+  if (rel === AIMCFG.AIM_REL && Object.keys(AIM_OVERRIDE).length) {
+    const _raw = fs.readFileSync(file, 'utf8');
+    const _patched = applyAimOverride(rel, _raw);
+    if (_patched !== _raw) return sendText(res, file, _patched);
+  }
   sendFile(res, file);
 }
 
@@ -1622,16 +1719,20 @@ function buildConfigDump() {
   }
   const out = [];
   const push = (abs, rel) => {
+    const relPosix = rel.split(path.sep).join('/');
     const ext = path.extname(rel).toLowerCase();
     if (!CONFIG_TEXT_EXT.includes(ext)) return;              // 非文本类一律跳过
     const st = fs.statSync(abs);
     if (st.size > CONFIG_MAX_FILE) return;                   // 大文件跳过（重资源不走下发）
-    const buf = fs.readFileSync(abs);
+    // ★ 第四十五修：出盘前套用「瞄准补偿角」覆盖（PC 界面填的）。sha256/size 都按**套用后**的
+    //   内容算 —— 否则头显侧自校验与收到的内容对不上。
+    const content = applyAimOverride(relPosix, fs.readFileSync(abs, 'utf8'));
+    const buf = Buffer.from(content, 'utf8');
     out.push({
-      path: rel.split(path.sep).join('/'),
+      path: relPosix,
       sha256: crypto.createHash('sha256').update(buf).digest('hex'),
       size: buf.length,
-      content: buf.toString('utf8'),
+      content,
     });
   };
   const walk = (rel) => {
