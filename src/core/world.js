@@ -204,15 +204,7 @@ export class World {
     this._panoUrl = url;
     const apply = (tex) => {
       if (request !== this._panoRequest) return;
-      if (!this._skydome) {
-        const geo = new THREE.SphereGeometry(90, 64, 48);
-        const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, depthWrite: false });
-        this._skydome = new THREE.Mesh(geo, mat);
-        this._skydome.renderOrder = -1;           // 最先绘制，作为背景层
-        this._skydome.frustumCulled = false;      // 永远填满视野，勿被剔除
-        this._skydome.rotation.y = PANO_DOME_YAW; // 把 360 照片正前(图中心)对齐玩家初始朝向(-Z)
-        this.scene.add(this._skydome);
-      }
+      this._ensureSkydome();
       this._skydome.material.map = tex;
       // 亮度倍率：skydome 为 MeshBasicMaterial，color 会与贴图相乘 → 实现整体变暗/变亮。
       this._skydome.material.color.setScalar(SKY_BRIGHTNESS);
@@ -231,6 +223,62 @@ export class World {
     return this.prepareSkyPano(url).then(apply).catch((error) => {
       if (request === this._panoRequest) console.warn('[天空] 加载失败，使用渐变背景:', url, error.message);
     });
+  }
+
+  // 全景穹顶网格（幂等）：建过一次就复用。抽出来是为了让 warmSkyPano() 也能提前把它建好。
+  _ensureSkydome() {
+    if (this._skydome) return this._skydome;
+    const geo = new THREE.SphereGeometry(90, 64, 48);
+    const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, depthWrite: false });
+    const dome = new THREE.Mesh(geo, mat);
+    dome.renderOrder = -1;           // 最先绘制，作为背景层
+    dome.frustumCulled = false;      // 永远填满视野，勿被剔除
+    dome.rotation.y = PANO_DOME_YAW; // 把 360 照片正前(图中心)对齐玩家初始朝向(-Z)
+    dome.visible = false;            // 可见性只由 setSkyPanorama / clearSkyPanorama / setIntroBackdrop 决定
+    this.scene.add(dome);
+    this._skydome = dome;
+    return dome;
+  }
+
+  // 第四十四修 · 开场视频期间预热第 1 关全景（**只下载/解码/上传/编译，不动可见性**）。
+  //   现场现象：影片播完「转头那一下」闪黑边 + 卡顿。根因是交接那一帧才第一次做重活 ——
+  //   8K 全景的下载/解码 + initTexture(GPU 上传) + 新建穹顶材质触发着色器编译，
+  //   一帧长到几十~几百毫秒 ⇒ WebXR 合成器补不出这么长的位移 ⇒ 视野边缘露出未重投影的黑边。
+  //   这里趁影片还在播（此时天空本来就被 setIntroBackdrop(true) 隐藏）把上面这些都做完：
+  //     ① prepareSkyPano：加载 + 解码 + initTexture，并留下 _gpuReady 标记
+  //        → 之后 _loadLevel 的 setSkyPanorama 命中「已缓存且 _gpuReady」→ **同步套用**，无等待；
+  //     ② 把穹顶网格建好并把贴图挂上，再单独把它的材质程序编译掉（只编译这一个材质，不碰全场景）。
+  //   失败（离线/坏图）不影响主流程：切关时照旧走 setSkyPanorama 的异步分支。
+  warmSkyPano(url, camera) {
+    if (!url) return Promise.resolve(null);
+    return this.prepareSkyPano(url).then((tex) => {
+      const dome = this._ensureSkydome();
+      // 正在展示别的全景时绝不偷换贴图（会闪背景）；开场过场阶段一定没在展示
+      if (!this._panoActive && dome.material.map !== tex) {
+        dome.material.map = tex;
+        dome.material.needsUpdate = true;
+      }
+      this._compileMaterialOf(dome, camera);
+      return tex;
+    }).catch(() => null);
+  }
+
+  // 只编译「某一个物体」的材质：把 renderer.compile 的「待编译集合」限定成一个**探针小场景**
+  //   （只有穹顶的几何 + 材质），避免它顺带遍历整个场景的材质 —— 那本身就会在影片里卡一帧。
+  //   renderer.compile 只编译、不绘制，所以完全不用动穹顶的可见性，也不碰主场景。
+  _compileMaterialOf(object, camera) {
+    const cam = camera || this.camera;
+    if (!object || !cam || !this.renderer || typeof this.renderer.compile !== 'function') return;
+    try {
+      if (!this._warmScene) {
+        this._warmScene = new THREE.Scene();
+        this._warmProbe = new THREE.Mesh();
+        this._warmScene.add(this._warmProbe);
+      }
+      this._warmProbe.geometry = object.geometry;     // 同一份几何/材质 → 编出来的就是穹顶要用的程序
+      this._warmProbe.material = object.material;
+      this.renderer.compile(this._warmScene, cam, this.scene);
+    } catch (e) { /* 预热失败无所谓：切关时首帧自然编译兜底 */ }
   }
 
   // 退出全景关：恢复渐变球+星空，隐藏穹顶
@@ -288,7 +336,13 @@ export class World {
   // 性能要点：material.transparent 的取值变化会触发 three 着色器重编译，
   // 因此「只在登记时切一次 → 每帧仅改 opacity（廉价）→ 结束时一次性恢复」，
   // 绝不在每帧切换 transparent，否则 PICO 上会持续卡顿。
-  setFadeRoots(roots) {
+  // forceOn（第四十五修）：本次**没登记到任何材质**也把淡入开关打开。
+  //   为什么需要它：分帧构建时本关物体是**后面几帧**才建出来的（见 game._loadLevel / _pumpLevelTasks），
+  //   调用这一刻差集是空的 —— 若按老逻辑把 _fadeOn 置 false，extendFadeRoots 会直接早退，
+  //   后面建出来的物体就只能「啪」地满不透明出现，穿云淡入整个失效。
+  // @param {THREE.Object3D[]} roots 立即登记的根节点（可为空数组）
+  // @param {boolean} [forceOn=false] 没登记到材质也保持淡入开启
+  setFadeRoots(roots, forceOn = false) {
     this._restoreFade();                 // 先恢复上一关残留，避免共享材质被永久改写
     this._fadeMats = [];
     this._fadeSeen = new Set();
@@ -306,7 +360,7 @@ export class World {
     }
     // 一次性切到透明模式（每关只一次），并从全透明开始
     for (const e of this._fadeMats) { e.mat.transparent = true; e.mat.opacity = 0; }
-    this._fadeOn = this._fadeMats.length > 0;
+    this._fadeOn = forceOn || this._fadeMats.length > 0;
   }
 
   // 增量登记：GLB 是异步加载的（如传送门），进关瞬间其根节点可能还没加入场景。

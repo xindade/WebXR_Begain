@@ -138,6 +138,7 @@ export class Game {
     this._introT = 0;          // 开场计时（秒）
     this._introPreloadQueue = null; // 穿云窗顺序预载队列（[{url,radius,capture}]）
     this._introPreloadIdx = 0;     // 队列处理游标
+    this._levelTasks = null;       // 第四十五修：本关「场景构建」分帧任务队列（穿云窗内每帧跑一组，见 _pumpLevelTasks）
     this.openingModel = null;  // 第3/9/15关开场动画模型（魔术师动画版），10秒后自动移除
     this._openingVoiceSeq = 0; // 开场语音联动序号：切关/回菜单自增，使未播完的 ended 回调作废
     this._gameTime = 0;        // 全局累计时间（秒）：激光剑状态/每怪1秒限频的时间基准
@@ -325,6 +326,16 @@ export class Game {
     this._introStage = true;
     this._introHandoffT = 0;
     this.world.setIntroBackdrop(true);
+    // 第四十四修：把「本关（第 1 关）全景」的下载/解码/GPU 上传 + 穹顶材质编译**提前到影片期间**做完。
+    //   现场现象：影片播完「转头那一下」黑边 + 卡顿。根因是交接那一帧才第一次做这些重活
+    //   （全景 JPG 解码 → 4K×2K 约 33MB + initTexture(GPU 上传) + 穹顶材质编译），一帧拉长几十~几百毫秒 → WebXR 合成器补不出这么长的位移 → 视野边缘露黑边。
+    //   此刻天空本来就被 setIntroBackdrop(true) 隐藏，预热对画面零影响；预热后 _loadLevel 里的
+    //   setSkyPanorama 会命中「已缓存且已 _gpuReady」→ 同步套用，不再有那一下卡顿。
+    try {
+      const lv0 = LEVELS[this.levelIndex];
+      const pano0 = lv0 ? SKY_PANORAMA[lv0.n] : null;
+      if (pano0) this.world.warmSkyPano(pano0, this.world.camera);
+    } catch (e) { /* 预热失败不影响开场 */ }
     // 直播（?cast=1）：影片阶段头显不解码（解码×H.264 编码争 VPU → 头显闪屏）→ 不推流，
     // 改让 PC 端本地播同一段影片：cast.js 读 scene.userData.castIntro 判定「影片阶段」，
     // 靠 notifyIntro('play'/'end') 与 PC 端对齐起止（见 src/net/cast.js）。
@@ -804,6 +815,7 @@ export class Game {
     this.world._restoreFade(); // 恢复穿云淡入改写的材质（防回菜单残留半透明）
     this._introActive = false; this._introT = 0; // 复位开场门控
     this._introPreloadQueue = null; this._introPreloadIdx = 0; // 复位预载队列
+    this._levelTasks = null;       // 第四十五修：丢掉没跑完的分帧构建任务（防回菜单后还往场景里建东西）
     this._clearPortals(); // 清传送门装饰（防跨关/回菜单残留）
     this.waves.clearPending();   // 清出怪光点（防回菜单残留）
     // 清理实体
@@ -857,6 +869,7 @@ export class Game {
     if (this._buddhaFx) { this._buddhaFx.dispose(); this._buddhaFx = null; } // 清上一关残留的如来神掌特效
     this._clearPortals(); // 清上一关残留的传送门装饰
     this.waves.clearPending();   // 清上一关残留出怪光点（防光点飞到新关卡）
+    this._levelTasks = null;     // 第四十五修：丢掉上一关没跑完的分帧构建任务（本函数会重建）
     this.gridPhase = false;
     this.flipPhase = false; this.flipTimer = 0;
     this._lastCell = 0;
@@ -898,25 +911,51 @@ export class Game {
     const pano = SKY_PANORAMA[lv.n];
     if (pano) this.world.setSkyPanorama(pano);
     this.hud.setLevel(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
-
     // 切关复位射速：玩家 fireRate（发/秒）落到真实节流源（2 发/秒基线，射速卡 +2 叠加）
     this.input?.setFireRate(this.player.fireRate);
+    this.laserMode = isLaser(lv);   // 机制关标记（几何实例由下面任务表建）
 
-    // 第3/9/15关开头：世界固定点播放在「魔术师动画版」模型，循环播放 10 秒后自动消失。
-    // 穿云期间(this._introActive)由 _updatePlaying 冻结其 update（不推进动画/计时），结束后才播放满 10 秒。
-    // 模型经 glbCache 共享缓存、main.js 已预加载，进关即瞬时出现；淡入由穿云 extendFadeRoots 差集自动捕获。
+    // ===== 第四十五修 · 开场穿云：先起雾「盖章」，再把本关构建分帧做完 =====
+    //   现场：开场影片播完 / 每次切关各卡一下。根因是「本关场景构建 + 首帧着色器编译」全挤在
+    //   同一帧同步做完，而那一帧画面还是上一屏（没被雾盖住）⇒ 直接看见一次冻结。
+    //   两步修法：
+    //     ① 云雾在下面 _sceneBefore 快照**之前**建好 → 它不进「本关新物体」差集 → 不参与淡入，
+    //        第一帧就满不透明地盖住画面。（改造前雾自己也是从 0 淡入，等于没遮，所以卡顿才看得见。）
+    //     ② 本关物体按下面的任务表**每帧建一组**（见 _pumpLevelTasks），全程雾都盖着；
+    //        每组只承担一部分「建对象 + 首帧着色器编译」的尖峰。
+    //   ⚠ 顺序不能反：雾必须在快照前建，否则会被 extendFadeRoots 当成「本关新物体」从 0 淡入。
+    const cover = !!CLOUD.ENABLED;
+    if (cover) {
+      this._introActive = true;
+      this._introT = 0;
+      if (this.cloudFx) this.cloudFx.dispose();   // 死亡重开等复用场景：先清旧云
+      this.cloudFx = new CloudFx(this.world.scene);
+      this.cloudFx.start(this.world.camera, this.rig);
+    }
+
+    // 快照场景子节点：稍后取差集即可自动采集「本关新建的场景物体」（穿云淡入 + 分帧登记都用它）
+    const _sceneBefore = new Set(this.world.scene.children);
+    this._fadeSceneBefore = _sceneBefore;   // 存到实例：云雾期间每帧据此补登记异步加载完成的物体
+
+    // ===== 本关构建任务表（顺序与原实现一致；无穿云时在下面同步连跑）=====
+    const tasks = [];
+    // ① 第3/9/15关：世界固定点播放在「魔术师动画版」模型，循环播放 10 秒后自动消失。
+    //    穿云期间(this._introActive)由 _updatePlaying 冻结其 update（不推进动画/计时），结束后才播放满 10 秒。
+    //    模型经 glbCache 共享缓存、main.js 已预加载，进关即瞬时出现；淡入由穿云 extendFadeRoots 差集自动捕获。
+    //    顺带把「激光关开场语音」「第18/6关 Boss 开场语音」也在这里排定（延迟到穿云结束后再播）。
     if (lv.n === 3 || lv.n === 9 || lv.n === 15) {
-      const _omCfg = OPENING_MAGICIAN[lv.n];   // 第3/9/15关开场魔术师模型配置（位置/缩放见 constants.OPENING_MAGICIAN）
-      this.openingModel = new OpeningModel(
-        this.world.scene,
-        new THREE.Vector3(..._omCfg.pos),       // 模型根节点世界坐标（米：X右/Y上/Z前为负=玩家前方）
-        { scaleHeight: _omCfg.scaleHeight, showSeconds: OPENING_MAGICIAN.SHOW_SECONDS }  // 目标身高(米) + 播放时长(秒)
-      );
-      this.openingModel.start();
-      // 激光关开头语音：延迟到穿云结束后再播（雾气转场期间不播语音）
+      tasks.push(() => {
+        const _omCfg = OPENING_MAGICIAN[lv.n];   // 第3/9/15关开场魔术师模型配置（位置/缩放见 constants.OPENING_MAGICIAN）
+        this.openingModel = new OpeningModel(
+          this.world.scene,
+          new THREE.Vector3(..._omCfg.pos),       // 模型根节点世界坐标（米：X右/Y上/Z前为负=玩家前方）
+          { scaleHeight: _omCfg.scaleHeight, showSeconds: OPENING_MAGICIAN.SHOW_SECONDS }  // 目标身高(米) + 播放时长(秒)
+        );
+        this.openingModel.start();
+      });
       if (lv.n === 3) this._pendingOpenVoice = 'music/魔法师激光阵语音.wav';
       else if (lv.n === 9) this._pendingOpenVoice = 'music/魔法师玻璃格子.wav';
-      else if (lv.n === 15) this._pendingOpenVoice = 'music/魔法师九宫格.wav';
+      else this._pendingOpenVoice = 'music/魔法师九宫格.wav';
     } else if (lv.n === 18) {
       // 第18关 Boss 开头语音：延迟到穿云结束后再播
       this._pendingOpenVoice = MAGICIAN_BOSS.INTRO.VOICE_URL;   // 第三十八修：URL 集中在 constants.MAGICIAN_BOSS.INTRO
@@ -924,59 +963,53 @@ export class Game {
       // 第6关开局只播蓝色脸谱「儿郎冲锋」；红/黑阶段语音由脸谱Boss相位切换时播
       this._pendingOpenVoice = 'music/儿郎冲锋.mp3';
     }
-
-    // 快照场景子节点：稍后取差集即可自动采集「本关新建的场景物体」（穿云淡入用）
-    const _sceneBefore = new Set(this.world.scene.children);
-    this._fadeSceneBefore = _sceneBefore;   // 存到实例：云雾期间每帧据此补登记异步加载完成的物体
-
-    // 小怪关（非 boss、非激光机制）：按本关方向表生成传送门装饰（自带动画+上下浮动）
-    if (!isBoss(lv) && !isLaser(lv)) this._spawnPortals(lv);
+    // ② 小怪关（非 boss、非激光机制）：按本关方向表生成传送门装饰（自带动画+上下浮动）
+    if (!isBoss(lv) && !isLaser(lv)) tasks.push(() => this._spawnPortals(lv));
+    // ③ 机制关几何 / 龙 Boss / 常规出怪（三者互斥）
     if (isLaser(lv)) {
-      this.laserMode = true;
-      // 透传 laserMode：'drive' 为第九关（生成→驱赶→保持原地→走格子），'full' 为第三关（搭阵），'flip' 为第十五关（九宫格）
-      const holdDur = lv.laserMode === 'flip' ? FLIP.HOLD_DUR : undefined;
-      this.laser = new LaserLevel(this.world.scene, (m) => this.log(m), lv.laserMode || 'full', holdDur);
-      this.laser.start();
-      if (lv.laserMode === 'drive') {
-        // 第九关：在游玩区铺设玻璃走格子（编号 1–32）
-        this.grid = new GlassGrid(this.world.scene);
-        this.grid.setCorrect(GRID.CORRECT, GRID.WIN_CELL); // 正确格集合 + 通关格(cell 3)
-        this.log(`第 ${lv.n} 关 · 激光驱赶：等待→驱赶→保持原地10秒→走格子`);
-      } else {
-        this.log(`第 ${lv.n} 关 · 激光驱赶：等待→驱赶→保持原地2秒→九宫格翻转`);
-      }
-    } else {
-      this.laserMode = false;
-      if (lv.boss === 'dragon') {
+      tasks.push(() => {
+        // 透传 laserMode：'drive' 为第九关（生成→驱赶→保持原地→走格子），'full' 为第三关（搭阵），'flip' 为第十五关（九宫格）
+        const holdDur = lv.laserMode === 'flip' ? FLIP.HOLD_DUR : undefined;
+        this.laser = new LaserLevel(this.world.scene, (m) => this.log(m), lv.laserMode || 'full', holdDur);
+        this.laser.start();
+        if (lv.laserMode === 'drive') {
+          // 第九关：在游玩区铺设玻璃走格子（编号 1–32）
+          this.grid = new GlassGrid(this.world.scene);
+          this.grid.setCorrect(GRID.CORRECT, GRID.WIN_CELL); // 正确格集合 + 通关格(cell 3)
+          this.log(`第 ${lv.n} 关 · 激光驱赶：等待→驱赶→保持原地10秒→走格子`);
+        } else {
+          this.log(`第 ${lv.n} 关 · 激光驱赶：等待→驱赶→保持原地2秒→九宫格翻转`);
+        }
+      });
+    } else if (lv.boss === 'dragon') {
+      tasks.push(() => {
         // 第十二关：龙 Boss（龙头 GLB + 龙身/龙爪气球沿动画路径移动）
         this.dragon = new DragonBoss(this.world.scene, this.balloons);
         this.dragon.audio = this.audio; // 注入音效，连爆时播放
         this.dragon.start();
         this.log(`第 ${lv.n} 关 · 龙 Boss：击破龙身/龙爪气球（打爆即复活，血量清零才击杀）`);
-      } else {
+      });
+    } else {
+      tasks.push(() => {
         this.waves.startLevel(lv);
         // 正常测试模式：覆盖普通关出怪曲线，独占出怪（避免与压测阵列冲突）
         this.normalTest = (this.waves.mode === 'normalTest');
         if (DEPTH_SPRITE_STRESS > 0 && !NORMAL_TEST.enabled) this._spawnStress(DEPTH_SPRITE_STRESS);
         this.log(`第 ${lv.n} 关 · ${KIND_NAME[lv.kind]}`);
-      }
+      });
     }
-    // 非激光关在关卡加载完成后拍照快照（用于死亡重开时恢复属性+分数）
-    if (!isLaser(lv)) this._snapshotState();
+    // ④ 非激光关在关卡加载完成后拍照快照（用于死亡重开时恢复属性+分数）
+    if (!isLaser(lv)) tasks.push(() => this._snapshotState());
 
-    // ====== 关卡开场穿云（每关都跑：遮蔽加载卡顿 + 平滑过渡）======
-    // 在场景(天空/传送门/激光几何/龙)已构建后触发；INTRO_DELAY 秒内冻结出怪与 Boss/机制动画。
-    // 采集本关新建的场景物体（与开头快照的差集）：传送门 / 激光几何 / 玻璃格 / 龙 等
-    const _fadeRoots = this.world.scene.children.filter((o) => !_sceneBefore.has(o));
-    if (CLOUD.ENABLED) {
-      this._introActive = true;
-      this._introT = 0;
-      this.world.setFadeRoots(_fadeRoots);  // 登记淡入材质：一次性切 transparent，从全透明开始
-      if (this.cloudFx) this.cloudFx.dispose();   // 死亡重开等复用场景：先清旧云
-      this.cloudFx = new CloudFx(this.world.scene);
-      this.cloudFx.start(this.world.camera, this.rig);
+    if (cover) {
+      // 淡入登记：先开一张**空表**（forceOn=true，见 world.setFadeRoots）——本关物体在随后几帧
+      // 出现时由 _updatePlaying 的 extendFadeRoots 逐帧补登记，并对齐当时的雾进度。
+      this.world.setFadeRoots([], true);
       this.world.setEnvOpacity(0);  // 环境(天空/地面/星空)从全透明开始，随云雾动画 0→1 淡入
+      this._levelTasks = tasks;     // 分帧跑：每帧一组（见 _pumpLevelTasks），全程被雾盖住
     } else {
+      // 无穿云：立即同步建完（与改造前完全一致），保证效果不丢
+      for (const t of tasks) t();
       this._introActive = false;
       this.world._restoreFade();    // 无穿云：确保无残留半透明材质
       this.world.setEnvOpacity(1);  // 无穿云：场景直接满显
@@ -996,6 +1029,27 @@ export class Game {
         if (it.capture) preCaptureDepthSprite(it.url, it.radius);
       }
       this._introPreloadQueue = null;
+    }
+  }
+
+  // 第四十五修 · 关卡构建分帧泵：穿云窗内每帧跑一组任务（任务表见 _loadLevel）。
+  //   目的：把「本关场景构建 + 首帧着色器编译」的尖峰摊到多帧，且全程被雾盖住 —— 现场那个
+  //   「影片播完 / 切关卡一下」就是它一次做完的后果。
+  //   出错只记录、不中断：某一组失败时后面的照跑，避免半成品关卡把整个渲染循环带崩。
+  _pumpLevelTasks() {
+    const q = this._levelTasks;
+    if (!q || !q.length) return;
+    const t = q.shift();
+    try { t(); } catch (e) { console.warn('[关卡构建] 分帧任务失败', e); this.log('关卡构建任务失败：' + ((e && e.message) || e)); }
+  }
+
+  // 兜底：穿云结束时若任务还没跑完（正常 4 秒足够），一次性补完，保证关卡完整。
+  _drainLevelTasks() {
+    const q = this._levelTasks;
+    this._levelTasks = null;
+    if (!q || !q.length) return;
+    for (const t of q) {
+      try { t(); } catch (e) { console.warn('[关卡构建] 兜底任务失败', e); this.log('关卡构建任务失败：' + ((e && e.message) || e)); }
     }
   }
 
@@ -1323,6 +1377,7 @@ export class Game {
     // ====== 关卡开场穿云：INTRO_DELAY 秒内冻结玩法（不移动/不开火/不触发技能），仅自然转头观察 ======
     if (this._introActive) {
       this._introT += dt;
+      this._pumpLevelTasks();                      // 第四十五修：本关构建分帧（每帧一组，雾盖着做完）
       if (this.cloudFx) this.cloudFx.update(dt);   // 驱动云雾动画（后飘3s → 由前向后缩短1s）
       const _ef = Math.min(1, this._introT / CLOUD.INTRO_DELAY); // 场景透明度随云雾进度 0→1 同步淡入
       this.world.setEnvOpacity(_ef);      // 环境：天空/地面/星空
@@ -1335,6 +1390,7 @@ export class Game {
       this.hud.setHp(this.player.hp, this.player.maxHp);
       this._pumpIntroPreload();            // 穿云窗内每帧摊一个预载（敌人 GLB 解码 + DepthSprite 抓帧）
       if (this._introT >= CLOUD.INTRO_DELAY) {
+        this._drainLevelTasks();                 // 第四十五修：兜底 —— 万一分帧没跑完，这里一次性补完
         this._introActive = false;
         if (this.cloudFx) { this.cloudFx.dispose(); this.cloudFx = null; }
         this.world.setEnvOpacity(1);       // 确保关卡正式开始时环境完全显现
@@ -1399,7 +1455,10 @@ export class Game {
 
     // 第四十二修 · 中场预警：普通关/危机关过半时弹一次「更强的敌人来袭」（每关一次）
     //   判据 = 本关时间窗(levelSecondsOf) × MID_WARNING.AT；机制关/Boss 关没有倒计时，不弹。
-    if (MID_WARNING.ENABLED && !this.normalTest) {
+    //   ⚠ 第四十五修：不再排除 this.normalTest —— 它是「普通关」的代名词（NORMAL_TEST.enabled 默认开），
+    //     原来那句 !this.normalTest 让**所有普通关**都跳过判定 ⇒ 横幅在现场从未出现过。
+    //     机制关/Boss 关没有倒计时，由 midWarningDue(seconds<=0) 自然挡住。
+    if (MID_WARNING.ENABLED) {
       const lv = LEVELS[this.levelIndex];
       if (lv && !isBoss(lv) && !isLaser(lv)
           && midWarningDue(this.waves.elapsed, levelSecondsOf(lv.n), this._midWarned)) {

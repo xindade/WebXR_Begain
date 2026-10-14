@@ -57,6 +57,27 @@ export const USER_CONFIG = {
     IDLE_BORDER: '#5a6b85',
     DEBUG:           false,              // 调试模式：左手柄摇杆(前后左右)+X/Y键(上下)微调位置（调完改 false）
     DEBUG_STEP:      0.5,               // 调试移动速度（米/秒）
+
+    // —— 连杀计数（第四十四修：从「枪身红点环」搬到本面板边缘）——
+    //   每用**子弹**击杀一个敌人 → 沿面板边框**等距**亮一个方块（共 DOTS 个）；
+    //   集齐整圈闪一下（同时触发射速加速，见下面的 RAPID_FIRE）；加速期间新攒的点用 BOOST_COLOR；
+    //   右下角常显「杀敌 N/DOTS」（画在最上层）。方块贴着边框线 → 不占正文区、不挡准星。
+    //   位置全自动；现场只可能要调 INSET（离画布边距）/ SIZE（方块大小）/ PHASE（起点错开半格）。
+    STREAK: {
+      ENABLED:     true,                     // 总开关：false → 面板上不画方块也不画计数
+      DOTS:        10,                       // 方块个数（应与 RAPID_FIRE.KILLS 一致）
+      SIZE:        26,                       // 方块边长（画布像素）
+      INSET:       13,                       // 方块中心距画布边缘的像素距离
+      PHASE:       0.5,                      // 起点相位：0.5 = 首尾都不落在四角
+      COLOR:       '#ff2f2b',                // 已点亮（红）
+      BOOST_COLOR: '#ffd24a',                // 加速期间新攒的点（金）
+      EMPTY_COLOR: 'rgba(255,255,255,0.16)', // 未点亮的空槽（暗底小方块，便于数数）
+      FLASH_TIME:  0.35,                     // 集齐后「整圈闪一下」的时长 s
+      FLASH_COLOR: '#ffffff',                // 闪光时的颜色
+      COUNT_LABEL: '杀敌',                    // 计数文字前缀（显示「杀敌 3/10」）
+      COUNT_COLOR: '#ffffff',                // 计数文字色（未加速时）
+      BOOST_LABEL: '加速',                    // 加速期第二行前缀（显示「加速 2.1s」）
+    },
   },
 
   // ==================== 基础怪群体语音（"冲冲冲"）触发阈值 / 停顿 ====================
@@ -465,7 +486,7 @@ export const USER_CONFIG = {
     MOVE_TIME: 1.0,              // 沿 +Z 移动时长（秒）
     PAUSE_TIME: 1.0,             // 到达终点后停顿（秒）
     FADE_TIME: 0.3,              // 淡出消失时长（秒）
-    LATCH_FACING: true,          // 第四十三修：越过玩家后冻结朝向（false=旧行为，穿过去会瞬间翻 180 度）
+    LATCH_FACING: true,          // 第四十五修：掌面固定朝向（法线=飞行轴、上方向⊥地面）；false=旧行为（每帧朝相机，会倾斜/翻面）
     HIT_MARGIN_XY: 1.3,          // 命中盒 XY 放大系数（1=完全贴合掌面）
     HIT_Z_BAND: 8,               // 命中盒 Z 半厚（米）：仅命中掌图当前 Z 前后 ±该值的敌人
     MAX_DAMAGE_PER_FRAME: 6,     // 第四十二修：单帧最多结算几只怪（削「神掌一放就卡一下」的 GPU 尖峰）。
@@ -695,7 +716,7 @@ export const USER_CONFIG = {
   //   ENABLED: false 可整体关掉（机制关 3/9/15 与 Boss 关 6/12/18 本来就不会弹）
   // MID_WARNING: { ENABLED: true, AT: 0.5, SECONDS: 2, DIST: 2.6, WIDTH: 2.2, TEXT: '更强的敌人来袭' },
 
-  // ==================== 连杀加速（第四十二修 · 第四十三修改红点环） ====================
+  // ==================== 连杀加速（第四十二修 · 第四十三修红点环 · 第四十四修搬到技能框） ====================
   // 覆盖 constants.js 的 RAPID_FIRE。连续用**子弹**击杀 10 个敌人 → 射速 ×1.5 持续 3 秒 + 奖励音。
   //   只认子弹击杀：技能/如来神掌/激光剑杀的不计数（也不打断连杀）。
   //   GAP             距上次子弹击杀超过该秒数就清零（别调太小，否则很难凑满 10 个）
@@ -703,15 +724,18 @@ export const USER_CONFIG = {
   //   BOOST_CARRY_MAX 第四十三修：加速期间最多只能再攒这么多个（默认 5）——
   //                   修掉「一边加速一边继续杀 → 无限续杯」；剩下的要等加速结束再重新连杀。
   //   COUNTER 枪身红点环（第四十三修，替换原「枪管大牌子」）：
+  //           ★ 第四十四修：**默认关闭**（BARREL_DOTS: false）——红点已搬到「右手技能框边缘」
+  //             （见上面 SKILL_HINT.STREAK）。改回 BARREL_DOTS: true 即恢复枪身环（功能没删）。
   //           ALONG 环心位置(0=枪托 0.5=正中 1=枪口)、RING_FRAC/RING_RADIUS 环半径、
   //           DOT_FRAC/DOT_SIZE 点径、DOTS 点数(0=取 KILLS)、COLOR/COLOR_BOOST 颜色、
   //           FLASH_TIME/FLASH_SCALE 集齐后「闪一下」的时长与放大倍数
   //   MIST    加速期间向后飘的雾（表现「枪已经加速」）：COUNT 雾团数、LIFE 单团存活、
   //           SIZE 单团大小(0=自动)、SPEED 后飘速度、OPACITY 浓度；
-  //           性能吃紧就把 MIST.ENABLED 设 false（或 COUNT: 0）——红点环不受影响。
+  //           ⚠ 第四十四修后枪身的「连杀表现」只剩这团雾了，默认别关。
+  //           性能吃紧就把 MIST.ENABLED 设 false（或 COUNT: 0）——技能框上的计数不受影响。
   // RAPID_FIRE: {
   //   ENABLED: true, KILLS: 10, GAP: 6, MULT: 1.5, SECONDS: 3, BOOST_CARRY_MAX: 5,
-  //   COUNTER: { ENABLED: true, DOTS: 0, ALONG: 0.5, RING_RADIUS: 0, RING_FRAC: 1.45,
+  //   COUNTER: { ENABLED: true, BARREL_DOTS: false, DOTS: 0, ALONG: 0.5, RING_RADIUS: 0, RING_FRAC: 1.45,
   //              DOT_SIZE: 0, DOT_FRAC: 0.28, FLASH_TIME: 0.28, FLASH_SCALE: 2.6 },
   //   MIST: { ENABLED: true, COUNT: 8, LIFE: 0.85, INTERVAL: 0.10, SIZE: 0, SPEED: 1.5,
   //           SPREAD: 0.35, COLOR: 0xbfe9ff, OPACITY: 0.34 },

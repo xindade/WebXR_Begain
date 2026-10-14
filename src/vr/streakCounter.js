@@ -3,6 +3,9 @@ import { RAPID_FIRE } from '../core/constants.js';
 
 // ============================================================
 // 连杀计数 · 枪身红点环（第四十三修，替换第四十二修的「枪管大牌子」）
+//   ⚠ 第四十四修：**红点环已搬到右手技能框边缘**（SKILL_HINT.STREAK / src/vr/skillHint.js）——
+//     本文件现在默认只负责「加速期间向后飘的雾气」（RAPID_FIRE.MIST）；
+//     红点相关代码全部保留，把 RAPID_FIRE.COUNTER.BARREL_DOTS 改回 true 即可恢复枪身环。
 //   · 每用**子弹**击杀一个敌人 → 枪身中间环绕的一圈里点亮一个红点；
 //   · 红点集齐（默认 10 个）→ 整圈「闪一下」放大淡出，同时枪身周围开始向后飘雾；
 //   · 雾气持续 = 射速加速的 3 秒（表现「枪已经加速」）；
@@ -249,6 +252,17 @@ export class StreakCounter {
     if (until !== this._lastUntil) {
       this._lastUntil = until;
       if (boost) this._flashT = 0;
+    }
+
+    // 第四十四修：连杀计数搬到「右手技能框边缘」（SKILL_HINT.STREAK / src/vr/skillHint.js）→
+    //   枪身默认**不再画红点**（只保留加速雾气，雾气才是「枪已加速」的表现）。
+    //   想看回枪身环：RAPID_FIRE.COUNTER.BARREL_DOTS = true（与面板同时显示也不冲突）。
+    if (C.BARREL_DOTS === false) {
+      this._fill = Math.min(streak, need);
+      this._boost = boost;
+      this.dots.visible = false;
+      this._updateMist(dt, boost);
+      return;
     }
 
     const flashing = this._flashT < (C.FLASH_TIME > 0 ? C.FLASH_TIME : 0.28);

@@ -5,11 +5,12 @@ import { TracerTail, MuzzleFlash } from '../src/game/fx.js';
 import { DamageNumbers } from '../src/game/damageNumbers.js';
 import { WarningBanner3D, midWarningDue } from '../src/game/warningBanner.js';
 import { StreakCounter, barrelMount, modelBoxInParentSpace } from '../src/vr/streakCounter.js';
+import { SkillHintPanel, edgeDotPositions } from '../src/vr/skillHint.js';
 import { InputManager } from '../src/vr/input.js';
 import { AudioManager } from '../src/vr/audio.js';
 import { advanceStreak } from '../src/game/rapidFire.js';
 import { faceCamera } from '../src/game/buddhaFx.js';
-import { FX, DAMAGE_NUMBER, MID_WARNING, RAPID_FIRE, BUDDHA, SHOOT } from '../src/core/constants.js';
+import { FX, DAMAGE_NUMBER, MID_WARNING, RAPID_FIRE, BUDDHA, SHOOT, SKILL_HINT } from '../src/core/constants.js';
 
 // 第四十二修 / 第四十三修：
 //   ① 曳光「后拖不能越过枪管」（贴到出生点，太短则不画）
@@ -234,32 +235,38 @@ test('红点环：没连杀也没加速 → 整体不显示（零 draw call）',
   assert.equal(sc.mist.visible, false);
 });
 
-test('红点环：杀一个亮一个，集齐那一帧整圈闪一下再消失，加速期间新攒的点是金色', () => {
+test('枪身红点环：第四十四修起默认关闭（连杀计数改画在技能框边缘），但实现与参数都还在', () => {
   const sc = new StreakCounter();
   sc.place(null);
-  const need = sc.dots.count;
-  assert.equal(need, RAPID_FIRE.KILLS, '默认点数 = 触发连杀数');
+  assert.equal(sc.dots.count, RAPID_FIRE.KILLS, '默认点数 = 触发连杀数');
+  sc.update(DT, streakGame(4, 0, 10));
+  assert.equal(sc.dots.visible, false, '默认不在枪身画点（改画在技能框边缘）');
+  assert.equal(sc._fill, 4, '连杀数照样算出来（供排查/复用）');
 
-  sc.update(DT, streakGame(3, 0, 10));
-  assert.equal(sc.dots.visible, true);
-  assert.equal(sc._fill, 3);
-  assert.equal(dotSizes(sc).filter((s) => s > 0).length, 3, '亮 3 个点，其余点尺寸为 0');
+  // 现场想看回枪身环：把 BARREL_DOTS 改回 true 即恢复第四十三修的行为（功能没删，只是默认不显示）
+  const sc2 = new StreakCounter({ ...RAPID_FIRE, COUNTER: { ...RAPID_FIRE.COUNTER, BARREL_DOTS: true } });
+  sc2.place(null);
+  const need = sc2.dots.count;
+
+  sc2.update(DT, streakGame(3, 0, 10));
+  assert.equal(sc2.dots.visible, true);
+  assert.equal(dotSizes(sc2).filter((s) => s > 0).length, 3, '亮 3 个点，其余点尺寸为 0');
 
   // 新一次加速开始（= 红点集齐的那一刻，计数已被清零）→ 整圈闪一下
-  sc.update(DT, streakGame(0, 12, 10.5));
-  assert.equal(sc.dots.visible, true, '集齐要整圈闪一下');
-  assert.equal(dotSizes(sc).filter((s) => s > 0).length, need, '闪光时整圈都亮');
+  sc2.update(DT, streakGame(0, 12, 10.5));
+  assert.equal(sc2.dots.visible, true, '集齐要整圈闪一下');
+  assert.equal(dotSizes(sc2).filter((s) => s > 0).length, need, '闪光时整圈都亮');
 
   // 闪完自动隐藏（闪光是按 dt 计时的，不是按 gameTime）
   for (let i = 0; i < Math.ceil((RAPID_FIRE.COUNTER.FLASH_TIME || 0.28) / DT) + 3; i++) {
-    sc.update(DT, streakGame(0, 12, 12.5));
+    sc2.update(DT, streakGame(0, 12, 12.5));
   }
-  assert.equal(sc.dots.visible, false, '闪完必须自己收掉（否则一直挂在枪上）');
+  assert.equal(sc2.dots.visible, false, '闪完必须自己收掉（否则一直挂在枪上）');
 
   // 加速期间新攒的点用金色（与「未集齐的红」区分）
-  sc.update(DT, streakGame(2, 12, 11));
+  sc2.update(DT, streakGame(2, 12, 11));
   const c = new THREE.Color();
-  sc.dots.getColorAt(0, c);
+  sc2.dots.getColorAt(0, c);
   assert.equal(c.getHex(), RAPID_FIRE.COUNTER.COLOR_BOOST);
 });
 
@@ -276,6 +283,75 @@ test('加速雾气：只在加速期间出现，加速一结束就收干净', ()
   sc.update(DT, streakGame(0, 12, 13.5));    // now > until → 加速已结束
   assert.equal(sc.mist.visible, false);
   assert.ok(sc._puffs.every((p) => !(p.t < RAPID_FIRE.MIST.LIFE)), '结束时把雾团全部作废');
+});
+
+// ---------- ④b 技能框边缘的连杀计数（第四十四修）----------
+
+const fakeSkillGame = (over = {}) => Object.assign({
+  score: 0, skillCooldown: 0, selectedSkill: 'buddha',
+  player: { skillCost: 100 }, _skillCdTotal: () => 10,
+  _bulletStreak: 0, _rapidUntil: 0, _gameTime: 0,
+}, over);
+
+test('技能框边缘方块：10 个沿边框**等距**排布、贴着边框线、不落在四角、不切出画面', () => {
+  const { w, h } = SKILL_HINT.CANVAS;
+  const S = SKILL_HINT.STREAK;
+  const pts = edgeDotPositions(w, h, S.DOTS, S.INSET, S.PHASE);
+  assert.equal(pts.length, S.DOTS);
+  assert.equal(S.DOTS, RAPID_FIRE.KILLS, '方块数必须等于触发连杀数，否则「集齐」和加速对不上');
+
+  const half = S.SIZE / 2;
+  for (const p of pts) {
+    const d = Math.min(p.x, w - p.x, p.y, h - p.y);
+    assert.ok(Math.abs(d - S.INSET) < 1e-6, '每颗都必须贴在边框线上（否则跑到面板中间压住正文）');
+    assert.ok(p.x >= half - 1e-6 && p.x <= w - half + 1e-6, '别横着切出画面');
+    assert.ok(p.y >= half - 1e-6 && p.y <= h - half + 1e-6, '别竖着切出画面');
+  }
+
+  // 沿周长等距（不出现「两颗挤在一起」）：把每颗点换算回弧长，相邻间隔必须都等于 周长/10
+  const inset = S.INSET;
+  const arcOf = (p) => {
+    if (Math.abs(p.y - inset) < 1e-6) return p.x - inset;
+    if (Math.abs(p.x - (w - inset)) < 1e-6) return (w - 2 * inset) + (p.y - inset);
+    if (Math.abs(p.y - (h - inset)) < 1e-6) return (w - 2 * inset) + (h - 2 * inset) + ((w - inset) - p.x);
+    return (w - 2 * inset) + (h - 2 * inset) + (w - 2 * inset) + ((h - inset) - p.y);
+  };
+  const arcs = pts.map(arcOf).sort((a, b) => a - b);
+  const total = 2 * ((w - 2 * inset) + (h - 2 * inset));
+  const step = total / S.DOTS;
+  for (let i = 1; i < arcs.length; i++) {
+    assert.ok(Math.abs((arcs[i] - arcs[i - 1]) - step) < 1e-6, '同边相邻间隔必须相等');
+  }
+  const wrap = total - arcs[arcs.length - 1] + arcs[0];
+  assert.ok(Math.abs(wrap - step) < 1e-6, '绕一圈回来（跨四角）间隔也要相等');
+  for (let i = 0; i < arcs.length; i++) {
+    for (const corner of [0, w - 2 * inset, (w - 2 * inset) + (h - 2 * inset), 2 * (w - 2 * inset) + (h - 2 * inset)]) {
+      assert.ok(Math.abs(arcs[i] - corner) > 1e-6, '任何一颗都不许正好落在四角');
+    }
+  }
+});
+
+test('技能框连杀：杀一个亮一个、集齐整圈闪一下、加速期新攒的点变金（第四十四修）', () => {
+  const p = new SkillHintPanel();
+  assert.equal(p._streakDots.length, SKILL_HINT.STREAK.DOTS);
+
+  p.update(DT, fakeSkillGame({ _bulletStreak: 3 }));
+  assert.equal(p._streakFill, 3, '杀 3 个 → 亮 3 个方块');
+  assert.equal(p._streakBoost, false);
+  assert.equal(p._streakFlashing, false);
+
+  // 加速结束时刻变了 = 刚集齐触发了一次加速 → 整圈闪一下，且加速期计数变金
+  p.update(DT, fakeSkillGame({ _rapidUntil: 12, _gameTime: 10.5 }));
+  assert.equal(p._streakFlashing, true, '集齐那一瞬整圈闪一下');
+  assert.equal(p._streakBoost, true, '加速期间点变金');
+
+  for (let i = 0; i < 40; i++) p.update(DT, fakeSkillGame({ _rapidUntil: 12, _gameTime: 11 }));
+  assert.equal(p._streakFlashing, false, '闪完自己收掉（否则一直白着）');
+  assert.equal(p._streakFill, 0, '集齐后计数清零，重新攒');
+
+  // 方块上限 = DOTS（加速期封顶 BOOST_CARRY_MAX，不会越攒越多）
+  p.update(DT, fakeSkillGame({ _bulletStreak: 99, _rapidUntil: 12, _gameTime: 11 }));
+  assert.equal(p._streakFill, SKILL_HINT.STREAK.DOTS);
 });
 
 test('连杀规则：加速期间最多再攒 BOOST_CARRY_MAX 个（不会无限续杯）', () => {
@@ -303,33 +379,88 @@ test('连杀规则：加速期间最多再攒 BOOST_CARRY_MAX 个（不会无限
   assert.equal(trig, 1, '加速结束后把剩下的一半攒够，仍然会触发');
 });
 
-// ---------- ⑤ 如来神掌越过玩家不翻面 + 左手射线隐去（第四十三修）----------
+// ---------- ⑤ 如来神掌：固定朝向（垂直地面） + 左手射线隐去 ----------
 
-test('如来神掌：越过玩家后冻结朝向（不再翻 180 度）', () => {
+// 第四十五修：掌面朝向改成**固定解** —— 只由飞行轴决定，与相机位置/头转/是否越过玩家都无关。
+//   为什么又改：第四十三修「越过玩家后冻结」、第四十四修「沿飞行轴判越过后闩锁」，两者都还在
+//   「每帧把法线转向相机」的框架里。而相机在 y≈1.6、掌图沿 y=0 飞 ⇒ setFromUnitVectors 会把
+//   相机方向里的 +Y 分量解成**绕飞行轴的倾角**（现场反馈「越过玩家后斜了，与地面成锐角」）。
+//   现在直接把回转量钉死：法线 = 飞行轴、上方向 = 垂直于飞行轴且水平。
+test('如来神掌：掌面法线恒等于飞行轴、上方向恒垂直于飞行轴（第四十五修）', () => {
+  const travel = new THREE.Vector3(0, 0, 1);   // START_POS(z=-30) → END_POS(z=+30)
+  const up = new THREE.Vector3(0, 1, 0);
   const cam = new THREE.PerspectiveCamera();
-  cam.position.set(0, 0, 0);
+  cam.position.set(0, 1.6, 0);                 // 真实几何：玩家头高 1.6m，掌图沿 y=0 飞
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1));
 
-  mesh.position.set(0, 0, -30);              // 起点：玩家正前方
-  faceCamera(mesh, cam);
+  const normal = () => new THREE.Vector3(0, 0, 1).applyQuaternion(mesh.quaternion);   // 掌面法线（局部 +Z）
+  const localUp = () => new THREE.Vector3(0, 1, 0).applyQuaternion(mesh.quaternion);  // 贴图正上方（局部 +Y）
+
+  // ① 整条飞行轨迹（含越过玩家之后）姿态**完全不变** —— 固定解与位置无关
+  mesh.position.set(0, 0, -30);
+  faceCamera(mesh, cam, travel);
   const q0 = mesh.quaternion.clone();
+  assert.ok(normal().dot(travel) > 0.9999, '起点：法线 = 飞行轴（正面朝玩家）');
+  assert.ok(localUp().dot(up) > 0.9999, '起点：掌图正立（局部 +Y = 世界上方）');
+  for (const z of [-20, -8, -0.5, 0.5, 3, 20, 30]) {
+    mesh.position.set(0, 0, z);
+    faceCamera(mesh, cam, travel);
+    assert.ok(mesh.quaternion.angleTo(q0) < 1e-9, '整条轨迹同一姿态（越过玩家后也不变）');
+  }
 
-  mesh.position.set(0, 0, -8);               // 还在玩家前方 → 仍朝相机
-  faceCamera(mesh, cam);
-  assert.ok(mesh.quaternion.angleTo(q0) < 1e-6, '没越过玩家时保持朝相机');
+  // ② 与地面成**直角**：法线水平（无俯仰分量）、上方向 ⟂ 飞行轴 —— 这正是现场要的效果
+  assert.ok(Math.abs(normal().dot(up)) < 1e-9, '法线水平 ⇒ 掌面垂直于地面（不再是锐角）');
+  assert.ok(Math.abs(localUp().dot(travel)) < 1e-9, '上方向 ⟂ 飞行轴');
+  assert.ok(Math.abs(localUp().dot(up)) > 0.9999, '上方向 = 世界上方');
+  // 越过玩家后玩家看到的是背面（上下颠倒也无所谓），但姿态分毫不动
+  mesh.position.set(0, 0, 8);
+  faceCamera(mesh, cam, travel);
+  assert.ok(normal().dot(travel) > 0.9999, '越过玩家后仍是同一姿态（看到的是背面）');
 
-  mesh.position.set(0, 0, 8);                // 越过玩家到了 +Z 侧
-  faceCamera(mesh, cam);
-  assert.ok(mesh.quaternion.angleTo(q0) < 1e-6, '越过玩家后必须冻结在越过前的朝向');
-
-  // 反证：关掉开关就恢复「每帧朝相机」的翻面行为（说明这条测试确实在测东西）
-  const keep = BUDDHA.LATCH_FACING;
-  BUDDHA.LATCH_FACING = false;
-  faceCamera(mesh, cam);
-  assert.ok(mesh.quaternion.angleTo(q0) > Math.PI * 0.99, '关掉开关会翻 180 度');
-  BUDDHA.LATCH_FACING = keep;
+  // ③ 相机随便动（转头 / 前后走）都不改朝向 —— 这是它不会再「斜」的根本原因
+  const qBefore = mesh.quaternion.clone();
+  cam.position.set(0.6, 2.4, -3); faceCamera(mesh, cam, travel);
+  cam.position.set(-2, 0.4, 7);   faceCamera(mesh, cam, travel);
+  assert.ok(mesh.quaternion.angleTo(qBefore) < 1e-9, '相机移动 / 转头不改朝向');
 });
 
+test('如来神掌：斜向飞行时法线跟飞行轴，上方向仍水平（法线与地面始终成直角）', () => {
+  const cam = new THREE.PerspectiveCamera();
+  cam.position.set(0, 1.6, 0);
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1));
+  const travel = new THREE.Vector3(1, 0, 1).normalize();   // 斜着飞（含 X 分量）
+  mesh.position.set(0, 0, 0);
+  faceCamera(mesh, cam, travel);
+  const n = new THREE.Vector3(0, 0, 1).applyQuaternion(mesh.quaternion);
+  const u = new THREE.Vector3(0, 1, 0).applyQuaternion(mesh.quaternion);
+  assert.ok(n.dot(travel) > 0.9999, '法线 = 飞行轴（任意方向都成立）');
+  assert.ok(Math.abs(u.dot(travel)) < 1e-9, '上方向 ⟂ 飞行轴');
+  assert.ok(Math.abs(u.y) > 0.9999, '上方向仍被水平化（掌面不翻滚）');
+  assert.ok(Math.abs(n.y) < 1e-9, '法线水平 ⇒ 与地面成直角');
+});
+
+test('如来神掌：没有飞行轴（或 LATCH_FACING=false）才退回旧的「每帧朝相机」行为', () => {
+  const travel = new THREE.Vector3(0, 0, 1);
+  const cam = new THREE.PerspectiveCamera(); cam.position.set(0, 1.6, 0);
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1));
+  mesh.position.set(0, 0, -8);
+  faceCamera(mesh, cam);                       // 不给飞行轴 → 旧行为
+  const q1 = mesh.quaternion.clone();
+  cam.position.set(3, 1.6, -8);                // 相机挪到侧面 → 旧行为跟着转
+  faceCamera(mesh, cam);
+  assert.ok(mesh.quaternion.angleTo(q1) > 0.1, '旧行为：朝向随相机变（所以才会「斜」）');
+
+  const keep = BUDDHA.LATCH_FACING;
+  BUDDHA.LATCH_FACING = false;                 // 显式关掉固定朝向 → 同样退回旧行为
+  const cam2 = new THREE.PerspectiveCamera(); cam2.position.set(3, 1.6, -8);
+  const mesh2 = new THREE.Mesh(new THREE.PlaneGeometry(1, 1));
+  mesh2.position.set(0, 0, -8); faceCamera(mesh2, cam2, travel);
+  const q2 = mesh2.quaternion.clone();
+  cam2.position.set(0, 1.6, -8);
+  faceCamera(mesh2, cam2, travel);
+  BUDDHA.LATCH_FACING = keep;
+  assert.ok(mesh2.quaternion.angleTo(q2) > 0.1, 'LATCH_FACING=false：恢复每帧朝相机');
+});
 test('左手射线：默认整条不画，只有主手那条可见', () => {
   const inp = Object.create(InputManager.prototype);
   inp.settings = { dominantHand: 'right' };   // shootingHand 是 getter，只能从 settings 设

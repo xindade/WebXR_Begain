@@ -8,24 +8,62 @@ const _midScale = new THREE.Vector3();
 const _faceZ = new THREE.Vector3(0, 0, 1);
 const _faceTmp = new THREE.Vector3();
 const _faceQ = new THREE.Quaternion();
-// 让 plane 的 +Z（normal）指向相机——PlaneGeometry + lookAt 的经典坑：
-// lookAt 让 -Z 指向目标，导致 plane 正面背对相机；远处看到的是侧边（"斜光柱"）。
-// 这里改用 setFromUnitVectors 把 +Z 旋转到「指向相机」的方向，plane 正面始终朝玩家。
-//
-// 第四十三修：掌图从 START_POS(z=-30) 飞到 END_POS(z=+30)，中途**穿过玩家**。
-//   穿过那一刻「相机在掌图哪一侧」反转 → 方向掉头 → 照抄新方向会让掌图瞬间翻 180°
-//   （现场反馈的「经过玩家后会翻转一下」）。判据：新方向与当前法线夹角 > 90°
-//   ⇒ 说明已经越过去了，冻结在越过前的朝向（此时看到的自然是掌图背面）。
-const _faceNow = new THREE.Vector3();
-export function faceCamera(mesh, camera) {
+// —— 掌面朝向（第四十五修定稿）：**固定解**，不再每帧看相机 ——
+//   PlaneGeometry 的法线是**局部 +Z**、贴图正上方是**局部 +Y**。现场要求掌图必须是一堵
+//   「垂直于地面」的墙，于是把法线钉死在飞行轴上、上方向取「垂直于飞行轴且水平」：
+//     ① f = 飞行轴（START_POS→END_POS，默认 +Z，见 _computeTravelDir）；
+//     ② right = worldUp × f（水平右向）；③ up = f × right（⟂ f ⇒ 必然水平）；
+//     ④ basis = (right, up, f) → setFromRotationMatrix ⇒ 局部 +X/+Y/+Z 一次摆正。
+//   结果：**从头到尾一个姿态** —— 朝玩家飞来时看到正面，越过玩家后自然看到背面（上下颠倒也
+//   无所谓），但永远与地面成直角，不会再「中途倾斜 / 与地面成锐角」。
+//   为什么不能逐帧朝相机：把 +Z 转向相机（setFromUnitVectors）时，相机方向里那点 +Y 分量会被
+//   解成**绕飞行轴的倾角**，而相机在 y≈1.6、掌图在 y=0 ⇒ 这个倾角必然存在（现场反馈的「斜了」）。
+//   改判据、加闩锁都治不了它 —— 只有把回转量钉死才行。
+//   BUDDHA.LATCH_FACING=false 可退回旧的「每帧朝相机」实现（仅作对照/兜底）。
+const _worldUp = new THREE.Vector3(0, 1, 0);
+const _refUp = new THREE.Vector3(0, 0, 1);   // 飞行轴与 worldUp 平行时的兜底参考轴
+const _rightV = new THREE.Vector3();
+const _upV = new THREE.Vector3();
+const _fwdV = new THREE.Vector3();
+const _basis = new THREE.Matrix4();
+
+// START→END 的飞行方向（单位向量）；起终点重合则返回 null（退回旧的朝向逻辑）
+function _computeTravelDir() {
+  const d = new THREE.Vector3(
+    BUDDHA.END_POS.x - BUDDHA.START_POS.x,
+    BUDDHA.END_POS.y - BUDDHA.START_POS.y,
+    BUDDHA.END_POS.z - BUDDHA.START_POS.z,
+  );
+  return d.lengthSq() < 1e-6 ? null : d.normalize();
+}
+
+/**
+ * 把掌图摆成「垂直于地面、法线 = 飞行轴」的固定姿态。
+ * @param {THREE.Object3D} mesh    掌图平面（PlaneGeometry）
+ * @param {THREE.Camera} camera    相机（只有退回旧行为时才用到）
+ * @param {THREE.Vector3|null} travelDir 飞行轴（START→END）；null = 退回旧的「每帧朝相机」
+ */
+export function faceCamera(mesh, camera, travelDir = null) {
+  if (travelDir && BUDDHA.LATCH_FACING !== false) {
+    _fwdV.copy(travelDir);
+    if (_fwdV.lengthSq() < 1e-8) return;
+    _fwdV.normalize();
+    _rightV.crossVectors(_worldUp, _fwdV);                                // 水平右向
+    if (_rightV.lengthSq() < 1e-8) _rightV.crossVectors(_refUp, _fwdV);   // 垂直飞行：换参考轴
+    if (_rightV.lengthSq() < 1e-8) return;                                // 退化：不动朝向
+    _rightV.normalize();
+    _upV.crossVectors(_fwdV, _rightV).normalize();                        // 屏幕上方 ⟂ 飞行轴
+    _basis.makeBasis(_rightV, _upV, _fwdV);                               // 局部 +Z = 法线
+    mesh.quaternion.setFromRotationMatrix(_basis);
+    return;
+  }
+  // 旧行为（LATCH_FACING=false / 没给飞行轴）：每帧把 +Z 转向相机。
+  // ⚠ 它绕飞行轴的回转量不确定（three 取最短弧）⇒ 相机的 Y 分量被解成倾角 —— 这就是旧现场
+  //   「越过后翻面 / 与地面成锐角」的来源。保留仅为对照与兜底。
   if (!camera) return;
   _faceTmp.subVectors(camera.position, mesh.position);
-  if (_faceTmp.lengthSq() < 1e-6) return;   // 玩家与 plane 重合时跳过
+  if (_faceTmp.lengthSq() < 1e-6) return;
   _faceTmp.normalize();
-  if (BUDDHA.LATCH_FACING !== false) {
-    _faceNow.set(0, 0, 1).applyQuaternion(mesh.quaternion);
-    if (_faceNow.dot(_faceTmp) < 0) return; // 已越过玩家 → 冻结（不再翻面）
-  }
   _faceQ.setFromUnitVectors(_faceZ, _faceTmp);
   mesh.quaternion.copy(_faceQ);
 }
@@ -410,6 +448,7 @@ export class BuddhaFx {
     this.scene = scene;
     this._camera = null;
     this._mesh = null;
+    this._travelDir = null;          // 第四十五修：START→END 飞行轴（掌面朝向的基准轴）
     this._started = false;
     this._disposed = false;
     this._t = 0;
@@ -491,11 +530,12 @@ export class BuddhaFx {
     }
     this._mesh = new THREE.Mesh(geo, mat);
 
+    this._travelDir = _computeTravelDir();   // 第四十五修：掌面朝向基准轴（法线 = 它）
     _startPos.set(BUDDHA.START_POS.x, BUDDHA.START_POS.y, BUDDHA.START_POS.z);
     this._mesh.position.copy(_startPos);
     this._mesh.scale.setScalar(BUDDHA.START_SCALE);
 
-    if (this._camera) faceCamera(this._mesh, this._camera);
+    if (this._camera) faceCamera(this._mesh, this._camera, this._travelDir);
     this.scene.add(this._mesh);
   }
 
@@ -557,8 +597,8 @@ export class BuddhaFx {
     }
 
     this.position.copy(this._mesh.position);
-    // 始终面朝相机
-    if (this._camera) faceCamera(this._mesh, this._camera);
+    // 固定朝向：法线 = 飞行轴、上方向垂直地面（第四十五修）
+    if (this._camera) faceCamera(this._mesh, this._camera, this._travelDir);
     return false;
   }
 

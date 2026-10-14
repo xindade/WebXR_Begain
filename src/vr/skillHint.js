@@ -13,6 +13,33 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+// 第四十四修：沿矩形边框**等距**排 n 个方块（连杀计数搬到技能框边缘）。
+//   · 边框 = 距画布四边 inset 像素的矩形；按**周长**等分，phase=0.5 → 首尾都不落在四角；
+//   · 纯函数（不碰 canvas），便于单测；现场觉得压字/贴边只调 SKILL_HINT.STREAK 的 INSET/SIZE/PHASE。
+export function edgeDotPositions(w, h, n, inset = 13, phase = 0.5) {
+  const count = Math.max(1, n | 0);
+  const x0 = inset, y0 = inset, x1 = w - inset, y1 = h - inset;
+  const segs = [
+    [x0, y0, x1, y0],   // 上
+    [x1, y0, x1, y1],   // 右
+    [x1, y1, x0, y1],   // 下
+    [x0, y1, x0, y0],   // 左
+  ];
+  const lens = segs.map(([ax, ay, bx, by]) => Math.hypot(bx - ax, by - ay));
+  const total = lens.reduce((a, b) => a + b, 0) || 1;
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    let s = (((i + phase) / count) * total) % total;
+    if (s < 0) s += total;
+    let k = 0;
+    while (k < segs.length - 1 && s > lens[k]) { s -= lens[k]; k++; }
+    const seg = segs[k];
+    const t = Math.min(1, Math.max(0, s / (lens[k] || 1)));
+    out.push({ x: seg[0] + (seg[2] - seg[0]) * t, y: seg[1] + (seg[3] - seg[1]) * t });
+  }
+  return out;
+}
+
 // 右手枪中央技能面板：始终浮现（不再隐藏）。三态：
 //   ① 冷却中(skillCooldown>0)  → 橙色边框 + 剩余秒数 + 恢复进度条；
 //   ② 积分不足(score<skillCost) → 灰色边框 + "需 X 积分"；
@@ -37,6 +64,18 @@ export class SkillHintPanel {
     this.w = cfg.CANVAS.w; this.h = cfg.CANVAS.h;
     this._prevReady = false;   // 上一帧是否"就绪"（检测达标跳变，触发闪烁）
     this._flashT = 0;         // 剩余闪烁时长（秒）；>0 表示正在闪烁
+    // —— 第四十四修 · 连杀计数（原枪身红点环搬到这里）——
+    const S = cfg.STREAK || {};
+    this._streakNeed = Math.max(1, (S.DOTS | 0) > 0 ? (S.DOTS | 0) : 10);
+    this._streakDots = edgeDotPositions(
+      cfg.CANVAS.w, cfg.CANVAS.h, this._streakNeed,
+      S.INSET != null ? S.INSET : 13, S.PHASE != null ? S.PHASE : 0.5,
+    );
+    this._streakFill = 0;            // 当前连杀数（已点亮方块数）
+    this._streakBoost = false;       // 是否处于射速加速期（点变金 + 显示剩余秒数）
+    this._streakFlashing = false;    // 集齐那一瞬的整圈闪光
+    this._streakFlashT = Infinity;   // 闪光计时（Infinity = 没在闪）
+    this._streakLastUntil = 0;       // 上一次看到的加速结束时刻（变了 = 新一次加速）
   }
 
   // 挂到右手柄(grip)；anchor 即右手枪同源父节点，故视觉落在枪中央。幂等。
@@ -65,7 +104,24 @@ export class SkillHintPanel {
       const elapsed = cfg.FLASH_COUNT * cycle - this._flashT;  // 已进行时长
       red = (elapsed % cycle) < cfg.FLASH_ON;
     }
-    this._draw({ red, ready, cd, cdTotal, skillCost, game });
+    // —— 第四十四修 · 连杀计数（子弹击杀；技能/神掌杀的不计入，见 game._bulletKill）——
+    const S = cfg.STREAK || {};
+    const streak = Math.max(0, game._bulletStreak | 0);
+    const until = game._rapidUntil || 0;
+    const now = game._gameTime || 0;
+    const boost = until > now;
+    // 加速结束时刻变了 = 刚刚集齐触发了一次新加速 → 整圈闪一下（此后计数已被清零）
+    if (until !== this._streakLastUntil) {
+      this._streakLastUntil = until;
+      if (boost) this._streakFlashT = 0;
+    }
+    const flashing = this._streakFlashT < (S.FLASH_TIME > 0 ? S.FLASH_TIME : 0.35);
+    if (flashing) this._streakFlashT += dt;
+    this._streakFill = Math.min(streak, this._streakNeed);
+    this._streakBoost = boost;
+    this._streakFlashing = flashing;
+
+    this._draw({ red, ready, cd, cdTotal, skillCost, game, flashing, boost, boostLeft: Math.max(0, until - now) });
   }
 
   // 调试：读取左手柄摇杆(前后左右)与 X/Y键(上下)，按 DEBUG_STEP 平移本面板（实时调位）。
@@ -154,11 +210,51 @@ export class SkillHintPanel {
       c.fillText('继续击杀以蓄能', 28, 176);
     }
 
-    // 底部积分（始终显示当前/所需）
+    // 底部积分（始终显示当前/所需）；基线抬到 h-42 给「贴边框的计数方块」让位
     c.fillStyle = '#9fe8ff';
     c.font = '28px sans-serif';
-    c.fillText('积分 ' + Math.floor(game.score) + ' / ' + skillCost, 28, this.h - 26);
+    c.fillText('积分 ' + Math.floor(game.score) + ' / ' + skillCost, 28, this.h - 42);
+
+    this._drawStreak(c, s);
     this.tex.needsUpdate = true;
+  }
+
+  // 连杀计数（第四十四修）：沿**面板边框**等距的方块 + 右下角「杀敌 N/M」。
+  //   · 杀一个亮一个（子弹击杀，见 game._bulletKill）；加速期间新攒的点改用金色；
+  //   · 集齐（= 触发加速）那一瞬整圈闪一下（放大 + 变白）；
+  //   · 方块贴着边框线画 → 不占正文区，不挡准星；文字最后画 = 永远在面板最上层。
+  _drawStreak(c, s) {
+    const S = SKILL_HINT.STREAK || {};
+    if (S.ENABLED === false) return;
+    const need = this._streakNeed;
+    const fill = this._streakFill;
+    const flashing = !!s.flashing;
+    const size = S.SIZE > 0 ? S.SIZE : 26;
+    const shown = flashing ? need : fill;
+    const col = flashing ? (S.FLASH_COLOR || '#ffffff')
+      : (s.boost ? (S.BOOST_COLOR || '#ffd24a') : (S.COLOR || '#ff2f2b'));
+    const side = size * (flashing ? 1.25 : 1);
+    for (let i = 0; i < this._streakDots.length; i++) {
+      const p = this._streakDots[i];
+      if (i < shown) {
+        c.fillStyle = col;
+        c.fillRect(p.x - side * 0.5, p.y - side * 0.5, side, side);
+      } else {
+        c.fillStyle = S.EMPTY_COLOR || 'rgba(255,255,255,0.16)';   // 空槽画小一号，弱化但不消失（便于数数）
+        const e = side * 0.68;
+        c.fillRect(p.x - e * 0.5, p.y - e * 0.5, e, e);
+      }
+    }
+    // 右下角「杀敌 N/M」——最后画 = 最上层
+    c.textAlign = 'right';
+    c.font = 'bold 30px sans-serif';
+    c.fillStyle = s.boost ? (S.BOOST_COLOR || '#ffd24a') : (S.COUNT_COLOR || '#ffffff');
+    c.fillText((S.COUNT_LABEL || '杀敌') + ' ' + fill + '/' + need, this.w - 40, this.h - 42);
+    if (s.boost) {
+      c.font = 'bold 24px sans-serif';
+      c.fillText((S.BOOST_LABEL || '加速') + ' ' + (s.boostLeft || 0).toFixed(1) + 's', this.w - 40, this.h - 76);
+    }
+    c.textAlign = 'left';
   }
 
   _skillName(game) {
