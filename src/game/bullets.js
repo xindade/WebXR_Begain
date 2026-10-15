@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SHOOT } from '../core/constants.js';
+import { SHOOT, RAPID_FIRE } from '../core/constants.js';
 
 // 子弹系统：InstancedMesh 单 Draw Call 渲染所有子弹，支持大数量（割草）
 // 子弹对象只存逻辑数据（pos/vel/life/dmg），不再持有独立 Mesh，
@@ -13,7 +13,8 @@ export class BulletManager {
 
     // 共享几何体 + 廉价材质（发光小球不需要 PBR 光照，MeshBasicMaterial 不吃光照计算）
     const geo = new THREE.SphereGeometry(SHOOT.BULLET_RADIUS, 8, 8);
-    const mat = new THREE.MeshBasicMaterial({ color: SHOOT.BULLET_COLOR });
+    // 基色必须是白：实例色（setColorAt）是**乘**在材质色上的，材质非白会把加速蓝乘脏。
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     this._instanced = new THREE.InstancedMesh(geo, mat, this.capacity);
     this._instanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage); // 每帧更新
     this._instanced.frustumCulled = false;  // 单实例包围盒不准，关闭裁剪避免整体消失
@@ -21,6 +22,13 @@ export class BulletManager {
     scene.add(this._instanced);
 
     this._m = new THREE.Matrix4();
+
+    // 第四十九修：加速弹变蓝 —— 用实例色区分「加速期打出的子弹」，不额外增加 Draw Call。
+    //   这里先把整池刷成默认色，目的是**提前创建 instanceColor 缓冲**：
+    //   否则第一次加速时才 setColorAt 会现场上传一整块缓冲，正是要避免的卡顿点。
+    this._col = new THREE.Color();
+    for (let i = 0; i < this.capacity; i++) this._instanced.setColorAt(i, this._col.setHex(SHOOT.BULLET_COLOR));
+    if (this._instanced.instanceColor) this._instanced.instanceColor.needsUpdate = true;
   }
 
   _obtain() {
@@ -33,7 +41,7 @@ export class BulletManager {
     return b;
   }
 
-  spawn(position, direction, dmg) {
+  spawn(position, direction, dmg, boost = false) {
     // 池/容量耗尽则复用最旧的（保证 active 不超过 capacity，实例矩阵不越界）
     if (this.active.length >= this.capacity + this._pool.length) {
       this.release(this.active[0]);
@@ -45,6 +53,7 @@ export class BulletManager {
     b.vel.copy(direction).normalize().multiplyScalar(SHOOT.BULLET_SPEED);
     b.life = SHOOT.BULLET_LIFE;
     b.dmg = dmg;
+    b.boost = !!boost;  // 加速期打出的子弹（第四十九修）：变蓝 + 曳光加长，见 game._updateFx
   }
 
   release(b) {
@@ -63,9 +72,11 @@ export class BulletManager {
       const b = this.active[i];
       this._m.identity().setPosition(b.pos);
       this._instanced.setMatrixAt(i, this._m);
+      this._instanced.setColorAt(i, this._col.setHex(b.boost ? RAPID_FIRE.VISUAL.BULLET_COLOR : SHOOT.BULLET_COLOR));
     }
     this._instanced.count = this.active.length;
     this._instanced.instanceMatrix.needsUpdate = true;
+    if (this._instanced.instanceColor) this._instanced.instanceColor.needsUpdate = true;
   }
 
   update(dt) {

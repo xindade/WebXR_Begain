@@ -86,7 +86,7 @@ public class CastService extends Service {
     private Notification buildNotification() {
         NotificationCompat.Builder b = new NotificationCompat.Builder(this, CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
-                .setContentTitle("DeepmindHacker 运行中")
+                .setContentTitle("WeirdTurning 运行中")
                 .setContentText("本地资源服务与平台连接保持中")
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)

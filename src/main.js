@@ -15,6 +15,7 @@ import { LEVELS } from './content/levels.js';
 import { preloadDragonAssets } from './game/dragonLevel.js';
 import { preloadGLB } from './game/glbCache.js';
 import { SKY_PANORAMA, MASTER_GATE, RELEASE_UI, LOADOUTS } from './core/constants.js';
+import { parseGunDebug } from './core/gunDebug.js';   // 第五十四修：?gun=12x20 调试用「构筑拉满」
 import { MODEL_URL as PORTAL_MODEL_URL } from './game/portal.js';
 import { MODEL_URL as OPENING_MODEL_URL } from './game/openingModel.js';
 import { createCast } from './net/cast.js';
@@ -251,6 +252,7 @@ if (!RELEASE) {
 }
 function startGame(index, mode, intro, loadout = null) {
   pause.clear(); input.reset(); game.start(index, mode, intro, loadout);
+  applyGunDebug();   // 第五十四修：?gun=12x20 —— 每次开局后套用一次（player.reset 会先把属性复位）
 }
 
 
@@ -267,6 +269,19 @@ if (gunBtn) {
   };
 }
 const gunMode = () => (gunFull ? 'full' : 'preview');
+
+// ── 第五十四修 · 调试用「构筑拉满」：?gun=12x20（弹道 × 发每秒，各自夹到卡池上限）──
+//   放开弹道上限后，12 条弹道要抽十几关的卡才堆得出来 ⇒ 现场没法验收「扇形铺开」。
+//   这个开关直接给开局属性（?gun=8 / ?gun=x20 也可以），与 ?gate=0 / ?vrbtn 同级：
+//   属于现场排障开关，正式包也认，但平台拉起时不会带它，所以正常局不受影响。
+//   桌面预览（PC 上开 :8443）就能看扇形，不必进头显。
+const GUN_DEBUG = parseGunDebug(new URLSearchParams(location.search).get('gun'));
+function applyGunDebug() {
+  if (!GUN_DEBUG || !game.player) return;
+  if (GUN_DEBUG.shot) game.player.shotCount = GUN_DEBUG.shot;
+  if (GUN_DEBUG.rate) { game.player.fireRate = GUN_DEBUG.rate; input.setFireRate(GUN_DEBUG.rate); }
+  if (!RELEASE) console.log('[debug] ?gun →', game.player.shotCount + ' 弹道 ×', game.player.fireRate + ' 发/秒');
+}
 
 // VR 进入即开局（pendingStartIndex 决定从第几关开始，默认第 1 关）
 // pendingPlayIntro：是否播「进入游戏」开场视频 —— 只有主按钮进第 1 关时为 true；

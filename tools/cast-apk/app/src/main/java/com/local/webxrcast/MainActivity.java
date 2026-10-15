@@ -3272,10 +3272,10 @@ public class MainActivity extends AppCompatActivity {
      *
      * 【castlog6.txt 实测的平台侧时序】
      *   客户端（PC 192.168.31.228）经启动器（com.GoodNet.LauncherClient，Unity）给头显下发一批指令：
-     *     ① {"cmd":"kill", "msgData":"am force-stop --user 0 com.GoodNet.DeepmindHacker"}
+     *     ① {"cmd":"kill", "msgData":"am force-stop --user 0 com.DX.WeirdTurning"}
      *     ② cmd == copyfile
-     *     ③ {"cmd":"start","msgData":"am start --user 0 -n com.GoodNet.DeepmindHacker/.MainActivity -d <PC_IP>"}
-     *   启动器日志原文：`==CopyFile error2 : /storage/emulated/0/Android/data/com.GoodNet.DeepmindHacker/
+     *     ③ {"cmd":"start","msgData":"am start --user 0 -n com.DX.WeirdTurning/.MainActivity -d <PC_IP>"}
+     *   启动器日志原文：`==CopyFile error2 : /storage/emulated/0/Android/data/com.DX.WeirdTurning/
      *   files/setup.xml: open failed: ENOENT (No such file or directory)`
      *   —— 即**客户端要把 setup.xml 拷进我们的外部私有目录，但那个目录不存在**（Android 只在 App 调用过
      *   getExternalFilesDir() 之后才创建 .../Android/data/<pkg>/files）。这极可能就是「客户端判定没配好

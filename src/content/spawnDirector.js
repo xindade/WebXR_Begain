@@ -25,8 +25,9 @@
 //   link        'heal' → 与同批的心形怪连治疗线（表现）
 //   label       覆盖名牌文字（不写则用 ELITE_DISPLAY_NAME[type]）
 //
-// 本批只写 1 / 2 / 4 / 5 四关；机制关(3/9/15)与 Boss 关(6/12/18)不参与。
-// 未列出的普通关继续走 ELITE_SCHEDULE 三期脉冲（旧路径，未改动）。
+// 第五十修：按现场《关卡安排.log》把普通关**全部**铺开（1/2/4/5/7/8/10/11/13/14/16/17）；
+//   机制关(3/9/15)与 Boss 关(6/12/18)不配脚本（waves 走 Boss / 机制分支）。
+//   ⚠ 从此 ELITE_SCHEDULE 的三期脉冲**没有关卡在用了**（所有普通关都有脚本）——见 eliteMonsters.js 顶部的说明。
 // ============================================================
 
 // 层的基本信息：id / 光点颜色 / 中文名（日志与调试用）
@@ -55,6 +56,23 @@ export const ELITE_DISPLAY_NAME = {
   octopus:     '章鱼将军',
 };
 
+// 末尾精英（Boss 档）的名牌后缀（第四十九修）：
+//   末尾批 = 脚本里带 goldReturn 的那一批（横幅 → 清场融合 → 金点 → 抽卡），
+//   它是本关的收尾高潮 ⇒ 名字后统一加「 Boss」，与前面零星出现的普通精英区分开。
+export const CLIMAX_SUFFIX = ' Boss';
+
+/**
+ * 名牌文字（第四十九修）。纯函数，便于单测。
+ *   收「基础显示名」而不是敌种：调用方（balloons）本来就要在 ELITE_DISPLAY_NAME 查不到时
+ *   退回 ENEMY_TYPES 的 t.name，本函数只负责「加不加后缀」这一件事。
+ * @param {string} baseName 基础显示名（如「铁甲兵」）
+ * @param {boolean} climax  是否末尾精英（Boss 档）
+ * @returns {string} 普通精英 = 本名；末尾精英 = 本名 + CLIMAX_SUFFIX（「铁甲兵 Boss」）
+ */
+export function eliteLabelText(baseName, climax) {
+  return climax ? String(baseName) + CLIMAX_SUFFIX : String(baseName);
+}
+
 // 方位 → 横幅文案（横幅本身固定在准星正前方，只用文案表达方位）
 export const DIR_TEXT = { front: '前方', frontLeft: '左边', frontRight: '右边' };
 
@@ -67,55 +85,200 @@ export const FUSE = {
   ORB_SIZE: 0.22,   // 汇聚光点半径 m（普通出怪光点见 PORTAL_BEAM.SIZE）
 };
 
-// 本关时间轴脚本
+// 本关时间轴脚本（第五十修：按现场《关卡安排.log》把普通关全部铺开）
+//   时间口径以文件为准：横幅 31-32s → 清场融合 33s（7~11 关 36-37s → 38s；13/14/16/17 关 45-46s → 47s）。
+//   收尾融合一定落在倒计时内：1/2/4/5 关 40s，7/8/10/11 关 50s，13/14/16/17 关 60s（constants.LEVEL_SECONDS）。
+//   ⚠ 文件里只给第 5 关标了方位（左边）；其余关没写方位 → 统一走 front，需要「换方向」再单独加 dir。
 export const SPAWN_SCRIPT = {
-  // 第一关：40s 教学关 —— 前 30s 让玩家体验「开枪 / 伤害数字 / 连杀加速」，
-  //   30s 前沿方精英来袭 → 清场融合（未被击杀的杂鱼化成光点）→ 铁甲兵
+  // 01：前 30s 普通怪（密度 ×1.5，撑到连杀加速）→ 31-32s 横幅 → 33s 铁甲兵 Boss 清场融合
   1: {
     trashMul: 1.5,                     // 前 30s 杂鱼密度 ×1.5（撑到连杀加速）
     trashMulUntil: 30,
     events: [
-      { t: 30.0, do: 'banner', text: '前方精英来袭', dir: 'front' },
-      { t: 30.7, do: 'elite', combos: [{ type: 'eliteKnight', count: 1 }],
+      { t: 31.0, do: 'banner', text: '前方精英来袭', dir: 'front' },
+      { t: 33.0, do: 'elite', combos: [{ type: 'eliteKnight', count: 1 }],
         dir: 'front', via: 'merge', goldReturn: true },
     ],
   },
 
-  // 第二关：前 30s 每 10s 一个铁甲兵（蓝点从传送门直出，场上最多 1 只）
-  //   30s 左边精英来袭 → 融合出盾甲兵 → 击破后金点飞向选项卡（把视线从左引回正前方）
+  // 02：5s / 20s 各一只铁甲兵（蓝点从传送门直出，场上最多 1 只）→ 31-32s 横幅 → 33s 左边盾甲兵 Boss 融合
   2: {
     events: [
-      { t: 5, every: 10, until: 30, do: 'elite', combos: [{ type: 'eliteKnight', count: 1 }],
+      { t: 5,  do: 'elite', combos: [{ type: 'eliteKnight', count: 1 }],
         dir: 'front', via: 'portal', capOnField: 1 },
-      { t: 30.0, do: 'banner', text: '左边精英来袭', dir: 'frontLeft' },
-      { t: 30.7, do: 'elite', combos: [{ type: 'shield', count: 1 }],
+      { t: 20, do: 'elite', combos: [{ type: 'eliteKnight', count: 1 }],
+        dir: 'front', via: 'portal', capOnField: 1 },
+      { t: 31.0, do: 'banner', text: '左边精英来袭', dir: 'frontLeft' },
+      { t: 33.0, do: 'elite', combos: [{ type: 'shield', count: 1 }],
         dir: 'frontLeft', via: 'merge', goldReturn: true },
     ],
   },
 
-  // 第四关：技能验证关 —— 开局大量杂兵 + 横幅提示用技能（横幅前锁技能，防误按）
-  //   20s 两个铁甲兵（直出）→ 30s 右边精英来袭 → 融合 2 铁甲兵 + 1 盾甲兵（盾兵在后）→ 金点抽卡
+  // 04：开局 8 只批量杂鱼 + 横幅提示用技能（横幅前锁技能）；15s 铁甲兵 ×2（直出）
+  //     → 31-32s 横幅 → 33s 右边融合 2 铁甲兵 + 1 盾甲兵（盾兵在后）
   4: {
     skillLockUntil: 4.2,               // 进本关锁技能，横幅（0.4s 起 2s）结束后解锁
     events: [
       { t: 0.2, do: 'trashBurst', count: 8 },
       { t: 0.4, do: 'banner', text: '大量敌兵来袭，快使用技能' },
-      { t: 20.0, do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }],
+      { t: 15.0, do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }],
         dir: 'front', via: 'portal' },
-      { t: 30.0, do: 'banner', text: '右边精英来袭', dir: 'frontRight' },
-      { t: 30.7, do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }, { type: 'shield', count: 1 }],
+      { t: 31.0, do: 'banner', text: '右边精英来袭', dir: 'frontRight' },
+      { t: 33.0, do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }, { type: 'shield', count: 1 }],
         dir: 'frontRight', via: 'merge', goldReturn: true, tailType: 'shield' },
     ],
   },
 
-  // 第五关：左边来袭 = 治疗术士 ×1 + 铁甲兵 ×2（融合），治疗术士与铁甲兵之间连治疗线 + 绿色加号
+  // 05：5/15/25s 每 10s 一只铁甲兵（场上最多 1 只）→ 31-32s 横幅
+  //     → 33s 左边融合 治疗术士 ×1 + 铁甲兵 ×2（术士与铁甲兵之间有治疗线）
   5: {
     events: [
-      { t: 5, every: 10, until: 30, do: 'elite', combos: [{ type: 'eliteKnight', count: 1 }],
+      { t: 5, every: 10, until: 25, do: 'elite', combos: [{ type: 'eliteKnight', count: 1 }],
         dir: 'front', via: 'portal', capOnField: 1 },
-      { t: 30.0, do: 'banner', text: '左边精英来袭', dir: 'frontLeft' },
-      { t: 30.7, do: 'elite', combos: [{ type: 'heart', count: 1 }, { type: 'eliteKnight', count: 2 }],
+      { t: 31.0, do: 'banner', text: '左边精英来袭', dir: 'frontLeft' },
+      { t: 33.0, do: 'elite', combos: [{ type: 'heart', count: 1 }, { type: 'eliteKnight', count: 2 }],
         dir: 'frontLeft', via: 'merge', goldReturn: true, link: 'heal' },
+    ],
+  },
+
+  // 07：5s 铁甲兵 ×2 → 15s 铁甲兵 ×1 + 盾甲兵 ×1 → 25s 盾甲兵 ×1 + 铁甲兵 ×1
+  //     → 36-37s 横幅 → 38s 治疗术士 ×1 + 铁甲兵 Boss ×2 + 盾甲兵 Boss ×1（融合）
+  7: {
+    events: [
+      { t: 5,  do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }], dir: 'front', via: 'portal' },
+      { t: 15, do: 'elite', combos: [{ type: 'eliteKnight', count: 1 }, { type: 'shield', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 25, do: 'elite', combos: [{ type: 'shield', count: 1 }, { type: 'eliteKnight', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 36.0, do: 'banner', text: '前方精英来袭', dir: 'front' },
+      { t: 38.0, do: 'elite',
+        combos: [{ type: 'heart', count: 1 }, { type: 'eliteKnight', count: 2 }, { type: 'shield', count: 1 }],
+        dir: 'front', via: 'merge', goldReturn: true, link: 'heal' },
+    ],
+  },
+
+  // 08：5s 铁甲兵 ×2 → 15s 铁甲兵 ×2 + 盾甲兵 ×1 → 25s 盾甲兵 ×2 → 36-37s 横幅 → 38s 忍者 Boss ×1（融合）
+  8: {
+    events: [
+      { t: 5,  do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }], dir: 'front', via: 'portal' },
+      { t: 15, do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }, { type: 'shield', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 25, do: 'elite', combos: [{ type: 'shield', count: 2 }], dir: 'front', via: 'portal' },
+      { t: 36.0, do: 'banner', text: '前方精英来袭', dir: 'front' },
+      { t: 38.0, do: 'elite', combos: [{ type: 'ninja', count: 1 }],
+        dir: 'front', via: 'merge', goldReturn: true },
+    ],
+  },
+
+  // 10：5s 铁甲兵 ×2 → 15s 铁甲兵 ×2 + 盾甲兵 ×1 → 25s 铁甲兵 ×2 + 忍者 ×1
+  //     → 36-37s 横幅 → 38s 治疗术士 ×1 + 铁甲兵 Boss ×1 + 忍者 Boss ×2（融合）
+  10: {
+    events: [
+      { t: 5,  do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }], dir: 'front', via: 'portal' },
+      { t: 15, do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }, { type: 'shield', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 25, do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }, { type: 'ninja', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 36.0, do: 'banner', text: '前方精英来袭', dir: 'front' },
+      { t: 38.0, do: 'elite',
+        combos: [{ type: 'heart', count: 1 }, { type: 'eliteKnight', count: 1 }, { type: 'ninja', count: 2 }],
+        dir: 'front', via: 'merge', goldReturn: true, link: 'heal' },
+    ],
+  },
+
+  // 11：5s 铁甲兵 ×3 → 15s 铁甲兵 ×3 + 盾甲兵 ×1 → 25s 铁甲兵 ×2 + 治疗术士 ×1 + 忍者 ×2
+  //     → 36-37s 横幅 → 38s 幽灵 Boss（融合）
+  11: {
+    events: [
+      { t: 5,  do: 'elite', combos: [{ type: 'eliteKnight', count: 3 }], dir: 'front', via: 'portal' },
+      { t: 15, do: 'elite', combos: [{ type: 'eliteKnight', count: 3 }, { type: 'shield', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 25, do: 'elite',
+        combos: [{ type: 'eliteKnight', count: 2 }, { type: 'heart', count: 1 }, { type: 'ninja', count: 2 }],
+        dir: 'front', via: 'portal' },
+      { t: 36.0, do: 'banner', text: '前方精英来袭', dir: 'front' },
+      { t: 38.0, do: 'elite', combos: [{ type: 'ghost', count: 1 }],
+        dir: 'front', via: 'merge', goldReturn: true },
+    ],
+  },
+
+  // 13：5s 铁甲兵 ×2 + 忍者 ×1 → 15s 铁甲兵 ×1 + 盾甲兵 ×2 → 25s 铁甲兵 ×3 + 治疗术士 ×2 + 忍者 ×2
+  //     → 35s 忍者 ×3 → 45-46s 横幅 → 47s 幽灵 Boss + 忍者 Boss（融合）
+  13: {
+    events: [
+      { t: 5,  do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }, { type: 'ninja', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 15, do: 'elite', combos: [{ type: 'eliteKnight', count: 1 }, { type: 'shield', count: 2 }],
+        dir: 'front', via: 'portal' },
+      { t: 25, do: 'elite',
+        combos: [{ type: 'eliteKnight', count: 3 }, { type: 'heart', count: 2 }, { type: 'ninja', count: 2 }],
+        dir: 'front', via: 'portal' },
+      { t: 35, do: 'elite', combos: [{ type: 'ninja', count: 3 }], dir: 'front', via: 'portal' },
+      { t: 45.0, do: 'banner', text: '前方精英来袭', dir: 'front' },
+      { t: 47.0, do: 'elite', combos: [{ type: 'ghost', count: 1 }, { type: 'ninja', count: 1 }],
+        dir: 'front', via: 'merge', goldReturn: true },
+    ],
+  },
+
+  // 14：5s 铁甲兵 ×2 + 忍者 ×1 → 15s 铁甲兵 ×2 + 盾甲兵 ×2 → 25s 铁甲兵 ×2 + 治疗术士 ×1 + 忍者 ×2 + 幽灵 ×1
+  //     → 35s 忍者 ×3 → 45-46s 横幅 → 47s 章鱼 Boss（融合）
+  14: {
+    events: [
+      { t: 5,  do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }, { type: 'ninja', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 15, do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }, { type: 'shield', count: 2 }],
+        dir: 'front', via: 'portal' },
+      { t: 25, do: 'elite',
+        combos: [{ type: 'eliteKnight', count: 2 }, { type: 'heart', count: 1 }, { type: 'ninja', count: 2 },
+                 { type: 'ghost', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 35, do: 'elite', combos: [{ type: 'ninja', count: 3 }], dir: 'front', via: 'portal' },
+      { t: 45.0, do: 'banner', text: '前方精英来袭', dir: 'front' },
+      { t: 47.0, do: 'elite', combos: [{ type: 'octopus', count: 1 }],
+        dir: 'front', via: 'merge', goldReturn: true },
+    ],
+  },
+
+  // 16：5s 铁甲兵 ×2 + 幽灵 ×1 → 15s 铁甲兵 ×1 + 盾甲兵 ×2 → 25s 铁甲兵 ×3 + 治疗术士 ×2 + 忍者 ×2 + 幽灵 ×1
+  //     → 35s 忍者 ×3 → 45-46s 横幅 → 47s 章鱼 Boss + 幽灵 Boss（融合）
+  16: {
+    events: [
+      { t: 5,  do: 'elite', combos: [{ type: 'eliteKnight', count: 2 }, { type: 'ghost', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 15, do: 'elite', combos: [{ type: 'eliteKnight', count: 1 }, { type: 'shield', count: 2 }],
+        dir: 'front', via: 'portal' },
+      { t: 25, do: 'elite',
+        combos: [{ type: 'eliteKnight', count: 3 }, { type: 'heart', count: 2 }, { type: 'ninja', count: 2 },
+                 { type: 'ghost', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 35, do: 'elite', combos: [{ type: 'ninja', count: 3 }], dir: 'front', via: 'portal' },
+      { t: 45.0, do: 'banner', text: '前方精英来袭', dir: 'front' },
+      { t: 47.0, do: 'elite', combos: [{ type: 'octopus', count: 1 }, { type: 'ghost', count: 1 }],
+        dir: 'front', via: 'merge', goldReturn: true },
+    ],
+  },
+
+  // 17：5s 铁甲兵 ×2 + 幽灵 ×1 + 章鱼 ×1 → 15s 铁甲兵 ×1 + 盾甲兵 ×1 + 忍者 ×2 + 幽灵 ×2 + 章鱼 ×1
+  //     → 25s 铁甲兵 ×3 + 治疗术士 ×2 + 忍者 ×2 + 幽灵 ×2 + 章鱼 ×2 → 35s 忍者 ×3
+  //     → 45-46s 横幅 → 47s 章鱼 Boss + 幽灵 Boss + 忍者 Boss（融合）
+  17: {
+    events: [
+      { t: 5,  do: 'elite',
+        combos: [{ type: 'eliteKnight', count: 2 }, { type: 'ghost', count: 1 }, { type: 'octopus', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 15, do: 'elite',
+        combos: [{ type: 'eliteKnight', count: 1 }, { type: 'shield', count: 1 }, { type: 'ninja', count: 2 },
+                 { type: 'ghost', count: 2 }, { type: 'octopus', count: 1 }],
+        dir: 'front', via: 'portal' },
+      { t: 25, do: 'elite',
+        combos: [{ type: 'eliteKnight', count: 3 }, { type: 'heart', count: 2 }, { type: 'ninja', count: 2 },
+                 { type: 'ghost', count: 2 }, { type: 'octopus', count: 2 }],
+        dir: 'front', via: 'portal' },
+      { t: 35, do: 'elite', combos: [{ type: 'ninja', count: 3 }], dir: 'front', via: 'portal' },
+      { t: 45.0, do: 'banner', text: '前方精英来袭', dir: 'front' },
+      { t: 47.0, do: 'elite',
+        combos: [{ type: 'octopus', count: 1 }, { type: 'ghost', count: 1 }, { type: 'ninja', count: 1 }],
+        dir: 'front', via: 'merge', goldReturn: true },
     ],
   },
 };

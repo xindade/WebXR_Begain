@@ -17,7 +17,22 @@ const numGeo  = new THREE.PlaneGeometry(GRID.NUM_SIZE, GRID.NUM_SIZE);
 const numTexCache = new Map();                                    // 编号纹理 1..32 仅首次创建，永久复用
 function numTexture(n) {
   if (!numTexCache.has(n)) {
-    numTexCache.set(n, makeTextTexture({ text: String(n), font: 'bold 80px sans-serif', color: '#eaffff', width: 128, height: 128 }));
+    // 第五十修（现场：「地面的玻璃标号看不见/消失了」）→ 第五十一修续改（现场：「更多数字标号不见了」）：
+    //   · 画布 128 → 256、字号 80 → 150 → 190：同样大的一格里像素更密，头显里不糊；
+    //   · 深色圆角底板 + 深色描边：淡青玻璃 + 白字（或被正确格绿光冲亮时）对比度不够，
+    //     底板把「这个格子有编号」和背景彻底分开；
+    //   · ⚠ 关掉 mipmap（minFilter=LinearFilter + generateMipmaps=false）并给 8× 各向异性：
+    //     数字板是**低头掠射角**看的，走 mipmap 时远处几排会被平均成一团灰 ⇒ 看起来就是「号没了」。
+    const tex = makeTextTexture({
+      text: String(n), font: 'bold 190px sans-serif', color: '#ffffff',
+      bg: 'rgba(0,26,40,0.42)', bgRadius: 46,
+      stroke: 'rgba(0,20,32,0.95)', strokeW: 14, width: 256, height: 256,
+    });
+    tex.minFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    tex.anisotropy = 8;          // three 会按设备上限自动收敛
+    tex.needsUpdate = true;
+    numTexCache.set(n, tex);
   }
   return numTexCache.get(n);
 }
@@ -47,6 +62,7 @@ export class GlassGrid {
         this.group.add(mesh);
         const numMesh = this._makeNumMesh(n);
         numMesh.position.set(x, GRID.Y + GRID.NUM_Y_OFFSET, z);
+        numMesh.visible = true;   // 第五十修：重建一律显式可见（防上一轮踩碎留下的 visible=false 残留）
         this.group.add(numMesh);
         this.cells[n] = { index: n, x, z, mesh, numMesh, broken: false, _breakT: undefined };
       }
@@ -54,6 +70,8 @@ export class GlassGrid {
   }
 
   _makeCell() {
+    // 第五十修：编号平面在每个格子上都必须真的可见 —— 重建时显式复位一次可见性，
+    //   防「上一轮踩碎某格 → 该格 numMesh.visible=false」这类状态在重建后残留（现场报过单个编号消失）。
     // 玻璃外观用「半透明 + clearcoat 高光」模拟；故意去掉 transmission/thickness/ior：
     // MeshPhysicalMaterial.transmission>0 会强制每帧多做一次全场景透射渲染 pass，
     // 32 个格子叠加让第九关走格子阶段帧率只剩普通关一半。空场景里折射几乎无可见差异，却极费。
@@ -75,7 +93,8 @@ export class GlassGrid {
 
   // 编号：平躺于格面正中心的平面，复用共享几何与共享编号纹理（朝上可读、贴表面）
   _makeNumMesh(n) {
-    const mat = new THREE.MeshBasicMaterial({ map: numTexture(n), transparent: true, depthWrite: false });
+    // transparent + depthWrite:false：编号永远贴在自己那格玻璃的**上面**，不被玻璃自身遮住
+    const mat = new THREE.MeshBasicMaterial({ map: numTexture(n), transparent: true, depthWrite: false, depthTest: true });
     const m = new THREE.Mesh(numGeo, mat);
     m.rotation.x = -Math.PI / 2; // 平躺于 XZ 面，朝上可读
     m.renderOrder = 2;

@@ -7,18 +7,21 @@
 // 属性卡：icon 字段标识卡面简笔画图案；color 用于边框/图标色，rarity 仅作配色不做数值（加法叠加 + 封顶）。
 export const ATTR_TYPES = [
   {
-    id: 'fireRate', label: '射速+2', desc: '射速+2/秒（上限14）',
+    id: 'fireRate', label: '射速+2', desc: '射速+2/秒（上限20）',
     color: '#2e86de', icon: 'fireRate',
-    // 落到真实节流源（input.setFireRate）：选卡后射速真正提升，封顶 14 发/秒
+    // 落到真实节流源（input.setFireRate）：选卡后射速真正提升。
+    // 上限只写在 ATTRIBUTE_STATS 一处（第五十四修：14 → 20），卡面文案也必须跟着改（单测会锁）。
     apply: (p) => {
-      p.fireRate = Math.min(14, (p.fireRate || 2) + 2);
+      p.fireRate = Math.min(ATTRIBUTE_STATS.fireRate[2], (p.fireRate || 2) + 2);
       p.input?.setFireRate(p.fireRate);
     },
   },
   {
-    id: 'multiShot', label: '额外子弹+1', desc: '每发+1子弹（上限7）',
+    id: 'multiShot', label: '额外子弹+1', desc: '每发+1子弹（上限12）',
     color: '#27ae60', icon: 'multiShot',
-    apply: (p) => { p.shotCount = Math.min(7, (p.shotCount || 1) + 1); },
+    // 上限见 ATTRIBUTE_STATS.multiShot（第五十四修：7 → 12）。
+    // 扇形半角随弹道数增长，所以「加弹道」是既加伤害又慢慢铺开扇形，见 player.fire。
+    apply: (p) => { p.shotCount = Math.min(ATTRIBUTE_STATS.multiShot[2], (p.shotCount || 1) + 1); },
   },
   {
     id: 'atk', label: '攻击力+100', desc: '攻击力+100（上限700）',
@@ -51,8 +54,10 @@ export const ATTR_TYPES = [
   },
 ];
 
-const ATTRIBUTE_STATS = {
-  fireRate: ['fireRate', 2, 14, 2], multiShot: ['shotCount', 1, 7, 1], atk: ['atk', 100, 700, 100],
+// 成长上限的**唯一口径**（第五十四修起，ATTR_TYPES 里的 apply 也读这里，避免「卡面写一套、代码封一套」）。
+// 格式：[player 字段, 每次步进, 上限/下限, 基线]；卡面 desc 里写的数字必须与 limit 一致（tests/bullet-volume.test.mjs 会锁）。
+export const ATTRIBUTE_STATS = {
+  fireRate: ['fireRate', 2, 20, 2], multiShot: ['shotCount', 1, 12, 1], atk: ['atk', 100, 700, 100],
   skillCost: ['skillCost', -100, 100, 500], skillDamage: ['skillDamageMul', 1, 5, 1],
   selfRepair: ['regen', 2, 10, 0], hp: ['maxHp', 50, 400, 100],
 };

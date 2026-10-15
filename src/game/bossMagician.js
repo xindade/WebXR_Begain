@@ -118,7 +118,9 @@ export class MagicianBoss {
   _spawnProxy() {
     const I = MAGICIAN_BOSS.INTRO;
     const pos = new THREE.Vector3(I.POS[0], I.POS[1], I.POS[2]);
-    this.spawn('basic', pos, {
+    // 第五十一修：代理类型从 'basic' 换成专用 'bossProxy'（无模型/不在立绘白名单）
+    //   —— 借 'basic' 时异步挂上的基础怪立绘会把 hitRadius 改写成薄板，Boss 因此打不中。
+    this.spawn('bossProxy', pos, {
       effect: false,                            // Boss 代理不走光点，直接落地
       onSpawn: (b) => {
         const hp = MAGICIAN_BOSS.HP_BASE + (this.getPlayerDPS ? this.getPlayerDPS() : 0) * MAGICIAN_BOSS.HP_DPS_SEC;
@@ -355,6 +357,10 @@ export class MagicianBoss {
     );
     const opts = {
       group: 'magicianSub',    // ★ 第三十九修：分组 → 通关/清场时 _cancelPendingGroup 可撤掉在飞光点
+      // 第五十一修：忍者/幽灵/章鱼在 Boss 关的血量 = 默认血量 + 玩家 DPS × 10（见 content/eliteMonsters.js）
+      //   ⚠ 守卫必须是 rangedHpOpts —— 曾误写成 this.waves.rangedHp（恒为 undefined）⇒ 口径静默失效、
+      //     Boss 召唤的远程精英退回敌种原生血量。waves.rangedHpOpts 缺失时（老存档/桩对象）保持 null。
+      balloon: this.waves.rangedHpOpts ? this.waves.rangedHpOpts(type) : null,
       onSpawn: (b) => {
         this._pendingRefill = Math.max(0, this._pendingRefill - 1);
         if (elite) this._pendingElite = Math.max(0, this._pendingElite - 1);

@@ -10,7 +10,7 @@ import {
   scriptFor, layerOfType, comboTotal, scriptEventTimes, eliteEvents,
   isClimaxEvent, climaxEliteHp, eliteTravelSpeed,
 } from '../src/content/spawnDirector.js';
-import { ELITE_TUNING } from '../src/core/constants.js';
+import { ELITE_TUNING, SPAWN_LAYER, levelSecondsOf } from '../src/core/constants.js';
 import { ENEMY_TYPES } from '../src/content/enemies.js';
 import { LEVELS, isBoss, isLaser } from '../src/content/levels.js';
 
@@ -66,14 +66,19 @@ test('comboTotal 累加各 combo 的 count', () => {
   assert.equal(comboTotal(null), 0);
 });
 
-test('脚本只写给普通关：机制关(3/9/15)与 Boss 关(6/12/18)必须为 null', () => {
-  assert.deepEqual(Object.keys(SPAWN_SCRIPT).map(Number).sort((a, b) => a - b), [1, 2, 4, 5]);
+test('脚本只写给普通关：机制关(3/9/15)与 Boss 关(6/12/18)必须为 null，其余普通关全部有编排', () => {
+  // 第五十修：按现场《关卡安排.log》把普通关**全部**铺开（此前只有 1/2/4/5）。
+  assert.deepEqual(Object.keys(SPAWN_SCRIPT).map(Number).sort((a, b) => a - b),
+    [1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 16, 17]);
   for (const lv of LEVELS) {
     const s = scriptFor(lv.n);
-    if (isBoss(lv) || isLaser(lv)) assert.equal(s, null, `第${lv.n}关是 Boss/机制关，不该写脚本`);
+    if (isBoss(lv) || isLaser(lv)) {
+      assert.equal(s, null, `第${lv.n}关是 Boss/机制关，不该写脚本`);
+      continue;
+    }
+    assert.ok(s, `第${lv.n}关是普通关，必须配脚本（否则没有任何精英会出）`);
   }
-  assert.ok(scriptFor(1) && scriptFor(2) && scriptFor(4) && scriptFor(5));
-  assert.equal(scriptFor(7), null);   // 未编排的普通关 → 走旧的三期脉冲
+  assert.ok(scriptFor(7) && scriptFor(17), '第 7 / 17 关已按文件编排');
 });
 
 test('事件字段合法：do / via 取值、横幅有文案、方位可翻译、精英有 combos', () => {
@@ -96,32 +101,42 @@ test('事件字段合法：do / via 取值、横幅有文案、方位可翻译�
   }
 });
 
-test('第一关：前 30s 提密度 + 30s 出「前方」精英（清场融合 + 金点抽卡）', () => {
+test('第一关：前 30s 提密度 + 31-32s 横幅 + 33s「前方」精英（清场融合 + 金点抽卡）', () => {
   const s = scriptFor(1);
   assert.equal(s.trashMul, 1.5);
   assert.equal(s.trashMulUntil, 30);
+  const banner = s.events.find((e) => e.do === 'banner');
+  assert.ok(banner, '第 1 关要有收尾前的横幅');
+  assert.ok(banner.t >= 31 && banner.t < 33, '横幅 31-32s');
   const elite = eliteEvents(1);
   assert.equal(elite.length, 1);
   assert.equal(elite[0].dir, 'front');
   assert.equal(elite[0].via, 'merge');
   assert.equal(elite[0].goldReturn, true);
-  assert.ok(elite[0].t >= 30 && elite[0].t <= 31);   // 横幅之后 0.7s
+  assert.equal(elite[0].t, 33.0);                    // 文件：33 秒清场融合
+  assert.ok(elite[0].t > banner.t, '融合必须在横幅之后');
 });
 
-test('第二关：30s 前每 10s 一只前向铁甲兵（传送门、场上最多 1），30s 左边融合盾甲兵', () => {
+test('第二关：5s / 20s 各一只前向铁甲兵（传送门、场上最多 1），31-32s 横幅 + 33s 左边融合盾甲兵', () => {
   const s = scriptFor(2);
-  const portal = s.events.find((e) => e.every === 10);
-  assert.ok(portal);
-  assert.equal(portal.capOnField, 1);
-  assert.equal(portal.via, 'portal');
-  assert.equal(portal.dir, 'front');
+  const portal = s.events.filter((e) => e.do === 'elite' && e.via === 'portal');
+  assert.equal(portal.length, 2, '文件：第 2 关是 5s / 20s 两只铁甲兵（不是每 10s）');
+  assert.deepEqual(portal.map((e) => e.t), [5, 20]);
+  for (const p of portal) {
+    assert.equal(p.capOnField, 1);
+    assert.equal(p.dir, 'front');
+    assert.equal(p.combos[0].type, 'eliteKnight');
+  }
+  const banner = s.events.find((e) => e.do === 'banner');
+  assert.ok(banner.t >= 31 && banner.t < 33, '横幅 31-32s');
   const last = eliteEvents(2).pop();
   assert.equal(last.dir, 'frontLeft');
   assert.equal(last.via, 'merge');
+  assert.equal(last.t, 33.0);
   assert.equal(last.combos[0].type, 'shield');
 });
 
-test('第四关：开局批量杂鱼 + 锁技能；20s 两铁甲兵；30s 右边融合 2 铁甲兵 + 1 盾甲兵', () => {
+test('第四关：开局批量杂鱼 + 锁技能；15s 两铁甲兵；31-32s 横幅 + 33s 右边融合 2 铁甲兵 + 1 盾甲兵', () => {
   const s = scriptFor(4);
   assert.ok(s.skillLockUntil > 0, '第4关必须锁技能');
   const burst = s.events.find((e) => e.do === 'trashBurst');
@@ -130,15 +145,19 @@ test('第四关：开局批量杂鱼 + 锁技能；20s 两铁甲兵；30s 右边
   assert.equal(eliteEvs.length, 2);
   assert.equal(comboTotal(eliteEvs[0].combos), 2);
   assert.equal(eliteEvs[0].via, 'portal');
+  assert.equal(eliteEvs[0].t, 15.0);                 // 文件：15s 铁甲兵×2 直出
   const last = eliteEvs[1];
   assert.equal(last.dir, 'frontRight');
   assert.equal(last.via, 'merge');
   assert.equal(comboTotal(last.combos), 3);
   assert.equal(last.combos[last.combos.length - 1].type, 'shield');   // 盾兵在后
+  assert.equal(last.t, 33.0);                        // 文件：33 秒清场融合
 });
 
-test('第五关：左边融合 治疗术士 + 2 铁甲兵（带治疗线）', () => {
+test('第五关：5/15/25s 铁甲兵 + 31-32s 横幅 + 33s 左边融合 治疗术士 + 2 铁甲兵（带治疗线）', () => {
+  assert.deepEqual(scriptEventTimes(eliteEvents(5)[0], 0, 60), [5, 15, 25]);   // 文件：5/15/25s 每 10s 一只
   const last = eliteEvents(5).pop();
+  assert.equal(last.t, 33.0);
   assert.equal(last.dir, 'frontLeft');
   assert.equal(last.via, 'merge');
   assert.equal(last.link, 'heal');
@@ -223,4 +242,81 @@ test('末尾精英速度：10 秒正好走出生距离的 2/3（剩下的 1/3 �
   const v = eliteTravelSpeed(ELITE_TUNING);
   assert.equal(v * ELITE_TUNING.TRAVEL_SECONDS, ELITE_TUNING.SPAWN_DIST * ELITE_TUNING.TRAVEL_FRACTION);
   assert.ok(Math.abs(ELITE_TUNING.TRAVEL_FRACTION - 2 / 3) < 1e-9);
+});
+
+// ============================================================
+// 第五十修：按现场《关卡安排.log》铺开全部普通关
+//   锁的重点是**时刻表**（玩家第几秒遇到什么），它是「现场才炸」的类型：
+//   写错一个 t 在头显里只表现为「这关没劲」，本地不跑一遍根本看不出来。
+// ============================================================
+
+test('第五十修：各关的精英波次时刻与《关卡安排.log》逐秒一致', () => {
+  // 键 = 关卡号，值 = 本关所有精英批次的触发秒（循环事件已展开）；文件里的三种节奏：
+  //   1/2/4/5 关 → 33s 收尾；7/8/10/11 关 → 38s 收尾；13/14/16/17 关 → 47s 收尾
+  const FILE = {
+    1:  [33.0],
+    2:  [5, 20, 33.0],
+    4:  [15.0, 33.0],
+    5:  [5, 15, 25, 33.0],
+    7:  [5, 15, 25, 38.0],
+    8:  [5, 15, 25, 38.0],
+    10: [5, 15, 25, 38.0],
+    11: [5, 15, 25, 38.0],
+    13: [5, 15, 25, 35, 47.0],
+    14: [5, 15, 25, 35, 47.0],
+    16: [5, 15, 25, 35, 47.0],
+    17: [5, 15, 25, 35, 47.0],
+  };
+  for (const [n, want] of Object.entries(FILE)) {
+    const got = eliteEvents(Number(n))
+      .flatMap((ev) => scriptEventTimes(ev, 0, 300))
+      .map((x) => Math.round(x * 1000) / 1000)
+      .sort((a, b) => a - b);
+    assert.deepEqual(got, want, `第 ${n} 关的波次时刻与文件不一致`);
+  }
+  assert.equal(Object.keys(FILE).length, Object.keys(SPAWN_SCRIPT).length, `有 ${Object.keys(SPAWN_SCRIPT).length} 关编排，文件表只覆盖了 ${Object.keys(FILE).length} 关`);
+});
+
+test('第五十修：横幅（2s）必须早于收尾融合，且融合落在本关倒计时之内', () => {
+  for (const [n, s] of Object.entries(SPAWN_SCRIPT)) {
+    const climax = s.events.filter((e) => e.do === "elite" && e.goldReturn === true);
+    assert.equal(climax.length, 1, `第 ${n} 关必须恰好一次收尾融合`);
+    const fuse = climax[0];
+    assert.equal(fuse.via, "merge", `第 ${n} 关收尾必须是清场融合`);
+    const last = s.events.filter((e) => e.do === "elite").pop();
+    assert.equal(last, fuse, `第 ${n} 关收尾必须是最后一批精英`);
+    const banners = s.events.filter((e) => e.do === "banner");
+    const pre = banners[banners.length - 1];
+    assert.ok(pre && pre.t < fuse.t, `第 ${n} 关横幅必须在融合之前`);
+    assert.ok(fuse.t < levelSecondsOf(Number(n)),
+      `第 ${n} 关融合 ${fuse.t}s 必须早于倒计时 ${levelSecondsOf(Number(n))}s（否则来不及打完）`);
+    assert.equal(pre.dir, fuse.dir, `第 ${n} 关横幅方位要与融合方位一致`);
+  }
+});
+
+test('第五十修：同屏精英上限必须容得下最大的一批（否则整批会被静静吞掉）', () => {
+  let maxBatch = 0;
+  const owners = [];
+  for (const [n, s] of Object.entries(SPAWN_SCRIPT)) {
+    for (const ev of s.events) {
+      if (ev.do !== "elite") continue;
+      const total = comboTotal(ev.combos);
+      if (total > maxBatch) { maxBatch = total; owners.length = 0; owners.push(n); }
+      else if (total === maxBatch) owners.push(n);
+    }
+  }
+  assert.ok(maxBatch >= 11, `最大单批 ${maxBatch} 只（第 ${owners.join("/")} 关）—— 文件里第 17 关 25s 是 11 只`);
+  assert.ok(SPAWN_LAYER.MAX_ELITES > maxBatch,
+    `MAX_ELITES(${SPAWN_LAYER.MAX_ELITES}) 必须大于最大单批 ${maxBatch}，否则 waves._spawnEliteEvent 会整批跳过`);
+});
+
+test('第五十修：治疗术士（heart）出现的地方都是精英批次（否则 ELITE_ONLY 的治疗找不到目标）', () => {
+  const withHeart = [];
+  for (const [n, s] of Object.entries(SPAWN_SCRIPT)) {
+    for (const ev of s.events) {
+      if (ev.do !== "elite") continue;
+      if (ev.combos.some((c) => c.type === "heart")) withHeart.push(Number(n));
+    }
+  }
+  assert.deepEqual([...new Set(withHeart)].sort((a, b) => a - b), [5, 7, 10, 11, 13, 14, 16, 17]);
 });

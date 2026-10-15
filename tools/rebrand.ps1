@@ -2,8 +2,9 @@
   rebrand.ps1 —— 一键改头显端 APK 的「安装身份」：包名 / 应用显示名 / 版本名 / 版本号
   （可选）一起改 PC 端 exe 的 appId / productName，并重新打包、拷到交付目录。
 
-  为什么需要它：本项目现在的 applicationId（com.GoodNet.DeepmindHacker）、
-  显示名（DeepmindHacker）、版本号（2.0.5/205）都是**临时顶替**来的，正式发行要换成自己的。
+  为什么需要它：本项目当前的 applicationId / 显示名 / 版本号都是**临时顶替**别的游戏来的
+  （当前：com.DX.WeirdTurning / WeirdTurning / 1.5.3；2026-10-15 从 com.GoodNet.DeepmindHacker 换过来），
+  正式发行要换成自己的。
 
   用法（仓库根目录）：
     powershell -ExecutionPolicy Bypass -File tools\rebrand.ps1 -PackageId com.mygame.balloon -AppName 打气球 -VersionName 1.0.0

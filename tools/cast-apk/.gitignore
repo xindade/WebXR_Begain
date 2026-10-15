@@ -12,3 +12,6 @@ local.properties
 # 签名相关
 *.jks
 *.keystore
+
+# 交付产物：APK 约 127MB，走本地/网盘分发，绝不入库（由 build-apk.ps1 / rebrand.ps1 生成）
+/dist

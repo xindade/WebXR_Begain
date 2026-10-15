@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { ENEMY_TYPES } from '../content/enemies.js';
-import { BALLOON, MOVE, SHURIKEN, PROJECTILE, ELITE_LABEL } from '../core/constants.js';
-import { ELITE_DISPLAY_NAME } from '../content/spawnDirector.js';
+import { BALLOON, MOVE, SHURIKEN, PROJECTILE, ELITE_LABEL, BOSS_LABEL, HEAL_LINK } from '../core/constants.js';
+import { ELITE_DISPLAY_NAME, eliteLabelText } from '../content/spawnDirector.js';
 import { attachBalloonModel, fitToRadius, loadBalloonModel, attachDragonSegment, hideLoadDot } from './balloonModels.js';
 
 // 程序化笑脸贴图（按颜色缓存）——占位怪也复用调色板
@@ -24,10 +24,23 @@ function faceTexture(hex) {
 
 const COLORS = ['#ff5a5f', '#ffb400', '#ffd166', '#06d6a0', '#118ab2', '#9b5de5', '#f15bb5'];
 
+// 圆角矩形路径（名牌底板用）—— 与 warningBanner._roundRect 同源，但那份只服务横幅，故各自保留一份。
+function _roundRectPath(x, rx, ry, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  x.beginPath();
+  x.moveTo(rx + rr, ry);
+  x.arcTo(rx + w, ry, rx + w, ry + h, rr);
+  x.arcTo(rx + w, ry + h, rx, ry + h, rr);
+  x.arcTo(rx, ry + h, rx, ry, rr);
+  x.arcTo(rx, ry, rx + w, ry, rr);
+  x.closePath();
+}
+
 // 模块级临时量：消除 update 热循环里每怪每帧 new Vector3 / new Color 的 GC 压力
 const _moveDir   = new THREE.Vector3();   // update() 朝玩家方向（每怪复用，调用即消费）
 const _camPos    = new THREE.Vector3();   // update() 血条 lookAt 的相机世界坐标
 const _shieldSp  = new THREE.Vector3();   // getShieldBlock() 盾牌世界坐标
+const _flashCol  = new THREE.Color();     // 第四十九修：闪烁色的临时量（受击白 / 回血绿），避免每帧 new
 const _shieldCt  = new THREE.Vector3();   // getShieldBlock() 气球中心世界坐标
 const _orbTmp    = new THREE.Vector3();   // 忍者蓄力光球定位临时量（_updateChargeOrb 复用，消除每帧 new 的 GC 压力）
 
@@ -40,6 +53,10 @@ export class Balloon {
     // 精英怪：允许外部覆盖血量（由 waves._fireElitePhase 按敌种计算 = ELITE_BASE_HP[型] + DPS×秒，叠加式）并标记
     if (opts && opts.hp != null) { this.maxHp = opts.hp; this.hp = opts.hp; }
     this.isElite = !!(opts && opts.isElite);
+    // 第四十九修：末尾精英（Boss 档）= 关卡收尾那一批（waves._eliteOpts 判定，判据是事件带 goldReturn）
+    //   climax → 名牌用 BOSS_LABEL 并加「 Boss」后缀；batchId → 供 waves._updateEliteWatch 按批判定
+    this.isClimax = !!(opts && opts.climax);
+    this.batchId = (opts && opts.batchId) || 0;
     this.speed = t.speed;
     // 第四十七修：精英体型倍数（sizeMul）与定速（speed）由 waves._eliteOpts 传入；
     //   这里只负责「按倍数把模型/占位/盾/血条/命中球一起放大」。
@@ -104,8 +121,11 @@ export class Balloon {
     // 精英名牌（第四十六修）：有模型的小怪平时不挂名牌 —— 精英必须挂
     //   （红字 + 描边 + 半透明底），否则玩家分不清「这只和别的不一样」，
     //   也不可能知道该先打谁（治疗术士 / 盾甲兵 / 章鱼将军的优先级全靠它传达）。
-    if (this.isElite && ELITE_LABEL.ENABLED && t.model) {
-      this._makeNameLabel(ELITE_DISPLAY_NAME[t.id] || t.name, ELITE_LABEL);
+    // 第四十九修：分两档 —— 普通精英（冰蓝）与末尾精英/Boss（金红 + 「 Boss」后缀）。
+    //   查不到中文名时退回 ENEMY_TYPES 的 name（eliteLabelText 只负责加后缀）。
+    const labelStyle = this.isClimax ? BOSS_LABEL : ELITE_LABEL;
+    if (this.isElite && labelStyle.ENABLED && t.model) {
+      this._makeNameLabel(eliteLabelText(ELITE_DISPLAY_NAME[t.id] || t.name, this.isClimax), labelStyle);
     }
 
     // 盾兵怪：在骑士模型基础上附加「会旋转的盾牌」（绕骑士旋转，挡子弹）
@@ -152,6 +172,10 @@ export class Balloon {
     this._bobFreq  = 0.5 + Math.random() * 0.8;                       // 浮动频率(Hz)，个体不同
     this._bobT = 0;
     this.controlled = false;   // 由外部(如龙Boss)逐帧接管位置时为 true
+    // 第四十九修：治疗术士**站桩**（现场需求：「不应该移动」）。复用 controlled 的既有语义：
+    //   跳过「朝玩家自动移动」+ 跳过分离力推挤（不会被别的怪拱走），但仍 lookAt / 可受击 / 血条照常。
+    if (t.behavior === 'heal') this.controlled = true;
+    this._flashColor = 0xffffff;  // 第四十九修：闪烁色（受击=白，回血=粉，见 flashHeal）
     this._pendingKill = false; // 聚宝盆超时等脚本化死亡标记
     this.group = this.mesh;
   }
@@ -176,27 +200,18 @@ export class Balloon {
     this.hitRadius = this.effectiveRadius * 2.2; // 占位胶囊+眼睛视觉高于球体，放大命中球直到上半身
   }
 
-  // 名牌：半透明底 + 文字，挂在怪上方；Sprite 始终朝向相机，depthTest 关闭永不被遮挡
-  //   第四十六修：支持样式（精英 = 红字 + 深色描边；占位怪仍用旧的白字样式）。
+  // 名牌：底板 + 文字，挂在怪上方；Sprite 始终朝向相机，depthTest 关闭永不被遮挡。
+  //   第四十六修：支持样式（style）。第四十九修：样式字段扩充为「渐变底 / 外描边 / 内衬发丝线 /
+  //   四角括号 / 左右装饰 / 文字发光」—— 于是「普通精英（冰蓝）」与「末尾精英 Boss（金红 + 后缀）」
+  //   只是两组数字（constants.ELITE_LABEL / BOSS_LABEL），绘制代码只有这一份。
+  //   不传 style（占位怪的老用法）时行为与旧版一致：纯半透明底 + 描边白字，无圆角无边框。
   _makeNameLabel(text, style = null) {
     const S = style || {};
     const W = S.CANVAS_W || 256, H = S.CANVAS_H || 64;
     const c = document.createElement('canvas');
     c.width = W; c.height = H;
     const x = c.getContext('2d');
-    x.fillStyle = S.BG || 'rgba(0,0,0,0.55)';
-    x.fillRect(0, 0, W, H);
-    x.font = S.FONT || 'bold 38px sans-serif';
-    x.textAlign = 'center'; x.textBaseline = 'middle';
-    const by = H * 0.54;                       // 基线略低一点，视觉居中（描边会比字高一点）
-    if (S.OUTLINE) {                           // 描边先画，再压字 —— 远看也认得出
-      x.lineWidth = S.OUTLINE_W || 6;
-      x.strokeStyle = S.OUTLINE;
-      x.lineJoin = 'round';
-      x.strokeText(text, W / 2, by);
-    }
-    x.fillStyle = S.COLOR || '#ffffff';
-    x.fillText(text, W / 2, by);
+    this._drawNameLabel(x, W, H, text, S);
     const tex = new THREE.CanvasTexture(c);
     const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
     const sp = new THREE.Sprite(mat);
@@ -210,6 +225,77 @@ export class Balloon {
     sp.renderOrder = 999;
     this.mesh.add(sp);
     this.label = sp;
+  }
+
+  // 名牌绘制（纯 Canvas2D，无 THREE 依赖 —— 便于单测直接喂一个假 ctx 断言画笔调用）
+  _drawNameLabel(x, W, H, text, S) {
+    const bgTop = S.BG_TOP || S.BG || 'rgba(0,0,0,0.55)';
+    const bgBottom = S.BG_BOTTOM || S.BG || bgTop;
+    const radius = S.RADIUS || 0;
+    // ① 底板：垂直渐变（上浅下深）—— 避免「一块死板的纯色方块」
+    const grad = x.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, bgTop);
+    grad.addColorStop(1, bgBottom);
+    x.fillStyle = grad;
+    if (radius > 0) { _roundRectPath(x, 0, 0, W, H, radius); x.fill(); }
+    else x.fillRect(0, 0, W, H);
+
+    // ② 外描边
+    if (S.EDGE && S.EDGE_W) {
+      const i = S.EDGE_W / 2;
+      x.lineWidth = S.EDGE_W;
+      x.strokeStyle = S.EDGE;
+      if (radius > 0) { _roundRectPath(x, i, i, W - i * 2, H - i * 2, Math.max(0, radius - i)); x.stroke(); }
+      else x.strokeRect(i, i, W - i * 2, H - i * 2);
+    }
+
+    // ③ 内衬发丝线（贴边一圈）—— 让底板有「双层」质感，不再是单薄的一块
+    if (S.HAIRLINE) {
+      const k = S.HAIRLINE_INSET || 12;
+      x.lineWidth = 1.5;
+      x.strokeStyle = S.HAIRLINE;
+      if (radius > 0) { _roundRectPath(x, k, k, W - k * 2, H - k * 2, Math.max(0, radius - k)); x.stroke(); }
+      else x.strokeRect(k, k, W - k * 2, H - k * 2);
+    }
+
+    // ④ 四角括号（只画角、不封边 —— 比整圈方框利落得多）
+    if (S.CORNER && S.CORNER_W) {
+      const ci = S.CORNER_INSET || 8, cl = S.CORNER_LEN || 30;
+      x.strokeStyle = S.CORNER;
+      x.lineWidth = S.CORNER_W;
+      x.lineCap = 'round';
+      for (const [cx, cy, sx, sy] of [[ci, ci, 1, 1], [W - ci, ci, -1, 1], [ci, H - ci, 1, -1], [W - ci, H - ci, -1, -1]]) {
+        x.beginPath(); x.moveTo(cx, cy); x.lineTo(cx + sx * cl, cy); x.stroke();
+        x.beginPath(); x.moveTo(cx, cy); x.lineTo(cx, cy + sy * cl); x.stroke();
+      }
+    }
+
+    // ⑤ 左右装饰（Boss 档：两枚菱形 + 一条短横线）—— 一眼区分「这是收尾那一只」
+    if (S.ORNAMENT === 'diamond') {
+      const cy = H / 2, d = Math.min(17, H * 0.14);
+      x.fillStyle = S.EDGE || S.COLOR || '#ffc53d';
+      for (const cx of [H * 0.26, W - H * 0.26]) {
+        x.beginPath();
+        x.moveTo(cx, cy - d); x.lineTo(cx + d, cy); x.lineTo(cx, cy + d); x.lineTo(cx - d, cy);
+        x.closePath(); x.fill();
+      }
+    }
+
+    // ⑥ 文字（先描边再压字，远看也认得出；Boss 档带外发光）
+    const by = H * 0.54;                       // 基线略低一点，视觉居中（描边会比字高一点）
+    x.font = S.FONT || 'bold 38px sans-serif';
+    x.textAlign = 'center';
+    x.textBaseline = 'middle';
+    if (S.GLOW) { x.shadowColor = S.EDGE || S.COLOR || '#ffffff'; x.shadowBlur = S.GLOW; }
+    if (S.OUTLINE) {
+      x.lineWidth = S.OUTLINE_W || 6;
+      x.strokeStyle = S.OUTLINE;
+      x.lineJoin = 'round';
+      x.strokeText(text, W / 2, by);
+    }
+    x.shadowBlur = 0;
+    x.fillStyle = S.COLOR || '#ffffff';
+    x.fillText(text, W / 2, by);
   }
 
   // 盾兵怪：骑士模型 + 会旋转的盾牌（盾作为 pivot 子节点，绕骑士旋转）
@@ -269,15 +355,38 @@ export class Balloon {
       final = dmg * (1 - this.damageReduction);  // 95% 减伤 → 实际 5%（isDragonPart 强制减伤，含激光剑穿透）
     this.hp -= final;
     this._lastDamage = final;               // 第四十修：减伤后的真实伤害，供伤害数字显示
+    this._flashColor = 0xffffff;             // 受击闪白：把上一次「回血粉闪」的颜色复位
     this._flash = 0.1;
-    if (this._hpBar) {
-      const k = Math.max(0, this.hp / this.maxHp);
-      this._hpFg.scale.x = k;
-      this._hpFg.position.x = -((1 - k) * this.healthBarRadius);
-      this._hpFg.material.color.setHSL(0.33 * k, 0.7, 0.5);
-    }
+    this.refreshHealthBar();
     if (this.hp <= 0) { this.alive = false; return true; }
     return false;
+  }
+
+  /**
+   * 血条重画（第五十一修 · 现场「治疗术士的加号飞过去了，可精英怪血条没涨」）。
+   *
+   *   根因：hp 是**裸字段**，而血条只在 takeDamage 里刷过一次 —— 回血路径（_applyHealAura）改完 hp
+   *   不刷血条 ⇒ 血条还停在被扣血后的长度，现场看起来就是「根本没回血」。
+   *   规矩：今后凡是改 hp 的地方（扣血/回血/复活/换血）都必须调它，别再各自复制那段公式。
+   */
+  refreshHealthBar() {
+    if (!this._hpBar) return;
+    const k = Math.max(0, Math.min(1, this.hp / this.maxHp));
+    this._hpFg.scale.x = k;
+    this._hpFg.position.x = -((1 - k) * this.healthBarRadius);
+    this._hpFg.material.color.setHSL(0.33 * k, 0.7, 0.5);
+  }
+
+  /**
+   * 第四十九修 · 回血闪烁：**粉色加号命中时**把这只怪染粉一下（现场返工：原来的绿环看不到）。
+   *   为什么用它当「回血」的可读表现：血条回满在远处看不清，闪一下是瞬时、醒目的；
+   *   而且复用既有的受击闪烁通道（DepthSprite 走 uFlashColor，模型走 emissive），零额外 draw call。
+   * @param {number} [t] 闪烁时长（秒）；比受击(0.1)长一些，才看得出来是「治疗」而不是「挨打」
+   */
+  flashHeal(t = 0.28) {
+    if (!this.alive) return;
+    this._flash = Math.max(this._flash, t);
+    this._flashColor = HEAL_LINK.PLUS_COLOR != null ? HEAL_LINK.PLUS_COLOR : HEAL_LINK.COLOR;
   }
 
   update(dt, target, camera) {
@@ -291,7 +400,8 @@ export class Balloon {
       // 高速怪（红阶段大旗 26m/s → 每帧 0.36m）逼近玩家时表现为剧烈抖动。
       this.mesh.position.addScaledVector(_moveDir, Math.min(this.speed * dt, dist));
       // 普通忍者：约束在距中心点(世界原点) 10~15m 环带内（龙形 Boss 的组成忍者 isDragonPart 跳过）
-      if (this.behavior === 'ninja' && !this.isDragonPart) this._clampToRing();
+      // 第五十一修：章鱼也一起夹紧 —— 现场要求「在圈外攻击、不近身」（原来它会一路贴到玩家脸上喷墨）。
+      if ((this.behavior === 'ninja' || this.behavior === 'octopus') && !this.isDragonPart) this._clampToRing();
     }
 
     // 盾牌绕骑士旋转（盾兵怪核心机制）
@@ -320,12 +430,15 @@ export class Balloon {
     if (this._flash > 0) {
       this._flash -= dt;
       const inten = Math.max(0, this._flash * 6);
+      const flashColor = this._flashColor || 0xffffff;   // 第四十九修：受击=白 / 回血=粉
       if (this.depthSprite) {
-        this.depthSprite.setFlash(inten);
+        this.depthSprite.setFlash(inten, flashColor);
       } else if (this._modelMats) {
-        for (const m of this._modelMats) { m.emissive.setRGB(1, 1, 1); m.emissiveIntensity = inten; }
+        _flashCol.setHex(flashColor);
+        for (const m of this._modelMats) { m.emissive.copy(_flashCol); m.emissiveIntensity = inten; }
       } else {
-        this.mesh.material.emissive.setRGB(1, 1, 1);
+        _flashCol.setHex(flashColor);
+        this.mesh.material.emissive.copy(_flashCol);
         this.mesh.material.emissiveIntensity = inten;
       }
     } else if (this.depthSprite) {
@@ -549,6 +662,34 @@ export class Balloon {
   }
 }
 
+/**
+ * 第四十九修（返工）· 治疗目标选择（纯函数，有单测）：
+ *   在「所有活着的怪（不含术士自己）」里挑 —— **血量百分比最低**的；
+ *   并列时取**离玩家最近**的那只（同一只怪会连着被喂 ⇒ 玩家看得出"这怪在被奶"）。
+ *   为什么按百分比而不是绝对血量：绝对血量会永远优先喂血厚的 Boss/精英，小怪被无视；
+ *   按百分比才是"最需要奶的那只"。
+ *   不看距离上限：术士站桩在 24m 外，前压的怪就在玩家身边，加半径反而会「够不着」。
+ * @param {Balloon[]} list      全部气球
+ * @param {Balloon}   healer    施法的治疗术士（不给自己回血）
+ * @param {THREE.Vector3} [playerPos] 玩家世界坐标（拿不到时并列就按遍历顺序取第一只）
+ * @param {object}    [opts]    { elitesOnly } = 只考虑精英怪（现场第三轮口径：只奶精英）
+ * @returns {Balloon|null}
+ */
+export function pickHealTarget(list, healer, playerPos, opts = {}) {
+  let best = null;
+  let bestPct = Infinity;
+  let bestD = Infinity;
+  for (const o of list) {
+    if (!o || o === healer || !o.alive) continue;
+    if (opts.elitesOnly && !o.isElite) continue;
+    const pct = o.hp / (o.maxHp > 0 ? o.maxHp : 1);
+    const d = (playerPos && o.mesh) ? o.mesh.position.distanceToSquared(playerPos) : 0;
+    const better = pct < bestPct - 1e-6 || (Math.abs(pct - bestPct) <= 1e-6 && d < bestD);
+    if (better) { best = o; bestPct = pct; bestD = d; }
+  }
+  return best;
+}
+
 export class BalloonManager {
   constructor(scene) {
     this.scene = scene;
@@ -610,18 +751,54 @@ export class BalloonManager {
 
   }
 
-  // 心型怪治疗光环：每秒为 healRadius 内的其他敌人恢复 healAura 血量
+  // 治疗术士的施法（第四十九修返工：绿色脉冲环 → **投喂粉色加号**）
+  //   现场反馈：① 绿环「看不到」；② 固定回 20 点血在几百血的怪身上根本看不出来。
+  //   新口径：每 HEAL_LINK.PULSE_PERIOD 秒（=1s）
+  //     ① 用纯函数 pickHealTarget 选一只目标（血最少，并列取离玩家最近）；
+  //     ② 向 game 要本次治疗量（this.onHealCast 返回 = **玩家当前攻击力**）—— 改成随构筑成长，
+  //        所以血条肉眼可见地在涨，现场不会再"看不出治疗效果"；
+  //     ③ 命中给目标闪一下粉（flashHeal）；
+  //     ④ 表现（粉色加号飞行）由 game 侧的 fx.HealPlusFx 负责，这里只管数值。
+  //   性能：判定从「每帧 O(n²)」降到「每 PULSE_PERIOD 秒一次 O(n²)」，而且不再遍历算半径。
+  //   PULSE=false 时退回第四十六修的旧口径（每帧按半径连续回血）。
   _applyHealAura(dt) {
     for (const h of this.list) {
       if (h.behavior !== 'heal' || !h.alive || h._frozen) continue; // 冻结中的治疗者暂停治疗
-      const hr = h.type.healRadius || 6;
-      const ha = h.type.healAura || 10;
-      for (const o of this.list) {
-        if (o === h || !o.alive) continue;
-        if (o.mesh.position.distanceTo(h.mesh.position) <= hr) {
-          o.hp = Math.min(o.maxHp, o.hp + ha * dt);
+      if (HEAL_LINK.PULSE === false) {
+        const hr = h.type.healRadius || 6;
+        const ha = h.type.healAura || 10;
+        for (const o of this.list) {
+          if (o === h || !o.alive) continue;
+          if (o.mesh.position.distanceTo(h.mesh.position) <= hr) {
+            o.hp = Math.min(o.maxHp, o.hp + ha * dt);
+            if (o.refreshHealthBar) o.refreshHealthBar();   // 第五十一修：回血必须刷血条
+          }
         }
+        continue;
       }
+      const period = Math.max(0.1, HEAL_LINK.PULSE_PERIOD || 1);
+      // 刚落地（_healT 还没初始化）就先来一发：玩家一眼就知道「这只在奶人」
+      h._healT = h._healT == null ? period : h._healT + dt;
+      if (h._healT < period) continue;
+      h._healT -= period;
+      const t = pickHealTarget(this.list, h, this._playerPos, { elitesOnly: HEAL_LINK.ELITE_ONLY !== false });
+      if (!t) continue;
+      // 治疗量：优先用 game 的计算（默认 = PULSE_HEAL 1000）；没有回调时退回固定值。
+      //   ⚠ 这里读的是 **BalloonManager 自己**的 onHealCast（waves.balloons）—— game 侧必须挂在这一层，
+      //     挂到 WaveManager 上等于没挂（第三轮现场「完全没作用」的根因）。
+      let heal = 0;
+      if (this.onHealCast) {
+        heal = Number(this.onHealCast(h, t)) || 0;
+      } else if (HEAL_LINK.PULSE_HEAL > 0) {
+        heal = HEAL_LINK.PULSE_HEAL;
+      }
+      if (heal > 0) {
+        // 超出上限的部分不算（现场口径）
+        t.hp = Math.min(t.maxHp, t.hp + heal);
+        if (t.refreshHealthBar) t.refreshHealthBar();   // 第五十一修：回血必须刷血条（现场「血条没涨」的根因）
+        if (HEAL_LINK.PLUS_FLASH !== false && t.flashHeal) t.flashHeal();
+      }
+      if (this.onHealPulse) this.onHealPulse(h.mesh.position, HEAL_LINK.RADIUS);
     }
   }
 

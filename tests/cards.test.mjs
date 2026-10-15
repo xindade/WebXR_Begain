@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { pickCards } from '../src/game/cardDraft.js';
-import { RESUPPLY_CARD, availableAttributes } from '../src/content/cards.js';
+import { RESUPPLY_CARD, availableAttributes, ATTRIBUTE_STATS } from '../src/content/cards.js';
 
 const A = (id) => ({ id, label: id, desc: id, color: '#fff', apply: () => {} });
 
@@ -62,7 +62,10 @@ test('卡池不足 3 张时只返回现有张数（不重复、不补空）', ()
 });
 
 test('availableAttributes：全部满级时只给战场补给卡（RESUPPLY_CARD 导出后行为不变）', () => {
-  const maxed = { fireRate: 14, shotCount: 7, atk: 700, skillCost: 100, skillDamageMul: 5, regen: 10, maxHp: 400 };
+  // 上限从 ATTRIBUTE_STATS 推导（第五十四修：射速 20 / 弹道 12）——别手写数字，
+  // 否则每次放开上限都要回来改测试，也就测不出「满级判定」到底跟不跟得上表。
+  const maxed = {};
+  for (const [, [key, , limit]] of Object.entries(ATTRIBUTE_STATS)) maxed[key] = limit;
   const pool = availableAttributes(maxed, ['skillCost', 'skillDamage', 'selfRepair', 'hp']);
   assert.equal(pool.length, 1);
   assert.equal(pool[0].id, 'resupply');

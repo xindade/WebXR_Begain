@@ -115,7 +115,8 @@ export class WristUI {
       c.font = 'bold 30px sans-serif';
       c.fillText(`${cur} / ${max}`, bx, by + bh + 36);
       c.font = '34px sans-serif';
-      c.fillText(`船血 : ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`, 28, by + bh + 92);
+      // 第五十修（现场口径）：这个血量就是脚下飞毯的血量，面板文案统一叫「飞毯血量」
+      c.fillText(`飞毯血量: ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`, 28, by + bh + 92);
       c.fillText(`分数 : ${game.score}`, 28, by + bh + 140);
       // —— 玩家战斗属性（攻击力 / 射速 / 额外射击）追加显示 ——
       const _p2 = game.player;
@@ -137,13 +138,13 @@ export class WristUI {
       ? [
           `关卡    : ${game.levelIndex + 1} (激光)`,
           `激光气球: ${game.laser ? game.laser.groups.length : 0}`,
-          `船血    : ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`,
+          `飞毯血量: ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`,
           `目标    : 到达底边过关`,
         ]
       : [
           `关卡    : ${game.levelIndex + 1}`,
           `剩余敌人: ${game.waves.remaining}`,
-          `船血    : ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`,
+          `飞毯血量: ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`,
           `分数    : ${game.score}`,
         ];
     c.fillStyle = '#ffffff';

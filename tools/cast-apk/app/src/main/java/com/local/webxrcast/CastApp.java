@@ -24,7 +24,7 @@ import java.util.Locale;
  *
  * 用法（排错时）：
  *   adb logcat -v time -s CastMain:V AndroidRuntime:E ActivityManager:I
- *   adb pull /sdcard/Android/data/com.GoodNet.DeepmindHacker/files/crash.log d:/crash.log
+ *   adb pull /sdcard/Android/data/com.DX.WeirdTurning/files/crash.log d:/crash.log
  */
 public class CastApp extends Application {
 

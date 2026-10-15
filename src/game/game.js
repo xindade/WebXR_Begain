@@ -10,6 +10,7 @@ import { CardDraft } from './cardDraft.js';
 import { LaserLevel } from './laser.js';
 import { GlassGrid } from './glassGrid.js';
 import { FlipGrid } from './flipGrid.js';
+import { DragonChest } from './dragonChest.js';   // 第五十修：第12关龙族宝箱（龙 Boss 打死后先计数 5 秒）
 import { RightGun } from '../vr/rightGun.js';
 import { LeftSword } from '../vr/leftSword.js';
 import { DragonBoss } from './dragonLevel.js';
@@ -18,13 +19,13 @@ import { IntroVideo } from './introVideo.js';
 import { OpeningModel } from './openingModel.js';
 import { Portal } from './portal.js';
 import { BuddhaFx } from './buddhaFx.js';
-import { LEVELS, isLaser, isBoss } from '../content/levels.js';
+import { LEVELS, isLaser, isBoss, levelTitleText, shouldShowLevelTitle } from '../content/levels.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { scriptFor } from '../content/spawnDirector.js';
 import { ELITE_SCHEDULE } from '../content/eliteMonsters.js';
 import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO, HIT_FEEDBACK, FX, MID_WARNING, RAPID_FIRE, levelSecondsOf, CARD, GOLD_ORB, ELITE_FEEDBACK, HEAL_LINK } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO, HIT_FEEDBACK, FX, MID_WARNING, RAPID_FIRE, levelSecondsOf, CARD, GOLD_ORB, ELITE_FEEDBACK, HEAL_LINK, LEVEL_TITLE, HEAL_ON_DEATH, DRAGON_CHEST } from '../core/constants.js';
 import { DamageNumbers } from './damageNumbers.js';
 import { FxEffects } from './fx.js';
 import { WarningBanner3D, midWarningDue } from './warningBanner.js';  // 第四十二修：中场预警横幅
@@ -63,6 +64,29 @@ function _closestPointOnSeg(out, p, a, b) {
   let t = _segAP.dot(_segAB) / ab2;
   if (t < 0) t = 0; else if (t > 1) t = 1;
   out.copy(a).addScaledVector(_segAB, t);
+}
+
+/**
+ * 第四十九修 · 收集「关卡脚本」里会出现的敌种（纯函数，便于单测）。
+ *
+ * 背景：第四十六修给 1/2/4/5 关加了「三层出怪」时间轴脚本（spawnDirector.SPAWN_SCRIPT），
+ *   但 _buildIntroPreloadQueue 当时只收集 SPAWN_RING.pool / NORMAL_TEST.pool / LEVEL_ENEMY /
+ *   ELITE_SCHEDULE —— 脚本里独有的敌种就漏在预载之外。现场代价（第 5 关）：脚本要出
+ *   heart（心形怪 / 治疗术士），而 ELITE_SCHEDULE[5] 里没有它，于是首只末尾精英落地那一刻才
+ *   冷加载 GLB + DepthSprite 抓帧（12 帧离屏渲染 + readRenderTargetPixels 同步回读）。
+ *
+ * @param {number} levelN 关卡号
+ * @returns {string[]} 该关脚本里 elite 事件用到的敌种 id（去重；无脚本 → 空数组）
+ */
+export function scriptEnemyTypes(levelN) {
+  const scr = scriptFor(levelN);
+  if (!scr || !Array.isArray(scr.events)) return [];
+  const out = new Set();
+  for (const ev of scr.events) {
+    if (!ev || ev.do !== 'elite') continue;          // 只关心精英批次（杂鱼走 pool，已在上面收集）
+    for (const c of ev.combos || []) if (c && c.type) out.add(c.type);
+  }
+  return [...out];
 }
 
 export class Game {
@@ -175,7 +199,14 @@ export class Game {
     this._rapidUntil = 0;         // 射速加速结束时刻（_gameTime 基准）
     this._rapidMul = 1;           // 当前生效的射速倍率（1=无加成），交给 input.setFireRateMul
     this._midWarned = false;      // 本关是否已弹过中场预警（_loadLevel 复位）
+    // 第四十九修 · 关卡标题卡：开局在准星正前方弹「第 N 关 · 场景名」（见 constants.LEVEL_TITLE）
+    this._levelTitleAt = 0;       // >0 = 还剩这么多秒就弹；0 = 不弹
+    this._levelTitleText = null;  // 待弹文案（_queueLevelTitle 填好，_tickLevelTitle 消费）
+    this._levelTitleDone = false; // 本关是否已经弹过（第四十九修返工：机制关要「语音结束后补排」，防重复弹）
     this._draftsThisLevel = 0;    // 第四十七修：本关已开过的抽卡次数（一关只给一次，_clearRoundExtras 复位）
+    // 第五十修 · 第12关龙族宝箱：龙 Boss 打死后先立宝箱、5 秒射击计数换攻击力（见 src/game/dragonChest.js）
+    this._chest = null;           // DragonChest 实例（首次触发时懒建；表现/计数都在它自己身上）
+    this._chestDone = false;      // 本关宝箱窗口是否已经开过（_clearRoundExtras 复位）
     this._buddhaQueue = [];       // 如来神掌分帧结算队列（第四十二修，见 _drainBuddhaQueue）
     this.enemyFreeze = 0;        // 定身咒计时(s)：>0 时敌人暂停行动（Boss 仅前 50% 时长）
     this.selectedSkill = 'scatter'; // 当前装备技能：前期默认「积分散射」；第三关选卡后可替换为 lightsaber/freeze/buddha，左手柄 grip 触发
@@ -933,6 +964,21 @@ export class Game {
       this.waves.hooks.goldToCards = () => this._goldToCards();
       // 第四十七修：精英血量按「玩家当前 DPS」结算（waves._eliteOpts），口径与 _playerDPS 一致
       this.waves.hooks.playerDps = () => this._playerDPS();
+      // 第四十九修 · 返工（三轮）：治疗术士「投喂粉色加号」——
+      //   ⚠ 必须挂在 **this.balloons**（BalloonManager）上：读取方是 balloons._applyHealAura，
+      //     挂到 waves（WaveManager）上从没人读 ⇒ 现场「治疗术士完全没作用、看不到加号也没看到回血」的根因。
+      //     （waves 现在也有转发访问器，两条路都通；但直挂读取方是最不会被误改的写法。）
+      //   ① 回血量 = HEAL_LINK.PULSE_HEAL（现场 1000，超出目标上限的部分不算）；
+      //      配成 0 时退回「玩家当前攻击力」；
+      //   ② 表现 = 从术士飞一枚粉色加号到目标（fx.HealPlusFx）。
+      this.balloons.onHealCast = (healer, target) => {
+        if (HEAL_LINK.PLUS_ENABLED !== false && this.fx && healer && target) {
+          this.fx.healPlus(healer.mesh.position, target.mesh.position);
+        }
+        return HEAL_LINK.PULSE_HEAL > 0 ? HEAL_LINK.PULSE_HEAL : Math.max(1, Math.round(this.player.atk || 0));
+      };
+      // 旧口径的绿色脉冲环接线（RING_ENABLED=true 时才画得出东西）
+      this.balloons.onHealPulse = (pos, radius) => { if (this.fx) this.fx.healPulse(pos, radius); };
     }
     const _scr = scriptFor(lv.n);
     this._skillUnlockAt = (_scr && _scr.skillLockUntil) || 0;
@@ -1038,6 +1084,15 @@ export class Game {
       this.world.setEnvOpacity(1);  // 无穿云：场景直接满显
       this._startLevelAudio();      // 无穿云：直接启动本关 BGM + 开场语音
     }
+    // 第四十九修：关卡标题卡 —— 有云雾就在**雾里**弹（现场反馈：原先是雾散后才弹，和出怪撞在一起），
+    //   无云雾退回旧口径（关卡正式开始后 DELAY 秒）。
+    //   第四十九修（返工）：机制关(3/9/15)开局有魔术师开场动画，原先直接不弹 ⇒「机制关看不到关卡名」。
+    //   现在按 MECHANIC_DELAY 先排一个**兜底**（语音缺失/ended 不触发也能弹），
+    //   并把排期权交给开场语音：播完 → _bindOpeningVoice 里改排成「0.5s 后」（见 _levelTitleDone 防重）。
+    this._levelTitleDone = false;
+    const _mech = isLaser(lv);
+    this._queueLevelTitle(_mech ? LEVEL_TITLE.MECHANIC_DELAY
+      : (cover ? LEVEL_TITLE.INTRO_DELAY : LEVEL_TITLE.DELAY));
 
     // ====== 关卡开场「雾气窗顺序预载」======
     // 把本关要用的敌人/装饰 GLB 模型 + DepthSprite 捕获，分散到 INTRO_DELAY 秒穿云窗内「每帧处理 1 个」，
@@ -1085,7 +1140,13 @@ export class Game {
     const addType = (typeId) => {
       const t = ENEMY_TYPES[typeId];
       if (!t || !t.model) return;
-      q.push({ url: t.model, radius: t.radius || 0.5, capture: DEPTH_SPRITE_TYPES.includes(typeId) });
+      const capture = DEPTH_SPRITE_TYPES.includes(typeId);
+      // capture = 该怪走 DepthSprite 立绘：抓帧本身就会把 GLB 纹理上传一遍，故只有不走立绘的才额外 warm。
+      q.push({ url: t.model, radius: t.radius || 0.5, capture, warm: !capture });
+      // 第四十九修：**附属模型**也要进队列 —— 盾甲兵的 Model/盾牌.glb 原先只在 balloons._buildShield
+      //   里懒加载，于是「第一个盾甲兵出现那一帧」才有一次冷加载 + 纹理上传 + 着色器编译。
+      //   第 4/5 关末尾批（融合）与第 18 关玻璃阶段都吃这一下 ⇒ 现场「末尾精英合成时卡一下」。
+      if (t.shieldModel) q.push({ url: t.shieldModel, radius: t.radius || 0.5, capture: false, warm: true });
     };
     // warm = 顺带预热 GPU（纹理上传 + 着色器编译，见 balloonModels.warmModelGpu）。
     //   Boss 模型都走它：GLB 的 parse 在 main.js 预载时已完成，但**第一次真正渲染**那一帧才做
@@ -1129,6 +1190,11 @@ export class Game {
       }
       types.forEach(addType);
     }
+    // 第四十九修：不管哪种关卡，「关卡脚本」（第四十六修的三层时间轴）里会出的怪都补进队列。
+    //   原先只收集 SPAWN_RING.pool / NORMAL_TEST.pool / LEVEL_ENEMY / ELITE_SCHEDULE ⇒
+    //   脚本独有的敌种（第 5 关的 heart = 心形怪/治疗术士）不在队列里，首只末尾精英落地时才冷加载 +
+    //   DepthSprite 抓帧 ⇒「融合出来那一刻卡一下」。见 scriptEnemyTypes。
+    for (const id of scriptEnemyTypes(lv.n)) addType(id);
     // 去重（同一模型只预载一次；如盾兵怪与骑士 Boss 共用 Model/骑士.glb）
     const seen = new Set();
     return q.filter((it) => { if (seen.has(it.url)) return false; seen.add(it.url); return true; });
@@ -1317,7 +1383,11 @@ export class Game {
       // 第四十二修：尾迹最多拖到「出生点」(b.origin)，绝不越过枪管 ——
       //   子弹出生点在枪管内部(SHOOT.SPAWN_OFFSET)，照常拖满 LENGTH 的话，
       //   弹头刚出膛那几帧整条尾迹会穿到枪管后方（玩家反馈的「曳光延伸到枪管背后」）。
-      tail.add(b.pos, d, FX.TRACER.COLOR, b.origin ? b.pos.distanceTo(b.origin) : null);
+      // 第四十九修：加速弹（b.boost）曳光变蓝 + 加长一倍 —— 让「射速加速」不用看面板也能一眼看出
+      tail.add(b.pos, d,
+        b.boost ? RAPID_FIRE.VISUAL.TRACER_COLOR : FX.TRACER.COLOR,
+        b.origin ? b.pos.distanceTo(b.origin) : null,
+        b.boost ? RAPID_FIRE.VISUAL.TRACER_MUL : 1);
     }
     if (this.projectiles) {
       const list = this.projectiles.list;
@@ -1347,6 +1417,8 @@ export class Game {
     }
     this._pendingBgm = null;
     this._pendingOpenVoice = null;
+    // 第四十九修：标题卡改到「进关起雾那一刻」排期（见 _loadLevel 末尾的 _queueLevelTitle），
+    //   这里**不再**补排 —— 否则雾散时会重置倒计时，卡片就永远落在雾后面了。
   }
 
   // 开场语音联动：语音播完（ended）→ ①机制关(3/9/15)魔术师动画同步收场 ②第18关魔术师 Boss 结束开场演出、进激光阶段。
@@ -1372,6 +1444,10 @@ export class Game {
       if (this.openingModel && OPENING_MAGICIAN.FOLLOW_VOICE) { this.openingModel.dispose(); this.openingModel = null; }
       const mb = this.waves && this.waves._magicianBoss;   // 第18关：结束开场演出 → 激光阶段
       if (mb && mb.onOpeningVoiceEnd) mb.onOpeningVoiceEnd();
+      // 第四十九修（返工）：机制关(3/9/15)的关卡名等到这一刻才弹 —— 魔术师刚收场，视线正前方是空的。
+      //   _queueLevelTitle 内部有 _levelTitleDone 守卫，兜底那一次若已弹过就不会再弹。
+      const _lvNow = LEVELS[this.levelIndex];
+      if (_lvNow && isLaser(_lvNow)) this._queueLevelTitle(LEVEL_TITLE.MECHANIC_AFTER_VOICE);
     }, { once: true });
   }
 
@@ -1399,6 +1475,8 @@ export class Game {
 
   _updatePlaying(dt) {
     this._updateBossIntensity(dt); // Boss 关每帧升压（非 Boss 关内部早退）
+    // 第四十九修：标题卡倒计时放在**穿云冻结之前** —— 它要在开场云雾窗里就弹出来（雾散时仍在屏上）。
+    this._tickLevelTitle(dt);
     // ====== 关卡开场穿云：INTRO_DELAY 秒内冻结玩法（不移动/不开火/不触发技能），仅自然转头观察 ======
     if (this._introActive) {
       this._introT += dt;
@@ -1433,7 +1511,12 @@ export class Game {
     this.bullets.update(dt);
     const pp = this._playerPos();
 
-    for (const shot of this.input.shots) this.player.fire(shot, this.bullets, this.audio);
+    // 第四十九修：加速期（连杀 10 触发）当前打出的子弹整批染蓝 + 曳光加长，见 RAPID_FIRE.VISUAL
+    const _boostShot = this._gameTime < this._rapidUntil;
+    // 第五十修：累计这一帧**实际打出**的弹数（player.fire 返回弹道数）—— 龙族宝箱按它给加成
+    let _shotsFired = 0;
+    for (const shot of this.input.shots) _shotsFired += this.player.fire(shot, this.bullets, this.audio, _boostShot);
+    if (_shotsFired > 0) this._chest?.addShots(_shotsFired);
     // 档2：枪口焰 —— 用**真实枪口位姿**（与红射线/子弹同源）闪一下；不改动任何弹道
     //   第四十二修：连方向一起传 —— 焰光沿枪口方向前移 FX.MUZZLE.FORWARD，避免被枪管自身遮住。
     if (FX.MUZZLE.ENABLED && this.input.shots.length > 0) {
@@ -1476,6 +1559,7 @@ export class Game {
     // 气球以玩家世界位置为终点移动（所有怪追玩家）；碰飞毯区域自爆逻辑不变（见 _checkExplosions）
     this.balloons.update(dt, pp, this.world.camera);
     this._updateBasicVoice(dt); // 基础怪群体语音：数量达标播放一次，停顿后再判断
+    this._updateDragonChest(dt); // 第五十修：龙族宝箱（计数窗口 → 化光点飞向玩家 → 放行抽卡）
     this.projectiles.update(dt, pp); // 投射物飞行/自旋/命中回收（玩家位置 pp = rig 头部世界坐标）
     if (this.dragon) {
       this.dragon.update(dt, pp);   // 龙 Boss：逐帧接管龙气球位置
@@ -1522,9 +1606,13 @@ export class Game {
     // 第18关魔术师Boss：通关横幅激活期间不走抽卡，改由横幅 10s 计时自动退出
     // 第18关魔术师 Boss：本关通关不走抽卡/毕业汇总（_winBanner 在跑横幅，或已击杀待收尾）
     //   —— 第三十九修：即使 WIN_BANNER_SECONDS=0（不建横幅）也要挡住，否则同一帧又去开抽卡界面。
+    // 第五十修 · 第12关龙族宝箱：龙 Boss 打死后**不马上开抽卡** —— 先在选项卡位置立宝箱，
+    //   5 秒内按打出的子弹数换攻击力；宝箱化光点飞向玩家后才轮到抽卡（见 _updateDragonChest）。
+    if (cleared && this._chestRunning()) return;
     if (cleared && !(this.waves && (this.waves._winBanner || this.waves.magicianCleared))) {
       // 第四十六修：金点正在飞 / 中途抽卡已开 → 先挂起，等它们收尾（_onMidCardDone / 金点落地后补）
-      if (this._goldOrbs.length || this._midDraftPending) this._levelClearHeld = true;
+      if (this._chestDue()) this._startDragonChest();
+      else if (this._goldOrbs.length || this._midDraftPending) this._levelClearHeld = true;
       else if (this._draftsThisLevel > 0) {
         // 第四十七修：本关已经抽过卡（精英清场那次）→ 不再弹第二次，但关卡照常推进
         this.log('本关已抽过卡（精英清场）→ 直接进入下一关');
@@ -1725,6 +1813,15 @@ export class Game {
     // 子弹 vs 气球（反向遍历子弹：release swap-pop 后索引稳定；内循环命中即 break，无需 spread）
     const bullets = this.bullets.active;
     this.world.camera.getWorldPosition(this._camPos); // 供 2D 立绘薄板命中(法线=朝相机)使用
+    // 第五十三修 · 命中剪枝（纯性能，零行为变化）：
+    //   ① 只有场上真的存在 Boss 时才跑第二轮 —— 原来无条件两遍，非 Boss 关的 pass1 每帧纯空转；
+    //   ② 每个 pair 先过一道「本帧线段 AABB」粗筛，绝大多数怪在这里就被剔掉 ——
+    //      精确判定里的 normalize()（sqrt + 三个除法）才是开销大头。
+    //   粗筛是**保守**的（线段 ⊆ 其 AABB，垫上命中半径后不可能漏判），遍历顺序与
+    //   「非 Boss 优先」优先级原样保留 ⇒ 命中结果与改前完全一致。
+    let hasBoss = false;
+    for (const o of this.balloons.list) { if (o.alive && o.isBoss) { hasBoss = true; break; } }
+    const passCount = hasBoss ? 2 : 1;
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i];
       // 玻璃墙拦截（第18关魔术师Boss 玻璃墙阶段）：命中墙 → 消费/拦截子弹，不进气球循环
@@ -1733,11 +1830,16 @@ export class Game {
         continue;
       }
       const list = this.balloons.list;
+      // 子弹本帧轨迹的包围盒（直线段 → 盒子就是两端点分量取 min/max），供下面的粗筛用
+      const p0 = b.prevPos, p1 = b.pos;
+      const segMinX = p0.x < p1.x ? p0.x : p1.x, segMaxX = p0.x < p1.x ? p1.x : p0.x;
+      const segMinY = p0.y < p1.y ? p0.y : p1.y, segMaxY = p0.y < p1.y ? p1.y : p0.y;
+      const segMinZ = p0.z < p1.z ? p0.z : p1.z, segMaxZ = p0.z < p1.z ? p1.z : p0.z;
       // Boss 代理命中球半径较大(4m)且常位于其他可击破目标(九宫格球/精英)的正后方，
       // 若按 list 顺序优先判定会「抢走」本应命中前方目标的子弹 → 表现为「打小怪掉 Boss 血」。
       // 两遍命中：pass0 只判非 Boss 目标(最高优先)，仅当无命中时才在 pass1 判 Boss 代理。
       let hitBalloon = null;
-      for (let pass = 0; pass < 2 && !hitBalloon; pass++) {
+      for (let pass = 0; pass < passCount && !hitBalloon; pass++) {
         const wantBoss = pass === 1;
         for (let j = 0; j < list.length; j++) {
           const balloon = list[j];
@@ -1746,6 +1848,13 @@ export class Game {
           if (balloon.behavior === 'ghost' && !balloon.revealed) continue;
           if (!!balloon.isBoss !== wantBoss) continue; // pass0 跳过 Boss；pass1 仅 Boss
           const rr = balloon.hitRadius + SHOOT.HIT_PAD; // 命中球 ≈ 怪物可见半径
+          // 粗筛：中心点离线段的距离 ≥ 中心点离线段 AABB 的距离 ⇒ 出盒必然打不中。
+          // 立绘走薄板判定（横向吃 rr、纵深吃到板厚），垫厚取 rr+HIT_SLAB_DEPTH 作保守上界。
+          const bpos = balloon.mesh.position;
+          const pad = balloon.depthSprite ? rr + SHOOT.HIT_SLAB_DEPTH : rr;
+          if (bpos.x < segMinX - pad || bpos.x > segMaxX + pad) continue;
+          if (bpos.y < segMinY - pad || bpos.y > segMaxY + pad) continue;
+          if (bpos.z < segMinZ - pad || bpos.z > segMaxZ + pad) continue;
           let _hit = false;
           if (balloon.depthSprite) {
             _closestPointOnSeg(_segClosest, balloon.mesh.position, b.prevPos, b.pos); // 轨迹上离中心最近点
@@ -1869,9 +1978,13 @@ export class Game {
           this._onKilled(boss);          // Boss 死亡 → 递归进入正常 Boss 结算
       }
     }
-    // 心型怪：击败后为船恢复血量（知识库 30）
+    // 心型怪（治疗术士）：击败后为**飞毯**回血（知识库 30 → 第五十修现场口径 20）
+    //   数值是敌种属性（content/enemies.js 的 heart.shipHealOnDeath），表现见 _healFeedback
+    //   （眼前绿色加号飞向相机 + 一行「飞毯血量 +N」横幅）。
     if (balloon.behavior === 'heal') {
-      this.player.hp = Math.min(this.player.maxHp, this.player.hp + (balloon.type.shipHealOnDeath || 30));
+      const heal = balloon.type.shipHealOnDeath || 0;
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + heal);
+      this._healFeedback(heal);
     }
     // 宝箱怪：死后弹出一次选项卡（占位：暂以奖励积分代替，待 mid-level 卡片系统接入）
     if (balloon.behavior === 'chest' && balloon.type.dropCard) {
@@ -2394,6 +2507,128 @@ export class Game {
     this.log('[提示] ' + text);
   }
 
+  /**
+   * 第四十九修 · 关卡标题卡：本关开局弹一次「第 N 关 · 场景名」。
+   *   · 名字的唯一来源是 content/levels.js 的 lv.name（改名只动那里）；
+   *   · 与精英来袭/中场预警**共用** midWarning 这个 Sprite（同一张 canvas），
+   *     所以时间窗必须错开 —— 标题排在开局，精英最早 5s（见 LEVEL_TITLE 的注释）；
+   *   · 机制关(3/9/15)开局有魔术师开场动画，默认 SKIP_MECHANIC=true 不叠，
+   *     想强行显示把 LEVEL_TITLE.SKIP_MECHANIC 改 false 即可；
+   *   · 第四十九修（续）：排期**在开场云雾窗内**（不再等雾散）——
+   *     云雾关（默认）delay = LEVEL_TITLE.INTRO_DELAY，卡片在雾里淡入、雾散时仍在屏上
+   *     （标题卡 depthTest:false + renderOrder 900，画在雾之上）；
+   *     无云雾（CLOUD.ENABLED=false / 直接进关）退回 LEVEL_TITLE.DELAY（关卡开始后 0.8s）。
+   * @param {number} [delay] 距「现在」多少秒后弹；缺省按 LEVEL_TITLE.DELAY
+   */
+  _queueLevelTitle(delay = LEVEL_TITLE.DELAY) {
+    if (this._levelTitleDone) return;   // 本关弹过就不再排（机制关会排两次：兜底 + 语音结束）
+    const lv = LEVELS[this.levelIndex];
+    // 判据（总开关 / 机制关跳过 / 本关要有名字）抽成纯函数，见 levels.shouldShowLevelTitle（有单测）
+    if (!shouldShowLevelTitle(lv, LEVEL_TITLE)) return;
+    this._levelTitleText = levelTitleText(lv.n, LEVEL_TITLE.TEXT);
+    this._levelTitleAt = Math.max(0, Number(delay) || 0);
+  }
+
+  /** 标题卡倒计时（_updatePlaying 每帧调，**含云雾窗**）：到点换 'title' 样式弹一次 */
+  _tickLevelTitle(dt) {
+    if (!this._levelTitleAt) return;
+    this._levelTitleAt -= dt;
+    if (this._levelTitleAt > 0) return;
+    this._levelTitleAt = 0;
+    const text = this._levelTitleText;
+    this._levelTitleText = null;
+    this._levelTitleDone = true;
+    if (!text) return;
+    this.midWarning?.show(text, 'title');
+    this.log('[提示] ' + text);
+  }
+
+  // ====== 第五十修 · 第12关·龙族宝箱 ======
+
+  /** 现在该不该开宝箱：第12关（龙 Boss）已清 && 本关还没开过（口径见 constants.DRAGON_CHEST） */
+  _chestDue() {
+    if (!DRAGON_CHEST.ENABLED || this._chestDone) return false;
+    if (!this.dragon) return false;                       // 只有龙 Boss 关才结算宝箱
+    const lv = LEVELS[this.levelIndex];
+    return !!lv && lv.n === DRAGON_CHEST.LEVEL;
+  }
+
+  /** 宝箱窗口（计数/飞行）是否正在跑 —— 跑着时别去开抽卡 */
+  _chestRunning() { return !!(this._chest && this._chest.running); }
+
+  /** 打开宝箱窗口（实例懒建；名字「龙族宝箱」在箱下、加成数值在箱上，见 dragonChest.js） */
+  _startDragonChest() {
+    if (!this._chest) this._chest = new DragonChest(this.world.scene);
+    this._chestDone = true;                               // 先置位：本关只开一次
+    this._chest.start();
+    this.log('龙族宝箱出现：' + DRAGON_CHEST.WINDOW + ' 秒内越会打，攻击力加成越高');
+  }
+
+  /**
+   * 第五十一修：宝箱也要「吃子弹有反馈」（现场：「龙族宝箱受击没有反馈」）。
+   *   宝箱不是气球、不进 _collide 的气球循环，所以这里单独判一次：命中 → 消费子弹 +
+   *   火花 + 命中音 + 手柄轻震 + 箱体压一下 —— 和打别的小怪是同一套观感。
+   *   只判**计数窗口内**：窗口一过箱子就化光点飞走了，不该再吸子弹。
+   */
+  _chestHitTest() {
+    const c = this._chest;
+    if (!c || !c.counting) return;
+    const r = DRAGON_CHEST.HIT_R;
+    const center = c.group.position;
+    const list = this.bullets.active;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const b = list[i];
+      if (_pointSegDistSq(center, b.prevPos, b.pos) >= r * r) continue;
+      this.bullets.release(b);
+      c.punch();
+      this.fx?.spark(b.pos, DRAGON_CHEST.HIT_SPARK);
+      this.audio?.playHit();
+      this._pulseHaptic('HIT');
+    }
+  }
+
+  /** 每帧推进宝箱；光点落地（'done'）→ 兑现攻击力加成 → 下一帧自然放行通关抽卡 */
+  _updateDragonChest(dt) {
+    if (!this._chest || !this._chest.running) return;
+    this._chestHitTest();
+    if (this._chest.update(dt, this.world.camera) !== 'done') return;
+    const bonus = this._chest.bonus || 0;
+    if (bonus > 0) {
+      this.player.atk += bonus;
+      this.log('龙族宝箱：攻击力 +' + bonus + '（窗口内 ' + this._chest.bullets + ' 发 → ' + this.player.atk + '）');
+    } else {
+      this.log('龙族宝箱：窗口内 0 发 → 无加成');
+    }
+    this._chest.hide();
+  }
+
+  /**
+   * 第五十修：击败治疗术士的回血表现 —— 准星前方冒几个绿色加号飞向相机 + 一行「飞毯血量 +N」横幅。
+   *   沉浸态里 DOM HUD 不可见，所以两者都必须挂在场景内（加号走 fx，横幅复用 midWarning 那个 Sprite）。
+   *   回血量本身是敌种属性（content/enemies.js 的 heart.shipHealOnDeath），这里只管「让人看见」。
+   */
+  _healFeedback(heal) {
+    if (!HEAL_ON_DEATH.ENABLED) return;
+    const from = new THREE.Vector3();
+    this.world.camera.getWorldPosition(from);
+    const dir = new THREE.Vector3();
+    this.world.camera.getWorldDirection(dir);
+    dir.negate();                                  // 相机前向是 -Z（getWorldDirection 返回 +Z）
+    const base = from.clone().addScaledVector(dir, HEAL_ON_DEATH.DIST);
+    base.y = Math.max(0.6, base.y);                // 低头时别把加号放到地面以下
+    const to = from.clone().addScaledVector(dir, HEAL_ON_DEATH.TO_DIST);
+    const right = new THREE.Vector3().crossVectors(dir, _WORLD_UP).normalize();
+    const n = Math.max(1, HEAL_ON_DEATH.PLUS_COUNT | 0);
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const p = base.clone()
+        .addScaledVector(right, Math.cos(a) * HEAL_ON_DEATH.SPREAD)
+        .addScaledVector(_WORLD_UP, Math.sin(a) * HEAL_ON_DEATH.SPREAD);
+      this.fx?.healPlus(p, to, HEAL_ON_DEATH.PLUS_COLOR);
+    }
+    if (HEAL_ON_DEATH.BANNER) this.midWarning?.show('飞毯血量 +' + Math.max(0, Math.round(heal)), 'heal');
+  }
+
   /** 清掉本轮的引导金点 / 治疗线 / 技能锁 / 挂起标记（回菜单、重开、新一局、切关都调） */
   _clearRoundExtras() {
     for (const o of this._goldOrbs) {
@@ -2408,6 +2643,12 @@ export class Game {
     this._midDraftPending = false;
     this._levelClearHeld = false;
     this._draftsThisLevel = 0;   // 第四十七修：一关一次（见 _enterCard / 通关分支）
+    this._levelTitleAt = 0;       // 第四十九修：切关立即作废未弹的标题卡（新关卡会重新排一个）
+    this._levelTitleText = null;
+    this._levelTitleDone = false;
+    // 第五十修：龙族宝箱（切关/重开/回菜单都要收起，否则宝箱会跨关留着）
+    this._chest?.hide();
+    this._chestDone = false;
   }
 
   /** 精英批次清空 → 金点从准星前方飞向选项卡位置（CARD 的固定世界坐标）→ 消失并弹出三张选项卡 */
@@ -2461,7 +2702,9 @@ export class Game {
 
   /** 治疗线（表现）：治疗术士与 healRadius 内最近的怪之间连线 + 绿色加号（healRadius 不乘 scale） */
   _updateHealLinks() {
-    if (!HEAL_LINK.ENABLED) return;
+    // 第四十九修：默认改走「脉冲环」（waves._applyHealAura → onHealPulse）。
+    //   旧的每帧连线只在 HEAL_LINK.LINES=true 时才需要 —— 否则白白每帧算一遍 O(n²) 并画出线来。
+    if (!HEAL_LINK.ENABLED || HEAL_LINK.LINES !== true) return;
     const pairs = [];
     const list = this.balloons.list;
     for (const b of list) {
@@ -2589,7 +2832,11 @@ export class Game {
     if (credit > 0) { this._addScore(credit); this.log(`测试 +${credit} 积分`); }
     this.player.update(dt);
     this.bullets.update(dt);
-    for (const shot of this.input.shots) this.player.fire(shot, this.bullets, this.audio);
+    const _boostShot = this._gameTime < this._rapidUntil;
+    // 第五十修：累计这一帧**实际打出**的弹数（player.fire 返回弹道数）—— 龙族宝箱按它给加成
+    let _shotsFired = 0;
+    for (const shot of this.input.shots) _shotsFired += this.player.fire(shot, this.bullets, this.audio, _boostShot);
+    if (_shotsFired > 0) this._chest?.addShots(_shotsFired);
     this.cards.update(dt, this.bullets, this._playerPos().clone());
     this.bullets.sync(); // 抽卡模式子弹命中后刷新实例矩阵
   }

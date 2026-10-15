@@ -11,6 +11,9 @@ export function makeTextTexture({
   font = 'bold 44px sans-serif',
   color = '#ffffff',
   bg = null,
+  bgRadius = 0,   // 第五十一修：bg 的圆角半径（0 = 直角铺满整张画布）
+  stroke = null,
+  strokeW = 0,
   width = 128,
   height = 64,
 } = {}) {
@@ -18,12 +21,31 @@ export function makeTextTexture({
   cv.width = width;
   cv.height = height;
   const ctx = cv.getContext('2d');
-  if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, width, height); }
-  else ctx.clearRect(0, 0, width, height);
+  if (bg) {
+    ctx.fillStyle = bg;
+    if (bgRadius > 0) {   // 圆角底板：玻璃格编号这类「要有对比底」的场景用（见 glassGrid.numTexture）
+      const r = Math.min(bgRadius, width / 2, height / 2);
+      ctx.beginPath();
+      ctx.moveTo(r, 0);
+      ctx.arcTo(width, 0, width, height, r);
+      ctx.arcTo(width, height, 0, height, r);
+      ctx.arcTo(0, height, 0, 0, r);
+      ctx.arcTo(0, 0, width, 0, r);
+      ctx.closePath();
+      ctx.fill();
+    } else ctx.fillRect(0, 0, width, height);
+  } else ctx.clearRect(0, 0, width, height);
   ctx.font = font;
-  ctx.fillStyle = color;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  // 第五十修：可选的深色描边 —— 玻璃格编号压在淡青玻璃上时，纯亮色字在头显里对比度不足
+  if (stroke && strokeW > 0) {
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = strokeW;
+    ctx.strokeStyle = stroke;
+    ctx.strokeText(String(text), width / 2, height / 2);
+  }
+  ctx.fillStyle = color;
   ctx.fillText(String(text), width / 2, height / 2);
   return new THREE.CanvasTexture(cv);
 }

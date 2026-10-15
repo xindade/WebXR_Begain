@@ -20,6 +20,20 @@ export const ENEMY_TYPES = {
     behavior: 'basic', selfDamage: 5,
     model: 'Model/基础怪.glb',
   },
+  // —— 01b Boss 命中代理（第五十一修）——
+  //   第18关魔术师 Boss 的「只做命中靶子」代理气球（模型另挂，见 bossMagician.js）。
+  //   ⚠ 必须是一个**没有 model、而且不在 DEPTH_SPRITE_TYPES 白名单**里的类型：
+  //     原来借用 'basic' —— basic 有 GLB 模型且在白名单里，于是模型异步到位时
+  //     balloonModels 会把 hitRadius 改写成「按立绘取景留边折算」的值（≈半径×0.42），
+  //     并且 game._collide 改走「朝相机方向的薄板」判定（厚 0.8m）⇒
+  //     30m 外的 Boss 实际只剩一个约 1.7m 的薄片，现场表现就是「激光阶段的 Boss 打不中」。
+  //   本类型无模型/无占位/无名牌血条，半径完全由 bossMagician._applyRadius 说了算。
+  bossProxy: {
+    id: 'bossProxy', name: 'Boss代理',
+    hp: 100, speed: 0, radius: 1.0, score: 0,
+    behavior: 'basic', selfDamage: 0,   // selfDamage 0：它万一进 4×8 区也不该伤玩家
+    noPlaceholder: true, noHealthBar: true, plainColor: 0xffffff,
+  },
   // —— 02 召唤怪 ——
   summoner: {
     id: 'summoner', name: '召唤怪',
@@ -46,7 +60,7 @@ export const ENEMY_TYPES = {
     model: 'Model/心形怪.glb',
     healAura: 10,        // 每秒为周围敌人恢复血量
     healRadius: 6,       // 治疗光环半径(m)
-    shipHealOnDeath: 30, // 击败后为船恢复血量
+    shipHealOnDeath: 20, // 击败后为**飞毯**恢复血量（第五十修 · 现场口径 20；原先 30）
     tint: 0xff6b81,      // 占位外观色
   },
   // —— 05 忍者怪 ——

@@ -41,7 +41,11 @@ test('input reset clears stuck movement, fire and queued skill after focus loss'
 });
 test('full attributes are excluded and a fully upgraded player still gets a reward', () => {
   assert.equal(typeof cards.availableAttributes, 'function');
-  const player = { fireRate:14, shotCount:7, atk:750, skillCost:100, skillDamageMul:5, regen:10, maxHp:400, hp:400 };
+  // 全属性拉满（上限取 ATTRIBUTE_STATS，别再手写数字）；攻击力额外给到**超过成长上限**的值 ——
+  // 死亡补偿允许叠过上限，这条测试要覆盖它。
+  const player = { hp: 400 };
+  for (const [, [key, , limit]] of Object.entries(cards.ATTRIBUTE_STATS)) player[key] = limit;
+  player.atk = 750;
   const available = cards.availableAttributes(player, ['fireRate','multiShot','atk','skillCost','skillDamage']);
   assert.ok(available.length > 0);
   assert.ok(available.every(c => !['fireRate','multiShot','atk','skillCost','skillDamage'].includes(c.id)));

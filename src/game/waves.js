@@ -2,10 +2,10 @@ import * as THREE from 'three';
 import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM, SPAWN_RING, SPAWN_LAYER, ELITE_TUNING, levelSecondsOf, levelTimeScale } from '../core/constants.js';
 import { scriptFor, scriptEventTimes, layerOfType, comboTotal, DIR_TEXT, FUSE, LAYER, isClimaxEvent, climaxEliteHp, eliteTravelSpeed } from '../content/spawnDirector.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
-import { ELITE_SCHEDULE, ELITE_WINDOW, ELITE_BASE_HP } from '../content/eliteMonsters.js';
+import { ELITE_SCHEDULE, ELITE_WINDOW, ELITE_BASE_HP, RANGED_DPS_HP } from '../content/eliteMonsters.js';
 import { isBoss } from '../content/levels.js';
 import { LEVEL_ENEMY } from '../content/spawnPlans.js';
-import { swapBalloonModel, loadBalloonModel, preCaptureDepthSprite } from './balloonModels.js';
+import { swapBalloonModel, loadBalloonModel, preCaptureDepthSprite, prebuildBalloonVariants, setBalloonVariant } from './balloonModels.js';
 import { MagicianBoss } from './bossMagician.js';
 
 // ===== 召唤怪小兵参数（手动微调入口，改这里即可）=====
@@ -46,10 +46,13 @@ export class WaveManager {
     this._lastEliteLayerAt = -99;    // 上次生成精英的脚本秒（层间隔节流）
     this._fuseGroups = [];           // 清场融合演出队列（见 _fuseSpawn / _updateFuseGroups）
     this._dripStopped = false;       // 第四十七修：金点批清空后停掉本关杂鱼滴流（见 _updateEliteWatch）
-    this._eliteWatch = [];           // 待观察批次（该层清空 → 金点飞选项卡，见 _updateEliteWatch）
+    this._eliteWatch = [];           // 待观察批次（该批清空 → 金点飞选项卡，见 _updateEliteWatch）
+    this._eliteBatchSeq = 0;         // 第四十九修：精英批编号（每批 +1，观察只认本批自己生成的怪）
     this._trashMul = 1;              // 杂鱼密度倍率（L1 前 30s ×1.5）
     this._trashMulUntil = 0;         // 倍率截止脚本秒（0 = 不限）
     this.hooks = {};                 // game 注入的表现回调：banner(text) / goldToCards()
+    // ⚠ 治疗回血的 onHealCast / onHealPulse 的**读取方是 BalloonManager**（balloons._applyHealAura），
+    //   所以下面有转发访问器：无论 game 挂 waves 还是挂 balloons 都能生效（第四十九修三轮修坑）。
     // —— 新调度（DPS 内外圈）状态 ——
     this.levelScale = SPAWN_RING.LEVEL_BASE; // 关卡常数
     this.baseSpawn = 0;          // 基础出怪量
@@ -129,7 +132,7 @@ export class WaveManager {
     // 第四十六修：有关卡脚本 → 走三层时间轴；旧的三期脉冲让位（两套都出怪会翻倍）
     this._script = (SPAWN_LAYER.ENABLED && !isBoss(level)) ? scriptFor(level.n) : null;
     this._scriptElapsed = 0; this._scriptPrev = 0; this._lastEliteLayerAt = -99;
-    this._fuseGroups.length = 0; this._eliteWatch.length = 0;
+    this._fuseGroups.length = 0; this._eliteWatch.length = 0; this._eliteBatchSeq = 0;
     this._trashMul = (this._script && this._script.trashMul) || 1;
     this._trashMulUntil = (this._script && this._script.trashMulUntil) || 0;
     this._dripStopped = false;   // 第四十七修：每关复位（金点批清空后才置 true）
@@ -232,18 +235,18 @@ export class WaveManager {
   // 统一出怪入口：有门 → 光点入队；无门/开关关 → 同步直接 spawn（保持原行为，onSpawn 也同步执行）
   _queueSpawn(type, pos, opts = {}) {
     // 类型开关关 → 直接 spawn
-    if (opts.effect === false) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn });
+    if (opts.effect === false) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn || null, balloon: opts.balloon || null });
     // 出发点：显式指定（第三十八修 · Boss 召唤物从 Boss 身上飞出）优先；否则取最近传送门
     let from = opts.from ? opts.from.clone() : null;
     if (!from) {
       // 无门 / 总开关关 → 直接 spawn（Boss/激光关自动兜底）
       const portals = this.getPortals ? this.getPortals() : null;
       if (!PORTAL_BEAM.ENABLED || !portals || !portals.length) {
-        return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn });
+        return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn || null, balloon: opts.balloon || null });
       }
       // 最近传送门稳定中心
       const nearest = this._nearestPortal(portals, pos);
-      if (!nearest) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn });
+      if (!nearest) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn || null, balloon: opts.balloon || null });
       from = nearest.getWorldPos(new THREE.Vector3());
       // 出发点相对门中心上抬 START_Y_OFFSET 米（让光点从门上方飞出，视觉更明显）
       from.y += PORTAL_BEAM.START_Y_OFFSET || 0;
@@ -418,6 +421,26 @@ export class WaveManager {
   }
 
   /**
+   * 第五十一修 · 远程三兄弟（忍者/幽灵/章鱼）的构造参数（现场口径）：
+   *   · Boss 关 = 默认血量 + 玩家DPS × BOSS_SEC(10)、体型保持敌种自带 scale；
+   *   · 普通关 = 默认血量 + 玩家DPS × NORMAL_SEC(2)、体型 ×NORMAL_SIZE_MUL(2)。
+   *   非远程类型返回 null（调用方原样走老口径）。
+   *   为什么单独成函数：普通精英（_eliteOpts 非 climax 分支）与 Boss 召唤池
+   *   （bossMagician._spawnMinion）**两处**都要用同一份口径，口径只能有一份。
+   */
+  rangedHpOpts(type) {
+    if (!RANGED_DPS_HP.ENABLED || !RANGED_DPS_HP.TYPES.includes(type)) return null;
+    const dps = this.hooks.playerDps ? this.hooks.playerDps() : 0;
+    const bossLevel = !!(this.level && this.level.boss);
+    const o = {
+      isElite: true,
+      hp: Math.round(this._eliteBaseHP(type) + dps * (bossLevel ? RANGED_DPS_HP.BOSS_SEC : RANGED_DPS_HP.NORMAL_SEC)),
+    };
+    if (!bossLevel) o.sizeMul = RANGED_DPS_HP.NORMAL_SIZE_MUL;   // Boss 关不传 → 退回敌种自带 scale
+    return o;
+  }
+
+  /**
    * 精英的构造参数（体型 / 血量 / 移动速度）—— 第四十八修起**分两档**：
    *
    * <p>① 末尾精英（climax）：关卡脚本里带 goldReturn 的那一批（横幅 + 清场融合 + 金点抽卡）。
@@ -429,19 +452,25 @@ export class WaveManager {
    *   固定血量 ELITE_BASE_HP[型]。它只是「比杂鱼厚一点的怪」，不该吃掉玩家一大半输出，
    *   更不能把关卡堵死（第四十七修现场踩过：全员 DPS 血量 → 中段精英也变墙）。
    */
-  _eliteOpts(type, combos, climax) {
+  _eliteOpts(type, combos, climax, batch = 0) {
+    // 第四十九修：climax 同时决定名牌档次（普通精英冰蓝 / 末尾精英金红 + 「 Boss」后缀），
+    //   batchId 供 _updateEliteWatch 按批判定「这一批是否已清空」。
+    const tag = { climax: !!climax, batchId: batch || 0 };
     if (!climax) {
-      return { isElite: true, hp: this._eliteBaseHP(type), sizeMul: 1 };
+      // 第五十一修：远程三兄弟走「DPS 血量 + 普通关放大两倍」，其余普通精英保持原口径
+      const ranged = this.rangedHpOpts(type);
+      if (ranged) return Object.assign(ranged, tag);
+      return Object.assign({ isElite: true, hp: this._eliteBaseHP(type), sizeMul: 1 }, tag);
     }
     const list = combos || [];
     const batchBaseTotal = list.reduce((s, c) => s + this._eliteBaseHP(c.type) * (c.count || 0), 0);
     const dps = this.hooks.playerDps ? this.hooks.playerDps() : 0;
-    return {
+    return Object.assign({
       isElite: true,
       hp: climaxEliteHp(this._eliteBaseHP(type), batchBaseTotal, dps, ELITE_TUNING),
       sizeMul: ELITE_TUNING.SIZE_MUL,
       speed: eliteTravelSpeed(ELITE_TUNING),
-    };
+    }, tag);
   }
 
   // 每帧推进精英波计时，按时间窗触发三期（前期5s/中期20s/后期40s，进入即生成一次）
@@ -487,7 +516,9 @@ export class WaveManager {
     //   （15m / 散布 6 / 按敌种自带 scale 算避让半径）。
     const type = ENEMY_TYPES[combos[0]?.type];
     // 普通精英渲染成 1 倍（见 _eliteOpts 的 sizeMul:1）→ 避让半径也按 1 倍算，别用敌种自带 scale
-    const r0 = ((type && type.radius) || 0.9) * (climax ? ELITE_TUNING.SIZE_MUL : 1);
+    // 第五十一修：远程三兄弟在普通关的体型是 2 倍（见 rangedHpOpts）→ 避让半径也按 2 倍算
+    const plainMul = (this.level && this.level.boss) ? 1 : RANGED_DPS_HP.NORMAL_SIZE_MUL;
+    const r0 = ((type && type.radius) || 0.9) * (climax ? ELITE_TUNING.SIZE_MUL : plainMul);
     const dist = climax ? ELITE_TUNING.SPAWN_DIST : PLAIN_ELITE_DIST;
     const spread = climax ? ELITE_TUNING.SPAWN_SPREAD : PLAIN_ELITE_SPREAD;
     for (let i = 0; i < total; i++) {
@@ -546,6 +577,18 @@ export class WaveManager {
     this.log && this.log(`[出怪] 开局杂鱼批量 ${n} 只`);
   }
 
+  /**
+   * 表现回调转发（第四十九修 · 三轮修坑）：
+   *   原先以为「挂在 waves 上就等于挂上了」，但治疗逻辑跑在 BalloonManager 里
+   *   （balloons._applyHealAura 读 this.onHealCast）⇒ 挂 waves 只是个没人读的普通属性。
+   *   现场症状：治疗术士站着不动、不飞粉色加号、也不回血（上一轮的绿环看不到也是同一原因）。
+   *   加转发访问器后两条路都通，避免以后再踩同一个坑。
+   */
+  set onHealCast(fn) { this.balloons.onHealCast = fn; }
+  get onHealCast() { return this.balloons.onHealCast; }
+  set onHealPulse(fn) { this.balloons.onHealPulse = fn; }
+  get onHealPulse() { return this.balloons.onHealPulse; }
+
   // 清掉场上全部非精英（不结算积分 —— 它们是被「吸收」进融合光点的）
   _clearTrash() {
     for (let i = this.balloons.list.length - 1; i >= 0; i--) {
@@ -557,6 +600,15 @@ export class WaveManager {
       if (it.group === 'fuse') continue;
       if (it.mesh) this._removeBeam(it.mesh);
       this._pendingSpawns.splice(i, 1);
+    }
+  }
+
+  // 清掉场上残留的精英（不结算积分）—— 第四十九修三轮：金点批收尾时不许再留精英，
+  //   与 _fuseSpawn 的「末尾批吸收场上精英」配套（那条管出现时，这条管收尾时）。
+  _clearElites() {
+    for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+      const b = this.balloons.list[i];
+      if (b.alive && b.isElite && !b.isBoss) this.balloons.remove(b);
     }
   }
 
@@ -596,17 +648,22 @@ export class WaveManager {
 
     // 第四十八修：末尾批（goldReturn）才吃强化；其余走原生口径
     const climax = isClimaxEvent(ev);
+    // 第四十九修：本批的唯一编号 —— 金点观察只认「这一批自己生成的怪」（见 _updateEliteWatch）
+    const batch = ++this._eliteBatchSeq;
     const positions = this._eliteSpawnPositions(ev.dir, combos, climax);
     const color = LAYER[layer] ? LAYER[layer].color : null;
+    // 第四十九修：只有末尾批需要观察（金点 → 抽卡），且观察对象是**这一批**而不是「层」——
+    //   现场踩坑（第 4 关）：20s 的普通精英与 30s 的末尾批同属 mini 层，普通精英被打死时
+    //   观察条目已被它们顶成 seen=true ⇒ 末尾精英还在融合光点里飞就把选项卡弹了出来。
     // hold：merge 批会让杂鱼滴流暂停（清场后别马上又涌杂鱼，注意力留给精英）
-    this._eliteWatch.push({ layer, gold: !!ev.goldReturn, seen: false, t: 0, hold: ev.via === 'merge' });
+    if (ev.goldReturn) this._eliteWatch.push({ batch, seen: false, t: 0, hold: ev.via === 'merge' });
     this.audio?.playLayerSpawn?.(layer);
-    if (ev.via === 'merge') this._fuseSpawn(ev, positions, color, layer);
+    if (ev.via === 'merge') this._fuseSpawn(ev, positions, color, layer, batch);
     else {
       let pi = 0;
       for (const c of combos) {
         for (let k = 0; k < c.count; k++) {
-          this._queueElite(c.type, positions[pi++ % positions.length], color, combos, climax);
+          this._queueElite(c.type, positions[pi++ % positions.length], color, combos, climax, batch);
         }
       }
     }
@@ -615,17 +672,17 @@ export class WaveManager {
   }
 
   // 单只精英：走光点入队（血量/体型/速度见 _eliteOpts；isElite 供名牌/计数）
-  _queueElite(type, pos, color, combos, climax) {
-    this._queueSpawn(type, pos, { color, balloon: this._eliteOpts(type, combos, climax) });
+  _queueElite(type, pos, color, combos, climax, batch = 0) {
+    this._queueSpawn(type, pos, { color, balloon: this._eliteOpts(type, combos, climax, batch) });
   }
 
   // 原地直接生成（融合落地用；不经光点）
-  _spawnEliteNow(type, pos, combos, climax) {
-    return this.balloons.spawn(type, pos, this._eliteOpts(type, combos, climax));
+  _spawnEliteNow(type, pos, combos, climax, batch = 0) {
+    return this.balloons.spawn(type, pos, this._eliteOpts(type, combos, climax, batch));
   }
 
   // 清场融合：场上非精英化光点（不结算）+ 不足补足 FUSE.COUNT（从最近传送门）→ 汇聚 → 大光点落地
-  _fuseSpawn(ev, positions, color, layer) {
+  _fuseSpawn(ev, positions, color, layer, batch = 0) {
     const fusePos = new THREE.Vector3();
     for (const p of positions) fusePos.add(p);
     fusePos.multiplyScalar(1 / Math.max(1, positions.length));
@@ -633,12 +690,21 @@ export class WaveManager {
 
     const origins = [];
     if (SPAWN_LAYER.FUSE_CLEAR) {
-      for (let i = this.balloons.list.length - 1; i >= 0; i--) {
-        const b = this.balloons.list[i];
-        if (!b.alive || b.isElite || b.isBoss) continue;
-        if (origins.length < FUSE.COUNT) origins.push(b.mesh.position.clone());
-        this.balloons.remove(b);          // 直接移除 = 不结算积分（用户确认第 3 条）
-      }
+      // 第四十九修 · 三轮：**末尾批（末尾精英 = 现场说的「精英Boss」）出现时，场上已有的精英也一起化成光点吸收进来**。
+      //   现场：「偶尔精英Boss死了，还有一个精英出现」——那是上一批（5/15/25s 的普通精英）残留还在场上：
+      //   旧口径只清杂鱼（!isElite）不动精英，金点批收尾时同样只清杂鱼 ⇒ 它继续往玩家飘，看着就像"又冒出来一个"。
+      //   现在：精英**优先**成为光点（视觉上就是"被吸走"），再清杂鱼；**非末尾批维持原口径**（精英留给玩家打）。
+      const climax2 = isClimaxEvent(ev);
+      const absorb = (pick) => {
+        for (let i = this.balloons.list.length - 1; i >= 0; i--) {
+          const b = this.balloons.list[i];
+          if (!b.alive || b.isBoss || !pick(b)) continue;
+          if (origins.length < FUSE.COUNT) origins.push(b.mesh.position.clone());
+          this.balloons.remove(b);        // 直接移除 = 不结算积分（用户确认第 3 条）
+        }
+      };
+      if (climax2) absorb((b) => b.isElite);
+      absorb((b) => !b.isElite);
     }
     // 不足 → 从最近传送门补足（用户：「如果光点小于5个，则从传送门新增光点」）
     const portals = this.getPortals ? this.getPortals() : null;
@@ -666,7 +732,7 @@ export class WaveManager {
     }
     this._fuseGroups.push({
       phase: 'in', t: FUSE.IN_DUR, items, fusePos,
-      out: { combos: ev.combos || [], positions, color, layer, climax: isClimaxEvent(ev) },
+      out: { combos: ev.combos || [], positions, color, layer, climax: isClimaxEvent(ev), batch },
       big: null, home: null, bigFrom: null,
     });
     this.log && this.log(`[出怪] 清场融合：${origins.length} 个光点汇聚 → ${ev.combos.map((c) => c.type + '×' + c.count).join(' + ')}`);
@@ -710,7 +776,7 @@ export class WaveManager {
           const ps = g.out.positions;
           for (const c of g.out.combos) {
             for (let kk = 0; kk < c.count; kk++) {
-              this._spawnEliteNow(c.type, ps[pi++ % ps.length], g.out.combos, g.out.climax);
+              this._spawnEliteNow(c.type, ps[pi++ % ps.length], g.out.combos, g.out.climax, g.out.batch);
             }
           }
           this._fuseGroups.splice(i, 1);
@@ -719,13 +785,22 @@ export class WaveManager {
     }
   }
 
-  // 批次观察：该层先出现精英、随后清空 → 触发金点（hooks.goldToCards）
-  //   用「层」而不是「逐只跟踪」：光点落地前拿不到 balloon 引用，按层判定最稳。
+  // 批次观察（第四十九修改为按「批」）：本批先出现、随后清空 → 触发金点（hooks.goldToCards）
+  //   ⚠ 第四十八修及以前是「按层」判定。现场踩坑（第 4 关）：20s 的普通精英与 30s 的末尾批
+  //     同属 mini 层 ⇒ 普通精英被打死时，末尾批的观察条目已被它们顶成 seen=true，
+  //     于是末尾精英还在融合光点里飞就把选项卡弹了出来。
+  //   按 batchId 判定后，只有这一批自己生成的怪能算数（光点落地前的空窗期照旧靠 seen 兜底）。
+  _countBatch(batch) {
+    let n = 0;
+    for (const b of this.balloons.list) if (b.alive && b.batchId === batch) n++;
+    return n;
+  }
+
   _updateEliteWatch(dt) {
     for (let i = this._eliteWatch.length - 1; i >= 0; i--) {
       const w = this._eliteWatch[i];
       w.t += dt;
-      const alive = this._countLayer(w.layer);
+      const alive = this._countBatch(w.batch);
       if (!w.seen) {
         if (alive > 0) w.seen = true;
         else if (w.t > 8) this._eliteWatch.splice(i, 1);   // 兜底：8s 还没见到 → 丢弃
@@ -733,10 +808,10 @@ export class WaveManager {
       }
       if (alive > 0) continue;
       this._eliteWatch.splice(i, 1);
-      if (!w.gold) continue;
       // 第四十七修：金点批清空 = 本关的爽点结束 —— 顺手把剩余杂鱼收掉并停掉滴流，
       //   修掉「弹了选项卡之后还在冒杂鱼、清完又弹第二次选项卡」的观感。
       this._clearTrash();
+      this._clearElites();   // 第四十九修 · 三轮：收尾时场上不许再留精英（配套 _fuseSpawn 的吸收）
       this._dripStopped = true;
       if (this.hooks.goldToCards) this.hooks.goldToCards();
     }
@@ -772,6 +847,12 @@ export class WaveManager {
         b.isFaceMask = true;
         this.faceBoss = b;
         this.bossSpawned = true;        // 落地才置位（防飞行期 cleared 误判）
+        // 第四十九修：登场即把「其它两张脸」预建好（与本体同一套 attach 口径：同半径、同微调）。
+        //   半径必须等于构造函数挂本体用的 ENEMY_TYPES.faceMask.radius，否则两张脸会一大一小。
+        //   预建失败只影响变脸时回退旧路径（多一次重编译），不影响玩法。
+        const baseFace = ENEMY_TYPES.faceMask.model;
+        prebuildBalloonVariants(b, FACE_BOSS.MODELS.filter((u) => u !== baseFace), ENEMY_TYPES.faceMask.radius, baseFace)
+          .then((ok) => { if (!ok) console.warn('[脸谱Boss] 其它两张脸未全部预建成功 → 变脸将回退重建模型'); });
       },
     });
   }
@@ -815,7 +896,15 @@ export class WaveManager {
     if (b && b.alive && this.balloons.list.includes(b)) {
       const [nx, ny, nz] = FACE_BOSS.POSITIONS[this.facePhase];
       b.mesh.position.set(nx, ny, nz);
-      swapBalloonModel(b, FACE_BOSS.MODELS[this.facePhase], b.radius);
+      // 第四十九修：变脸**不再重建模型** —— 三张脸在 Boss 登场时就预建好（见 _spawnFaceBoss），
+      //   这里只切 visible。旧写法 swapBalloonModel 会 dispose 旧材质 → 释放 GL program（引用计数归零）
+      //   → 下一帧同步重新编译着色器 ⇒ 现场就是「第 6 关一变脸就卡一下」。
+      //   预建没到位（加载慢 / 已走兜底重建）时回退旧路径，行为与改造前完全一致。
+      const faceUrl = FACE_BOSS.MODELS[this.facePhase];
+      if (!setBalloonVariant(b, faceUrl)) {
+        swapBalloonModel(b, faceUrl, b.radius);
+        if (this.log) this.log('[脸谱Boss] 预建脸未就绪 → 回退重建模型');
+      }
     }
     // 进入黑阶段时预捕获 DepthSprite（避免 25 分身首帧卡顿）
     if (this.facePhase === 2) {
@@ -1126,6 +1215,17 @@ export class WaveManager {
         this._faceSpawnClone();
       }
     }
+    // 波浪跳动（第五十修 · 现场文件）：「原地上下跳跃，起跳位置不一 → 波浪形」。
+    //   相位按生成序号依次错开，沿圆环看过去就是一列波浪；冲锋期停跳（这时轨迹要看得清）。
+    const jumpAmp = FACE_BOSS.BLACK_CLONE_BOB_AMP;
+    if (jumpAmp > 0 && t < FACE_BOSS.BLACK_CLONE_CHARGE_START) {
+      const w = FACE_BOSS.BLACK_CLONE_BOB_FREQ * Math.PI * 2;
+      for (const c of this.faceSubEntities) {
+        if (!c.alive || !c.mesh || !this.balloons.list.includes(c)) continue;
+        const base = (c._bobBaseY != null) ? c._bobBaseY : FACE_BOSS.BLACK_CLONE_Y;
+        c.mesh.position.y = base + Math.sin(t * w + c._bobPhase) * jumpAmp;
+      }
+    }
     // 阶段末前 2 秒（t>=13）：所有分身统一解除 controlled 并设置冲锋速度撞向玩家
     if (t >= FACE_BOSS.BLACK_CLONE_CHARGE_START) {
       for (const c of this.faceSubEntities) {
@@ -1158,6 +1258,9 @@ export class WaveManager {
         c.selfDamage = FACE_BOSS.BLACK_CLONE_SELF_DAMAGE;
         c.isFaceSub = true;
         c.faceBossRef = b;
+        // 第五十修：波浪跳动的基准高度 + 起跳相位（按生成序号 = 圆环角度依次错开）
+        c._bobBaseY = c.mesh.position.y;
+        c._bobPhase = i * FACE_BOSS.BLACK_CLONE_BOB_PHASE_STEP;
         // 黑色分身保持可见（隐身的是 Boss 本体，见 _faceUpdateBlack）；分身仍可被击中扣 Boss 血
         this.faceSubEntities.push(c);
       },

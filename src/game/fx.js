@@ -66,12 +66,14 @@ export class TracerTail {
    *   子弹出生点在枪管内部（SHOOT.SPAWN_OFFSET），若照常拖满 LENGTH，
    *   弹头刚出膛那几帧尾迹会整条穿到枪管后方（玩家看到的「曳光延伸到枪管背后」）。
    *   不足 MIN_BACK 干脆不画（那几帧交给枪口焰）。
+   * lenScale（第四十九修）= 长度倍率（连杀加速期的弹曳光加长，见 RAPID_FIRE.VISUAL.TRACER_MUL）；
+   *   后拖上限 back 仍然生效，所以刚出膛那几帧依旧不会穿到枪管后面。
    * @returns {boolean} 是否真的写入了一条
    */
-  add(pos, dir, colorHex, back) {
+  add(pos, dir, colorHex, back, lenScale = 1) {
     if (this._n >= this.capacity) return false;
-    const maxBack = back == null ? this.cfg.LENGTH : back;
-    const len = Math.min(maxBack, this.cfg.LENGTH);
+    const maxBack = back == null ? this.cfg.LENGTH * lenScale : back;
+    const len = Math.min(maxBack, this.cfg.LENGTH * lenScale);
     if (!(len > (this.cfg.MIN_BACK || 0))) return false;
     const w = this.cfg.WIDTH;
     _q.setFromUnitVectors(_up, dir);                 // 立方体长轴取 Y → 旋到飞行方向
@@ -295,7 +297,8 @@ function plusTexture() {
   c.width = c.height = 64;
   const x = c.getContext('2d');
   x.clearRect(0, 0, 64, 64);
-  x.strokeStyle = '#51cf66';
+  // 画成白色：颜色由使用方用 SpriteMaterial.color 染（绿 = 治疗线/回血环，粉 = 第四十九修返工的飞行加号）
+  x.strokeStyle = '#ffffff';
   x.lineWidth = 12; x.lineCap = 'round';
   x.beginPath(); x.moveTo(32, 12); x.lineTo(32, 52); x.moveTo(12, 32); x.lineTo(52, 32); x.stroke();
   _plusTexCache.tex = new THREE.CanvasTexture(c);
@@ -324,7 +327,10 @@ export class HealLinkFx {
     this.scene.add(line);
     const sprites = [];
     for (let i = 0; i < this.cfg.PLUS_COUNT; i++) {
-      const mat = new THREE.SpriteMaterial({ map: this._tex, transparent: true, depthTest: false, depthWrite: false });
+      const mat = new THREE.SpriteMaterial({
+        map: this._tex, color: this.cfg.COLOR,      // 贴图是白的：这里染色（治疗线 = 绿）
+        transparent: true, depthTest: false, depthWrite: false,
+      });
       const sp = new THREE.Sprite(mat);
       sp.scale.set(this.cfg.PLUS_SIZE, this.cfg.PLUS_SIZE, 1);
       sp.visible = false;
@@ -392,6 +398,197 @@ export class HealLinkFx {
   }
 }
 
+// ---------------------------------------------------------------- 治疗脉冲环（第四十九修）
+// 治疗术士的回血表现：脚下一个绿色圆环由 0 扩散到光环半径，环上随波漂几个「+」。
+//
+// 为什么换掉「连线 + 沿线加号」（第四十六修那套）：
+//   现场反馈「回血效果表现弱」—— 连线只说明"在治疗"，讲不出"什么时候治、治了多大范围"；
+//   脉冲环把节奏和范围一次说清，而且**每 2 秒才动一次**（连线那套是每帧算 O(n²) + 每帧改顶点）。
+//
+// 性能：
+//   · 每个环 = 一个 RingGeometry(共享给本实例的所有槽) + 一份材质（要独立淡出，故不能共用）；
+//     RING_POOL 默认 3 ⇒ 最多 3 个 draw call，而且只在脉冲后 RING_DUR(0.9s) 内可见。
+//   · 「+」用 Sprite（复用治疗线那张 64×64 缓存贴图），PLUS_RIDE 默认 4 个。
+//   · 池满时复用最老的槽（不 new、不增长）—— 与 fx.js 里其它效果同一套「预分配」纪律。
+export class HealRingFx {
+  constructor(scene, cfg = HEAL_LINK) {
+    this.scene = scene;
+    this.cfg = cfg;
+    this.rings = [];
+    this._t = 0;
+    this._tex = plusTexture();
+  }
+
+  _grow() {
+    const geo = new THREE.RingGeometry(0.9, 1, 48);   // 外径 1：靠 scale 放大到目标半径
+    const mat = new THREE.MeshBasicMaterial({
+      color: this.cfg.COLOR, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.rotation.x = -Math.PI / 2;   // 平铺在地面（本地 XY 平面 → 世界 XZ）
+    mesh.visible = false;
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 997;           // 场景之上、治疗线(998)/名牌(999)之下
+    this.scene.add(mesh);
+    const pluses = [];
+    const n = Math.max(0, this.cfg.PLUS_RIDE | 0);
+    for (let i = 0; i < n; i++) {
+      const pm = new THREE.SpriteMaterial({
+        map: this._tex, color: this.cfg.COLOR,      // 贴图是白的：这里染色（回血环 = 绿）
+        transparent: true, depthTest: false, depthWrite: false, opacity: 0,
+      });
+      const sp = new THREE.Sprite(pm);
+      sp.scale.set(this.cfg.PLUS_SIZE || 0.26, this.cfg.PLUS_SIZE || 0.26, 1);
+      sp.visible = false;
+      sp.renderOrder = 999;
+      this.scene.add(sp);
+      pluses.push(sp);
+    }
+    this.rings.push({ geo, mat, mesh, pluses, x: 0, z: 0, radius: 6, t: 0, dur: 1, active: false });
+  }
+
+  /** 播一次脉冲环：pos = 术士世界坐标，radius = 光环半径（米） */
+  pulse(pos, radius) {
+    if (!this.cfg || this.cfg.ENABLED === false || this.cfg.RING_ENABLED === false || !pos) return;
+    const pool = Math.max(1, this.cfg.RING_POOL | 0);
+    let slot = this.rings.find((r) => !r.active);
+    if (!slot) {
+      if (this.rings.length < pool) { this._grow(); slot = this.rings[this.rings.length - 1]; }
+      else slot = this.rings[0];                        // 池满：复用最老的槽
+    }
+    slot.x = pos.x; slot.z = pos.z;
+    slot.radius = Math.max(0.5, radius || 6);
+    slot.dur = Math.max(0.1, this.cfg.RING_DUR || 0.9);
+    slot.t = slot.dur;
+    slot.active = true;
+    slot.mesh.visible = true;
+  }
+
+  update(dt) {
+    this._t += dt;
+    const y = this.cfg.RING_Y != null ? this.cfg.RING_Y : 0.06;
+    for (const r of this.rings) {
+      if (!r.active) { r.mesh.visible = false; for (const sp of r.pluses) sp.visible = false; continue; }
+      r.t -= dt;
+      const k = THREE.MathUtils.clamp(1 - r.t / r.dur, 0, 1);
+      const rad = r.radius * k;
+      r.mesh.position.set(r.x, y, r.z);
+      r.mesh.scale.set(rad, rad, 1);
+      // 快速起亮 + 随扩散淡出（k*5 那一下是为了别在极小半径时看不见）
+      r.mat.opacity = (this.cfg.RING_OPACITY || 0.75) * (1 - k) * Math.min(1, k * 5);
+      const n = r.pluses.length;
+      for (let i = 0; i < n; i++) {
+        const sp = r.pluses[i];
+        const ang = (i / n) * Math.PI * 2 + this._t * 0.6;   // 慢慢绕圈，免得像静止贴图
+        sp.position.set(r.x + Math.cos(ang) * rad, y + 0.3 + 0.45 * k, r.z + Math.sin(ang) * rad);
+        sp.material.opacity = Math.min(1, r.mat.opacity * 1.4);
+        sp.visible = true;
+      }
+      if (r.t <= 0) { r.active = false; r.mesh.visible = false; for (const sp of r.pluses) sp.visible = false; }
+    }
+  }
+
+  clear() {
+    for (const r of this.rings) {
+      r.active = false; r.mesh.visible = false;
+      for (const sp of r.pluses) sp.visible = false;
+    }
+  }
+
+  dispose() {
+    for (const r of this.rings) {
+      this.scene.remove(r.mesh); r.geo.dispose(); r.mat.dispose();
+      for (const sp of r.pluses) { this.scene.remove(sp); sp.material.dispose(); }
+    }
+    this.rings.length = 0;
+  }
+}
+
+// ---------------------------------------------------------------- 粉色飞行加号（第四十九修返工）
+//
+// 现场口径：治疗术士「发射粉色加号，到玩家最近且血最少（百分比）的怪物身上，每秒治疗一次」。
+//   为什么不用圆环：现场反馈绿环「看不到」——环贴地、加色混合、又被怪和地面挡，在头显里几乎不可见；
+//   一枚**朝目标飞的粉色加号**是"有方向的事件"，玩家顺着飞行方向就知道它在奶谁。
+//   · 起点 = 术士位置，终点 = 目标**当帧**的位置（飞过去的过程里目标在动也不追 —— 追反而像制导导弹）；
+//   · 走一条抛物线（PLUS_ARC），末段淡出 + 中途略微放大；
+//   · 池化：PLUS_POOL 个槽，池满复用最老的（不 new、不增长，与 fx.js 其它效果同一套纪律）；
+//   · depthTest:false + renderOrder 999 ⇒ 隔着怪/墙也看得见（治疗反馈必须醒目）。
+export class HealPlusFx {
+  constructor(scene, cfg = HEAL_LINK) {
+    this.scene = scene;
+    this.cfg = cfg;
+    this.slots = [];
+    this._tex = plusTexture();
+  }
+
+  _grow() {
+    const mat = new THREE.SpriteMaterial({
+      map: this._tex,
+      color: this.cfg.PLUS_COLOR != null ? this.cfg.PLUS_COLOR : 0xff7fbf,
+      transparent: true, depthTest: false, depthWrite: false,
+    });
+    const sp = new THREE.Sprite(mat);
+    const size = this.cfg.PLUS_SIZE || 0.34;
+    sp.scale.set(size, size, 1);
+    sp.visible = false;
+    sp.frustumCulled = false;
+    sp.renderOrder = 999;
+    this.scene.add(sp);
+    this.slots.push({ sp, from: new THREE.Vector3(), to: new THREE.Vector3(), t: 0, dur: 0.45, active: false });
+  }
+
+  /**
+   * 从 from 飞一枚加号到 to（世界坐标，立即拷贝；调用方可用复用向量）
+   * @param {number|null} colorHex 覆盖颜色（第五十修：击败治疗术士的提示要绿色）；缺省用 HEAL_LINK.PLUS_COLOR
+   */
+  cast(from, to, colorHex = null) {
+    if (!this.cfg || this.cfg.ENABLED === false || this.cfg.PLUS_ENABLED === false || !from || !to) return;
+    const pool = Math.max(1, this.cfg.PLUS_POOL | 0);
+    let slot = this.slots.find((s) => !s.active);
+    if (!slot) {
+      if (this.slots.length < pool) { this._grow(); slot = this.slots[this.slots.length - 1]; }
+      else slot = this.slots[0];                       // 池满：复用最老的槽
+    }
+    const col = colorHex != null ? colorHex : (this.cfg.PLUS_COLOR != null ? this.cfg.PLUS_COLOR : 0xff7fbf);
+    if (slot.sp.material.color) slot.sp.material.color.setHex(col);
+    slot.from.copy(from);
+    slot.to.copy(to);
+    slot.dur = Math.max(0.1, this.cfg.PLUS_DUR || 0.45);
+    slot.t = 0;
+    slot.active = true;
+    slot.sp.visible = true;
+    slot.sp.position.copy(from);
+    slot.sp.material.opacity = 1;
+  }
+
+  update(dt) {
+    const base = this.cfg.PLUS_SIZE || 0.34;
+    const arc = this.cfg.PLUS_ARC != null ? this.cfg.PLUS_ARC : 0;
+    for (const s of this.slots) {
+      if (!s.active) { s.sp.visible = false; continue; }
+      s.t += dt;
+      const k = Math.min(1, s.t / s.dur);
+      s.sp.position.lerpVectors(s.from, s.to, k);
+      s.sp.position.y += arc * Math.sin(Math.PI * k);          // 抛物线：中段最高
+      s.sp.material.opacity = 1 - k * k * k;                   // 末段快速淡出
+      const size = base * (1 + 0.25 * Math.sin(Math.PI * k));  // 中途略放大，像"喂"过去
+      s.sp.scale.set(size, size, 1);
+      if (k >= 1) { s.active = false; s.sp.visible = false; }
+    }
+  }
+
+  clear() {
+    for (const s of this.slots) { s.active = false; s.sp.visible = false; }
+  }
+
+  dispose() {
+    for (const s of this.slots) { this.scene.remove(s.sp); s.sp.material.dispose(); }
+    this.slots.length = 0;
+  }
+}
+
 // ---------------------------------------------------------------- 汇总门面
 export class FxEffects {
   constructor(scene) {
@@ -400,7 +597,9 @@ export class FxEffects {
     this.sparks = new ParticlePool(scene, FX.SPARK, dotGeo());
     this.debris = new ParticlePool(scene, FX.DEBRIS, boxGeo());
     this.muzzleFx = new MuzzleFlash(scene, FX.MUZZLE);
-    this.healLink = new HealLinkFx(scene, HEAL_LINK);   // 第四十六修：治疗线 + 绿色加号
+    this.healLink = new HealLinkFx(scene, HEAL_LINK);   // 第四十六修：治疗线 + 绿色加号（第四十九修起默认关，看 HEAL_LINK.LINES）
+    this.healRing = new HealRingFx(scene, HEAL_LINK);   // 第四十九修：回血脉冲环（现场说看不到 → RING_ENABLED 默认 false）
+    this.healPlusFx = new HealPlusFx(scene, HEAL_LINK); // 第四十九修返工：粉色飞行加号（当前表现）
   }
 
   /** 命中火花：colorHex 省略用配置里的默认暖金 */
@@ -416,11 +615,19 @@ export class FxEffects {
   /** 治疗线（第四十六修）：pairs = [{a,b}] 世界坐标；每帧调一次（空数组 = 全隐藏） */
   healLinks(pairs) { this.healLink.set(pairs); }
 
+  /** 回血脉冲环（第四十九修首版）：术士每 PULSE_PERIOD 秒调一次（RING_ENABLED=false 时内部直接 return） */
+  healPulse(pos, radius) { this.healRing.pulse(pos, radius); }
+
+  /** 粉色飞行加号（第四十九修返工）：from = 术士位置，to = 被治疗的怪 */
+  healPlus(from, to, colorHex) { this.healPlusFx.cast(from, to, colorHex); }
+
   update(dt) {
     this.sparks.update(dt);
     this.debris.update(dt);
     this.muzzleFx.update(dt);
     this.healLink.update(dt);
+    this.healRing.update(dt);
+    this.healPlusFx.update(dt);
   }
 
   clear() {
@@ -429,6 +636,8 @@ export class FxEffects {
     this.debris.clear();
     this.muzzleFx.clear();
     this.healLink.clear();
+    this.healRing.clear();
+    this.healPlusFx.clear();
   }
 
   dispose() {
@@ -437,5 +646,7 @@ export class FxEffects {
     this.debris.dispose();
     this.muzzleFx.dispose();
     this.healLink.dispose();
+    this.healRing.dispose();
+    this.healPlusFx.dispose();
   }
 }

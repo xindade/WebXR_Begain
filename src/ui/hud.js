@@ -12,8 +12,9 @@ export class HUD {
     this.root.appendChild(this.top);
 
     this.hpWrap = document.createElement('div');
-    // ★ 第二十三修（2026-09-23）：给这条 2D 船血条一个 id，好让正式包用 CSS 隐藏它
-    //   （用户实测：头显 2D 页面上它就是右上角那条绿色长条。VR 里船血看左手腕面板，见 vr/wrist-ui.js）。
+    // ★ 第二十三修（2026-09-23）：给这条 2D 飞毯血条一个 id，好让正式包用 CSS 隐藏它
+    //   （用户实测：头显 2D 页面上它就是右上角那条绿色长条。VR 里看左手腕面板，见 vr/wrist-ui.js）。
+    //   第五十修：玩家面板文案统一「船血」→「飞毯血量」（现场口径）。
     this.hpWrap.id = 'hud-hp';
     this.hpWrap.style.cssText = 'position:absolute;top:78px;right:145px;width:140px;';
     this.root.appendChild(this.hpWrap);
@@ -68,7 +69,7 @@ export class HUD {
     const k = Math.max(0, cur / max);
     this.hpBar.style.width = (k * 100) + '%';
     this.hpBar.style.background = k > 0.5 ? '#2ecc71' : k > 0.25 ? '#f1c40f' : '#e74c3c';
-    this.hpText.textContent = `船血 ${Math.ceil(cur)}/${max}`;
+    this.hpText.textContent = `飞毯血量 ${Math.ceil(cur)}/${max}`;
   }
 
   message(title, sub = '', color = '#fff') {

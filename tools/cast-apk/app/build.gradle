@@ -9,12 +9,12 @@ android {
     buildToolsVersion '35.0.0'
 
     defaultConfig {
-        // 安装身份（决定 dumpsys / 启动器前缀扫描命中）：VR+ 平台按 com.GoodNet.DeepmindHacker 枚举本游戏版本号，必须与此一致，否则平台看不到 2.0.5
-        applicationId 'com.GoodNet.DeepmindHacker'
+        // 安装身份（决定 dumpsys / 启动器前缀扫描命中）：VR+ 平台按 com.DX.WeirdTurning 枚举本游戏版本号，必须与此一致，否则平台看不到 2.8
+        applicationId 'com.DX.WeirdTurning'
         minSdk 24
         targetSdk 34
-        versionCode 205
-        versionName '2.0.5'
+        versionCode 153
+        versionName '1.5.3'
     }
 
     buildTypes {

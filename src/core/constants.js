@@ -68,15 +68,24 @@ export const SHOOT = {
   COOLDOWN: 60,     // 射击冷却 ms（60 ≈ 16 发/秒，原 150）
   BULLET_SPEED: 15, // 子弹速度 m/s（子弹飞行速度）
   BULLET_LIFE: 2,   // 子弹存活时间 s
-  BULLET_POOL_SIZE: 500, // 同时存在的子弹上限（InstancedMesh 单 Draw Call 承载）
+  // 第五十四修 500 → 1000：射速上限 20 ×（连杀加速 1.5）× 弹道上限 12 × 存活 2s ≈ 720，
+  //   再给「散射强化」那 100 发瞬时弹留余量。全程一个 InstancedMesh、一次 Draw Call（见 bullets.js）。
+  BULLET_POOL_SIZE: 1000,
 
   // ===== 子弹外观与出膛（随时可调，改完刷新页面即生效）=====
   BULLET_RADIUS: 0.02,   // 子弹球体半径 m（越大越粗）
   BULLET_COLOR: 0xffe066, // 子弹颜色（MeshBasicMaterial，发光黄，不吃光照）
 
   // ===== 多重射击 / 霰弹（player.fire 扇形散射）=====
-  SPREAD_COUNT: 3,    // multiShot 触发时额外发射的扇形子弹数
-  SPREAD_ANGLE: 0.18, // 扇形半角（弧度，约 10°），横向铺开割草
+  SPREAD_COUNT: 3,    // （旧字段，代码里已无引用）扇形散射额外子弹数
+  // 第五十四修：扇形半角改成「随弹道数增长、SPREAD_FULL_N 条时用满 SPREAD_ANGLE」——
+  //   半角 = SPREAD_ANGLE × min(1, (n-1)/(SPREAD_FULL_N-1))，见 player.fire。
+  //   12 条弹道用满 0.15 rad ⇒ 总张角 ≈ 17.1°（相邻两档 ≈ 1.55°）；7 条时 ≈ 9.3°，与改前（≈9.15°）基本一致。
+  //   SPREAD_FULL_N 写 2（或删掉这一项）= 恒定半角，即第五十四修之前的行为。
+  //   ⚠ 扇形越宽，打远距离**单体**（Boss / 末尾精英）的有效 DPS 越低，而这些血量是按标称 DPS
+  //     （攻击 × 弹道 × 射速）标定的 —— 想再铺开，得连血量口径一起算。
+  SPREAD_ANGLE: 0.15,   // 扇形半角上限（弧度 ≈ 8.6°）
+  SPREAD_FULL_N: 12,    // 用满 SPREAD_ANGLE 的弹道数
 
   // ===== 右手柄射线 / 子弹方向俯角（VR 手持 AK 枪用）=====
   // 手柄默认瞄准方向是本地 -Z（正前方）。绕 X 轴旋转此角度调整俯仰：
@@ -516,7 +525,7 @@ export const DAMAGE_NUMBER = {
 export const FX = {
   TRACER: {
     ENABLED: true,
-    CAPACITY: 512,      // 同时存在的曳光条数（≥ 子弹池 500 + 敌方投射物余量）
+    CAPACITY: 1024,     // 同时存在的曳光条数（≥ 子弹池 1000 + 敌方投射物余量；第五十四修 512 → 1024）
     LENGTH: 0.55,       // 曳光长度 m（自弹头沿飞行反方向拖出）
     WIDTH: 0.022,       // 曳光粗细 m
     OPACITY: 0.55,      // 曳光不透明度
@@ -619,8 +628,11 @@ export const GRID = {
   COLS: 4, ROWS: 8,        // 4×8 = 32 格
   CELL: 1,                 // 每格 1m
   Y: 0.11,                 // 玻璃格顶面高度（略高于边界盒 0.10，避免 z-fighting）
-  NUM_Y_OFFSET: 0.06,      // 编号平面高出玻璃顶面的距离，防 z-fighting
-  NUM_SIZE: 0.5,           // 编号平面边长 = 1m 格子的 1/2 边长 → 占 1/4 面积（"占据1/4大小"按面积解；可调）
+  NUM_Y_OFFSET: 0.12,      // 编号平面高出玻璃顶面的距离（第五十修：0.06 → 0.12，彻底离开玻璃顶面，防压面/被裁）
+  // 第五十一修（现场「玻璃格子更多数字标号不见了」）：0.5 → 0.78 ——
+  //   数字在头显里是**低头斜视**（掠射角）看的，平面越小越容易被 mipmap 平均成一团灰色而「看着像没有」。
+  //   放大到接近整格（0.96 的格子 → 0.78 的编号板）后，即使远排也能读出数字。
+  NUM_SIZE: 0.78,          // 编号平面边长(m)：0.78 ≈ 格子的 81%，一格一块编号板（不重叠）
   GLASS_COLOR: 0x9fe8ff,   // 淡青光玻璃
   GLASS_GLOW: 0x33ff99,    // 正确格发光色（淡绿，保持原地期脉冲）
   CORRECT: [3,7,9,10,11,12,13,17,18,22,23,27,29,30,31,32], // 用户指定正确格（安全格）
@@ -887,7 +899,10 @@ export const DEPTH_SPRITE_MODE = true;
 export const DEPTH_SPRITE_TYPES = ['basic', 'ninja', 'shield', 'octopus', 'ghost', 'summoner', 'heart', 'chest', 'blackMaskClone', 'eliteKnight'];
 // 同屏压测：>0 时关卡启动后额外生成 N 个 basic 立绘同屏阵列（controlled 站定，仍可受击/视差）。
 // 设 150 即「同屏 150 个 DepthSprite」压测；设 0 关闭。
-export const DEPTH_SPRITE_STRESS = 150;
+// ⚠ 第五十二修：改回 0。原先常驻 150，平时不炸只是因为普通关走 NORMAL_TEST 曲线、被 game._loadLevel
+//   里的 `!NORMAL_TEST.enabled` 挡住了这条分支 —— 一旦有人为调试把 NORMAL_TEST.enabled 改成 false，
+//   每关会凭空多出 150 个立绘（+150 draw call）。要压测请**临时**改这里，不要去动 NORMAL_TEST。
+export const DEPTH_SPRITE_STRESS = 0;
 // 序列帧 idle：GLB 捕获时绕 Y 摆动取 frames 帧拼成 sheet；手绘 sheet 改映射里的 frameCount。
 // 改 12 让「基础怪动画版」的骨骼动画采样更顺（动画版走 AnimationMixer 采样，非摆动）。
 export const DEPTH_SPRITE_FRAMES = 12;
@@ -968,34 +983,96 @@ export const SPAWN_RING = {
 
 // ============================================================
 // ============================================================
-// 精英名牌（第四十六修）—— 有模型的小怪平时不挂名牌，**精英必须挂**，否则玩家分不清
-//   红字 + 深色描边 + 半透明底；实现见 balloons._makeNameLabel(text, style)。
-//   显示名见 content/spawnDirector.js 的 ELITE_DISPLAY_NAME（铁甲兵/盾甲兵/治疗术士/幽灵法师/忍者队长/章鱼将军）。
+// 精英名牌（第四十六修；第四十九修重绘 + 分两套样式）—— 有模型的小怪平时不挂名牌，**精英必须挂**，
+//   否则玩家分不清「这只和别的不一样」，也不可能知道该先打谁（治疗术士 / 盾甲兵 / 章鱼将军）。
+//
+//   两套样式（第四十九修起分开设计，落点 spawnDirector.CLIMAX_SUFFIX + balloons._makeNameLabel）：
+//     · ELITE_LABEL —— **普通精英**：冰蓝描边 + 深蓝渐变底 + 四角细括号。冷色、克制，
+//                       「有威胁，但不是大人物」。
+//     · BOSS_LABEL  —— **末尾精英**（关卡收尾那一批，带 goldReturn）：金红描边 + 暗红渐变底 +
+//                       左右菱形装饰 + 文字外发光，文字后加 CLIMAX_SUFFIX（「铁甲兵 Boss」）。
+//                       更大更亮，远远看一眼就知道「这是这关的收尾」。
+//
+//   两套样式共用**同一组绘制参数**（填充渐变 / 外描边 / 内衬发丝线 / 四角括号 / 左右装饰 / 文字描边 / 发光），
+//   所以「换色、加粗、加角标、加发光」都只改数字，不用碰绘制代码（见 balloons._drawNameLabel）。
+//   显示名见 content/spawnDirector.js 的 ELITE_DISPLAY_NAME（铁甲兵/盾甲兵/治疗术士/幽灵法师/
+//   忍者队长/章鱼将军）。
+//
+//   ⚠ SCALE 的宽高比必须等于 CANVAS_W/CANVAS_H（都按 4:1），否则字会被拉扁。
 // ============================================================
 export const ELITE_LABEL = {
   ENABLED: true,
-  COLOR: '#ff4d4d',          // 字色（红）
-  OUTLINE: '#2b0000',        // 描边色
-  OUTLINE_W: 7,              // 描边宽度（画布像素）
-  BG: 'rgba(24,0,0,0.55)',   // 半透明底
-  CANVAS_W: 384,             // 名牌画布宽（像素）
-  CANVAS_H: 96,              // 名牌画布高（像素）
-  FONT: 'bold 52px sans-serif',
-  SCALE: [1.9, 0.48],        // Sprite 世界尺寸（米）
-  Y_PAD: 0.3,                // 怪顶之上的额外抬升（米）
+  // —— 文字 ——
+  COLOR: '#eaf6ff',            // 字色（近白偏冷）
+  OUTLINE: '#04121f',          // 文字描边色（深蓝黑，压住底色提高可读性）
+  OUTLINE_W: 7,                // 文字描边宽度（画布像素）
+  FONT: 'bold 56px sans-serif',
+  // —— 底板（垂直渐变，上浅下深，避免「一块死板的纯色方块」）——
+  BG_TOP: 'rgba(12,34,58,0.92)',
+  BG_BOTTOM: 'rgba(5,14,26,0.92)',
+  RADIUS: 22,                  // 圆角半径（画布像素）
+  EDGE: '#5fc8ff',             // 外描边色（冰蓝）
+  EDGE_W: 4,                   // 外描边宽度
+  HAIRLINE: 'rgba(95,200,255,0.32)',   // 内衬发丝线（贴边一圈，让底板有「双层」质感）
+  HAIRLINE_INSET: 13,          // 发丝线内缩量
+  CORNER: '#9fe1ff',           // 四角括号色
+  CORNER_W: 5,                 // 四角括号线宽
+  CORNER_LEN: 34,              // 四角括号臂长
+  CORNER_INSET: 8,             // 四角括号相对画布边距
+  ORNAMENT: 'none',            // 左右装饰：'none' | 'diamond'（普通精英不加装饰）
+  GLOW: 0,                     // 文字外发光 blur（0 = 关）
+  // —— 画布与尺寸 ——
+  CANVAS_W: 448,               // 名牌画布宽（像素）
+  CANVAS_H: 112,               // 名牌画布高（像素）
+  SCALE: [1.96, 0.49],         // Sprite 世界尺寸（米）—— 必须与画布同宽高比（448/112 = 4:1）
+  Y_PAD: 0.3,                  // 怪顶之上的额外抬升（米）
+};
+
+// 末尾精英（Boss 档）名牌 —— 比 ELITE_LABEL 更大、更亮、带左右菱形装饰，文字后加「 Boss」。
+//   判据同 ELITE_TUNING：事件带 goldReturn（横幅 → 清场融合 → 金点 → 抽卡）才是这一档。
+export const BOSS_LABEL = {
+  ENABLED: true,
+  COLOR: '#fff6cf',            // 字色（暖白偏金）
+  OUTLINE: '#2a0600',          // 文字描边（焦黑棕）
+  OUTLINE_W: 9,
+  FONT: 'bold 60px sans-serif',
+  BG_TOP: 'rgba(96,14,12,0.95)',
+  BG_BOTTOM: 'rgba(28,3,6,0.95)',
+  RADIUS: 26,
+  EDGE: '#ffc53d',             // 外描边：金
+  EDGE_W: 7,
+  HAIRLINE: 'rgba(255,197,61,0.42)',
+  HAIRLINE_INSET: 16,
+  CORNER: '#ffe08a',
+  CORNER_W: 7,
+  CORNER_LEN: 42,
+  CORNER_INSET: 10,
+  ORNAMENT: 'diamond',         // 左右各一枚金色菱形（一眼区分普通精英）
+  GLOW: 16,                    // 文字外发光：夜里也亮得出来
+  CANVAS_W: 512,
+  CANVAS_H: 128,
+  SCALE: [2.5, 0.625],         // 比普通精英大 ~28%
+  Y_PAD: 0.4,
 };
 
 // ============================================================
 // 三层出怪（第四十六修）—— 时间轴脚本与层定义见 content/spawnDirector.js
 //   trash 白光点（DPS 内外圈滴流）/ mini 蓝光点（无技能精英）/ skill 紫红光点（有技能精英）
 //   merge = 清场融合：清掉场上非精英 + 补足光点 → 汇聚成大号层色光点（waves._fuseSpawn）
-//   ⚠ 只作用于「有关卡脚本」的普通关（本轮 1/2/4/5）；机制关与 Boss 关不参与。
+//   ⚠ 只作用于「有关卡脚本」的普通关（第五十修起 = 除机制关 3/9/15 与 Boss 关 6/12/18 外的全部普通关/危机关）；
+//     机制关与 Boss 关不参与。
 // ============================================================
 export const SPAWN_LAYER = {
-  ENABLED: true,      // 总开关：false → 全部走旧的三期脉冲（ELITE_SCHEDULE），便于对照与回退
+  ENABLED: true,      // 总开关：false → 关卡脚本失效。⚠ 第五十修起 ELITE_SCHEDULE 已停用，
+                      //   关掉这个开关会让普通关**完全不出精英**（只剩杂鱼滴流），别再当回退开关用。
   LAYER_GAP: 4,       // 两层之间的最小间隔（秒）：防同帧齐发（现在三期是独立 if，会同帧叠）
-  MAX_ELITES: 6,      // 同屏精英总数上限（各层合计；到上限则本次事件跳过）
-                      //   ⚠ 是「安全网」不是节奏工具：脚本批次必须能出得来（第4关 20s 批可能还活着）
+  MAX_ELITES: 30,     // 同屏精英总数上限（各层合计；到上限则**整批跳过**）
+                      //   ⚠ 是「失控兜底」不是节奏工具：脚本批次必须能出得来。
+                      //   第五十修从 6 提到 30 的原因：最大的一批是第 17 关 25s 的 11 只
+                      //   （铁甲兵×3 + 治疗术士×2 + 忍者×2 + 幽灵×2 + 章鱼×2），而上一批往往还在场上
+                      //   （幽灵 7000 / 忍者 8000 / 章鱼 20000 血，玩家 15s 内清不完）⇒ 4+7、7+11、11+3
+                      //   这样的叠加瞬间会超过 6，整批内容会被这一行静静吞掉。
+                      //   现场若发现帧率掉，先调 SPAWN_SCRIPT 的波次数量，别把这里调回小值。
   FUSE_CLEAR: true,   // merge 时是否清掉场上非精英（关闭则只补光点，不清场）
 };
 
@@ -1059,12 +1136,53 @@ export const GOLD_ORB = {
 // ============================================================
 export const HEAL_LINK = {
   ENABLED: true,
-  COLOR: 0x51cf66,
-  OPACITY: 0.55,
+  COLOR: 0x51cf66,          // 旧「治疗线 / 回血环」的绿色（现在的主角色是下面 PLUS_COLOR 粉）
+  OPACITY: 0.55,            // 旧治疗线的不透明度（LINES=true 才用）
+
+  // ============================================================
+  // 第四十九修 · 现场返工（三轮）：
+  //   【第二轮】绿环 → 粉色加号；【第三轮】现场「还是没作用，没看到加号也没看到回血」——
+  //   ⚠ 真根因不是表现，而是**回调挂错了对象**：game 把 onHealCast 挂在 waves（WaveManager）上，
+  //     而读取方是 BalloonManager（waves.balloons）⇒ 回调从来没触发，heal 恒为 0，加号当然不飞。
+  //     （上一轮「绿环看不到」也是同一个原因。）现在 waves 增加了转发访问器 + game 直挂 balloons。
+  //   现行口径（现场指定）：
+  //     · 每 PULSE_PERIOD 秒（=3s）挑一只目标 —— **血量百分比最低的精英怪**，并列取离玩家最近的
+  //       （纯函数 pickHealTarget，有单测；ELITE_ONLY=false 可放开到所有怪）；
+  //     · 一次回血 = **PULSE_HEAL = 1000**，**超出目标上限的部分不算**（min(maxHp, hp+heal)）；
+  //     · 目标满血时也会照常发射（加号必须看得见），只是回血被上限吃掉；
+  //     · 表现 = 从术士身上飞出一枚**粉色加号**直奔目标（fx.HealPlusFx），命中目标闪一下粉；
+  //       **不画圆环**（RING_ENABLED 置 false，实现与参数都留着）。
+  //   目标选择不看距离上限：术士站桩在 24m 外，前压的怪就在玩家身边，加半径反而会「够不着」。
+  // ============================================================
+  PULSE: true,              // 总开关：false → 回到第四十六修的旧口径（每帧按半径连续回血）
+  PULSE_PERIOD: 3.0,        // 治疗间隔（秒）—— 现场口径「每 3 秒恢复一次」
+  PULSE_HEAL: 1000,         // 每次回血量（超出目标上限的部分不算）；0 → 退回「玩家当前攻击力」
+  ELITE_ONLY: true,         // 只奶精英怪（现场口径）；false = 所有怪里挑血最少的
+
+  // —— 新表现：粉色加号从术士飞向目标 ——
+  PLUS_ENABLED: true,
+  PLUS_COLOR: 0xff7fbf,     // 粉色（现场指定）
+  PLUS_SIZE: 0.34,          // 加号世界尺寸（米）
+  PLUS_DUR: 0.45,           // 单程飞行时长（秒）
+  PLUS_ARC: 0.7,            // 飞行弧线抬升（米）：走抛物线，别像激光一样笔直
+  PLUS_POOL: 8,             // 同时飞行的加号上限（性能兜底；池满复用最老的槽）
+  PLUS_FLASH: true,         // 命中目标时目标闪一下粉（"就是这只在被奶"）
+
+  // —— 绿色脉冲环（第四十九修首版）：现场「看不到」⇒ 默认关掉，改 true 即回 ——
+  RING_ENABLED: false,
+  RING_Y: 0.06,             // 环贴地高度（米）
+  RING_DUR: 0.9,            // 环从 0 扩散到半径的时长（秒）
+  RING_OPACITY: 0.75,
+  RING_POOL: 3,
+  PLUS_RIDE: 4,             // 随环扩散的「+」数量（RING_ENABLED=true 时才用）
+
+  // —— 更旧的治疗线 + 沿线加号（第四十六修）：同样默认关闭，改 true 即回 ——
+  LINES: false,
   PLUS_COUNT: 3,     // 每条线上的加号数
   PLUS_SPEED: 0.55,  // 加号沿线的移动速度（归一化 / 秒）
-  PLUS_SIZE: 0.26,   // 加号世界尺寸 m
-  MAX_TARGETS: 4,    // 同一只治疗术士最多连几条线（性能兜底）
+  MAX_TARGETS: 4,    // 同一只术士最多连几条线（性能兜底）
+
+  RADIUS: 14,        // **旧口径**的半径（新口径按「血最少 + 离玩家最近」选目标，不吃半径）
 };
 
 // 关卡时长（第四十一修）—— 按关卡给「停止补怪时间窗」，取代原来的全局 60s
@@ -1116,6 +1234,74 @@ export const MID_WARNING = {
 };
 
 // ============================================================
+// 回血横幅样式（第五十修）—— 复用准星正前方那块 Sprite（warningBanner 的 'heal' 样式）
+//   字段与 MID_WARNING / LEVEL_TITLE **同构**：show() 每次都会重读 SECONDS / FADE_* / DIST / WIDTH / RISE。
+//   绿色系：与「精英来袭」的橙红、「关卡标题」的冰蓝互不混淆。
+//   为什么用场景内 Sprite 而不是 HUD：头显沉浸态里 DOM 不可见（同 winBanner / 中场预警的结论）。
+// ============================================================
+export const HEAL_BANNER = {
+  ENABLED: true,
+  COLOR: '#4ade80',            // 边框与十字（绿）
+  BG: 'rgba(6,30,17,0.88)',    // 底板（暗绿黑）
+  TEXT_COLOR: '#dcffe4',       // 字色（近白的淡绿）
+  SECONDS: 2, FADE_IN: 0.2, FADE_OUT: 0.3,
+  DIST: 2.6, WIDTH: 2.2, RISE: 0.25,
+  TEXT: '飞毯血量 +20',
+};
+
+// ============================================================
+// 击败治疗术士的回血反馈（第五十修 · 现场口径）
+//   现场原话：「击败治疗术士后，眼前浮现几个绿色加号同时提示恢复血量 20」
+//            +「文字：船血换成飞毯血量」⇒ 玩家面板与提示里的「船血」一律改称「飞毯血量」。
+//   回血量本身**不在这里** —— 它是敌种属性（content/enemies.js 的 heart.shipHealOnDeath = 20）；
+//   这里只管「怎么让人看见」：绿色加号从准星前方飞向相机 + 一行回血横幅（HEAL_BANNER）。
+// ============================================================
+export const HEAL_ON_DEATH = {
+  ENABLED: true,
+  PLUS_COUNT: 3,        // 冒几个加号
+  PLUS_COLOR: 0x51cf66, // 绿色（现场指定）
+  DIST: 1.1,            // 加号出现处：准星正前方多远（米）——「眼前」不是「脚下」
+  SPREAD: 0.26,         // 几个加号的散开半径（米）
+  TO_DIST: 0.42,        // 飞向相机前方多远处消失（别糊在脸上）
+  BANNER: true,         // 是否同时弹「飞毯血量 +N」横幅
+};
+
+// ============================================================
+// 关卡标题卡（第四十九修）—— 每关开局在准星正前方弹一张「第 N 关 · 场景名」的卡片
+//
+//   为什么要做：18 关各有自己的场景（黄昏/黑夜/白天 + 机制关/Boss 关），但玩家进关后没有任何
+//   「这是哪一关」的提示 —— 现场试玩分不清进度。场景名取自 content/levels.js 的 lv.name。
+//
+//   为什么是场景内 Sprite：头显沉浸态里页面 DOM 不可见（同 winBanner / 中场预警的结论）。
+//   复用 warningBanner.WarningBanner3D（**同一个 Sprite / 同一张 canvas**，只是换 style 重绘）——
+//   18 关各一张标题卡，若每关新建 canvas+texture 就是白送 18 次纹理上传。
+//
+//   触发：game._startLevelAudio() 里排一个 DELAY 秒的定时，到点 midWarning.show(text, 'title')。
+//   与「精英来袭 / 中场预警」共用同一个 Sprite：三者时间窗不重叠（标题在开局、精英最早 5s）。
+// ============================================================
+export const LEVEL_TITLE = {
+  ENABLED: true,
+  DELAY: 0.8,                  // 无云雾时：关卡正式开始后延迟多久弹（秒）
+  // 第四十九修：**有云雾时**从「进关起雾」那一刻起算的延迟（现场反馈：原先雾散后才弹、和出怪挤在一起）。
+  //   默认 1.5 + SECONDS 2.8 = 4.3s ≈ CLOUD.INTRO_DELAY(4.0) 之后 0.3s 收尾 —— 雾里淡入、雾散仍在屏上。
+  INTRO_DELAY: 1.5,
+  SECONDS: 2.8,                // 卡片停留总时长（含淡入淡出）
+  FADE_IN: 0.35,               // 淡入时长 s
+  FADE_OUT: 0.5,               // 淡出时长 s
+  DIST: 3.0,                   // 出现在准星前方多远（米）
+  RISE: 0.28,                  // 相对视线中心上抬（米）：别正好压在准星上挡视线
+  WIDTH: 3.4,                  // 卡片宽度（米）；高度按画布 4:1 自动算
+  COLOR: '#7fd4ff',            // 边框与装饰色（冰蓝，与普通精英名牌同色系）
+  TEXT: '第 {n} 关 · {name}',  // {n} = 关号，{name} = levels.js 的场景名（由 game._showLevelTitle 填充）
+  // 第四十九修（返工）：机制关(3/9/15)开局有魔术师开场动画。原来直接**不弹**，现场反馈「机制关看不到关卡名」。
+  //   现在改成**延后弹**：等开场语音播完 / 魔术师收场之后再弹（game._bindOpeningVoice 里补排）。
+  //   排期容错：语音文件缺失 / ended 不触发时，MECHANIC_DELAY 秒后照弹（魔术师动画 SHOW_SECONDS=10s 的兜底）。
+  SKIP_MECHANIC: false,        // 置 true → 机制关彻底不弹（保留的逃生开关）
+  MECHANIC_DELAY: 12.0,        // 机制关兜底延迟（从关卡开始算，秒）
+  MECHANIC_AFTER_VOICE: 0.5,   // 开场语音 ended（魔术师收场）之后多久弹（秒）
+};
+
+// ============================================================
 // 连杀加速（第四十二修）—— 连续用**子弹**击杀 KILLS 个敌人 → 射速加速 SECONDS 秒 + 奖励音
 //   只认子弹击杀：技能/如来神掌/激光剑/爆炸杀的一律不计数（也不打断连杀）。
 //   GAP 秒内没有新的子弹击杀 → 计数清零（否则会变成「慢慢攒够 10 个」的无感累积）。
@@ -1133,6 +1319,14 @@ export const RAPID_FIRE = {
   // 第四十三修：**加速期间**最多只能再攒这么多个（防止「越杀越快」无限续杯）：
   //   加速中击杀同样计入，但封顶 BOOST_CARRY_MAX —— 剩下的要等加速结束后重新连杀。
   BOOST_CARRY_MAX: 5,
+  // 第四十九修：加速期的**视觉标记**（现场反馈「完成杀敌十个的时候感觉不明显」）——
+  //   加速期间发射的子弹变蓝，曳光也变蓝并**加长一倍**。只影响加速期打出去的那批子弹（比
+  //   「一加速就把场上所有子弹染蓝」更准确）。
+  VISUAL: {
+    BULLET_COLOR: 0x49b6ff,   // 加速弹的子弹色（青蓝）
+    TRACER_COLOR: 0x49b6ff,   // 加速弹的曳光色
+    TRACER_MUL: 2,            // 曳光长度倍率（2 = 加长一倍）
+  },
   // —— 枪身的连杀红点环（src/vr/streakCounter.js，纯视觉；现场可热调）——
   //   每用子弹击杀一个 → 环上点亮一个红点；集齐（KILLS 个）→ 整圈闪一下 + 开始飘雾。
   //   一个 InstancedMesh 装下全部红点（1 次 draw call），不显示时整体 visible=false。
@@ -1254,6 +1448,10 @@ export const FACE_BOSS = {
   BLACK_CLONE_CHARGE_SPEED: 6,   // 冲锋速度 m/s（分身原 speed=0，冲锋时必须给定）
   BLACK_CLONE_RADIUS: 1.0,
   BLACK_CLONE_SCALE: 1,          // 缩小一半（原2）
+  // 第五十修（现场文件）：「每个分身原地上下跳跃，但起跳位置不一，进而形成波浪形」
+  BLACK_CLONE_BOB_AMP: 0.55,        // 跳跃幅度 m（比蓝阶段的悬浮 0.2 大：这里是「跳」不是「浮」）
+  BLACK_CLONE_BOB_FREQ: 1.5,        // 跳跃频率 Hz
+  BLACK_CLONE_BOB_PHASE_STEP: 0.62, // 相邻分身的起跳相位差 rad —— 26 个沿 8m 圆环依次错开 ⇒ 波浪
 };
 
 // ============================================================
@@ -1755,3 +1953,41 @@ if (USER_CONFIG?.DEPTH_SPRITE?.HIT_MUL !== undefined) {
 // —— PORTAL 尺寸：TARGET_HEIGHT / HEIGHT_Y 为独立参数（与缩放解耦），直接按 userConfig 覆盖结果生效，
 //    无需联动推导（SCALE/BASE_HEIGHT 已移除）。
 
+// ============================================================
+// 第十二关 · 龙族宝箱（第五十修 · 现场口径）
+//   龙 Boss 被打败后**先不弹选项卡**：在选项卡位置立一个宝箱，5 秒内按玩家打出的子弹数给攻击力加成
+//   （≥ BULLETS_FULL 发 → 满额 MAX_BONUS，线性），数值实时显示在宝箱**上方**；
+//   名字「龙族宝箱」显示在宝箱**下方**；5 秒后宝箱化成光点飞向玩家，然后选项卡再弹出。
+//   实现见 src/game/dragonChest.js（纯函数 chestBonus / chestValueText 有单测）。
+// ============================================================
+export const DRAGON_CHEST = {
+  ENABLED: true,
+  LEVEL: 12,                    // 只在第 12 关（龙 Boss 关）收尾触发
+  WINDOW: 5,                    // 计数窗口（秒）
+  BULLETS_FULL: 30,             // ≥ 该发数 → 满额
+  MAX_BONUS: 150,               // 满额攻击力加成（线性分摊到 0..BULLETS_FULL 发）
+  MODEL: 'Model/宝箱.glb',      // 现成素材（现场：不用另做「龙族宝箱」模型，只改名字）
+  NAME: '龙族宝箱',
+  NAME_COLOR: '#ffe08a',
+  VALUE_COLOR: '#7dff9b',
+  POS: [0, CARD.ROW_Y, CARD.ROW_Z],   // 出现位置 = 选项卡位置（CARD.ROW_*）
+  SCALE: 1.0,                   // 宝箱缩放：buildModelClone 先按半径 0.5 贴合（≈1m 见方），这里只做微调；
+                                //   ⚠ 别调太大 —— NAME_DY / VALUE_DY 的标签间距是按 1m 箱子定的
+  NAME_DY: -0.62,               // 名字相对宝箱中心的高度（负 = **下方**）
+  VALUE_DY: 0.78,               // 加成数值相对宝箱中心的高度（正 = **上方**）
+  ORB_COUNT: 12,                // 化光点飞向玩家时的光点数量
+  ORB_COLOR: 0xffd54a,
+  ORB_SIZE: 0.1,
+  ORB_SPEED: 7,                 // 光点飞行速度 m/s（1.2s 保底由 DUR_MIN 兜）
+  ORB_DUR_MIN: 0.35, ORB_DUR_MAX: 1.2,
+  ORB_STAGGER: 0.04,            // 每个光点的起飞延迟（秒）—— 串成一串而不是一坨
+  ORB_HOLD: 0.25,               // 落地后停留多久再消失（消失即弹选项卡）
+
+  // —— 受击反馈（第五十一修 · 现场「宝箱被打没反馈」）——
+  //   宝箱不是气球、不进 _collide 的气球循环，所以「火花 / 命中音 / 箱体压一下」要自己判一次：
+  //   判定在 game._chestHitTest（只认计数窗口期），表现参数放这里。
+  HIT_R: 0.5,                   // 命中球半径(m)：约等于箱体（0.62×0.42×0.46）的外接球
+  HIT_SPARK: 0xffd54a,          // 命中火花颜色（与光点同色系）
+  PUNCH_SCALE: 0.16,            // 受击「压一下」幅度（横向鼓、纵向扁）
+  PUNCH_DECAY: 5,               // 压一下的回弹速度（每秒衰减）
+};

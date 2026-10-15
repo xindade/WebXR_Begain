@@ -27,7 +27,7 @@ export class Player {
     const g = GUN_MODES[gunMode] || GUN_MODES.preview;
     this.atk = 100;
     this.shootCooldown = g.cooldown;   // 射击冷却 ms（实际节流在 input.js，player 仅用于存档快照）
-    this.fireRate = 2;                 // 射速基线（发/秒）：笔记 2 发/秒，卡 +2/次，上限 14（真实节流在 input）
+    this.fireRate = 2;                 // 射速基线（发/秒）：笔记 2 发/秒，卡 +2/次，上限 20（见 cards.ATTRIBUTE_STATS；真实节流在 input）
     this.shotCount = g.shotCount;      // 每发子弹的弹道数（fire 确定性扇形）
     this.skillCost = 500;              // 技能消耗积分（笔记默认 500，卡 -100/次，下限 100）
     this.skillDamageMul = 1;           // 技能伤害倍率（笔记默认 ×1，卡 +1/次，上限 ×5）
@@ -71,13 +71,20 @@ export class Player {
     }
   }
 
-  // 发射：按 shotCount 确定性扇形铺开（1=单发，>1=多弹道），返回是否真的开了火（供音效）
-  fire(shot, bullets, audio) {
+  // 发射：按 shotCount 确定性扇形铺开（1=单发，>1=多弹道）。
+  //   返回**这一枪实际打出的弹数**（第五十修：龙族宝箱按打出的发数给加成；旧注释写的「返回是否开火」从来没实现过）
+  // boost（第四十九修）：连杀加速期打出的子弹 —— 交给 BulletManager 用实例色染蓝、曳光加长
+  fire(shot, bullets, audio, boost = false) {
     const n = this.forceSingleShot ? 1 : (this.shotCount || 1);
     if (n <= 1) {
-      bullets.spawn(shot.position, shot.direction, this.atk);
+      bullets.spawn(shot.position, shot.direction, this.atk, boost);
     } else {
-      const spread = SHOOT.SPREAD_ANGLE;
+      // 第五十四修：半角随弹道数增长 —— 每多一条弹道，扇形外沿再多展开一个步进
+      //   （步进 = SPREAD_ANGLE/(SPREAD_FULL_N-1)），到 SPREAD_FULL_N 条时用满 SPREAD_ANGLE。
+      //   于是「额外子弹+1」在 2~3 条时几乎贴着准星（读作「同一点上多一发伤害」），
+      //   堆满 12 条才铺成一把扇形；改前是恒定半角 ⇒ 加弹道只是变密、张角不涨。
+      //   SPREAD_FULL_N 缺省 / 写 1 时退化成恒定半角（公式自动取 1，不会 NaN）。
+      const spread = SHOOT.SPREAD_ANGLE * Math.min(1, (n - 1) / ((SHOOT.SPREAD_FULL_N || 2) - 1));
       const dir = shot.direction.clone().normalize();
       // 水平向右向量（与瞄准方向垂直、y=0）→ 纯水平扇形，不受俯仰/偏航影响
       _right.crossVectors(dir, _WORLD_UP);
@@ -98,10 +105,11 @@ export class Player {
       for (let k = 0; k < n; k++) {
         const t = _spreadTs[k] / maxT;
         const d = dir.clone().addScaledVector(_right, t * spread);
-        bullets.spawn(shot.position, d, this.atk);
+        bullets.spawn(shot.position, d, this.atk, boost);
       }
     }
     audio.playShoot();
+    return n;
   }
 
   canBuddha() { return this.buddhaUnlocked && this.buddhaTimer <= 0; }

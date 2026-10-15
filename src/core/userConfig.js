@@ -186,11 +186,12 @@ export const USER_CONFIG = {
     COOLDOWN: 60,          // 射击冷却 ms
     BULLET_SPEED: 15,      // 子弹速度（米/秒）
     BULLET_LIFE: 2,        // 子弹存活时间（秒）
-    BULLET_POOL_SIZE: 500, // 同时存在子弹上限
+    BULLET_POOL_SIZE: 1000, // 同时存在子弹上限（第五十四修 500 → 1000）
     BULLET_RADIUS: 0.02,   // 子弹半径（米）：越大越粗
     BULLET_COLOR: 0xffe066, // 子弹颜色（发光黄）
-    SPREAD_COUNT: 3,       // 扇形散射额外子弹数
-    SPREAD_ANGLE: 0.08,    // 扇形半角（弧度）
+    SPREAD_COUNT: 3,       // （旧字段，已无引用）
+    SPREAD_ANGLE: 0.15,    // 扇形半角上限（弧度 ≈8.6°）：12 条弹道时用满 ⇒ 总张角 ≈17.1°（第五十四修 0.08 → 0.15）
+    SPREAD_FULL_N: 12,     // 用满 SPREAD_ANGLE 的弹道数；写 2 = 恒定半角（第五十四修之前的行为）
     RIGHT_PITCH_DEG: -27,  // 兜底俯角（度，负=枪口下压）：仅在 AIM 总开关关闭 / 设备槽未配时生效；正常走 AIM.BY_DEVICE
     SPAWN_OFFSET: 0.5,     // 子弹出生点前移距离（米）
     RAY_COLOR: 0xff2222,   // 右手射线颜色（红）

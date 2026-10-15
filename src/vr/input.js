@@ -48,7 +48,7 @@ export class InputManager {
     this._gunCooldown = (GUN_MODES.preview || { cooldown: SHOOT.COOLDOWN }).cooldown; // 射击冷却 ms（由 setGunMode/setFireRate 设置）
     this._baseGunCooldown = this._gunCooldown; // 基线冷却
     this._fireRateMul = 1;                    // 射速倍率（旧模型遗留，保留兼容）
-    this._fireRate = 2;                       // 当前射速（发/秒）：默认 2，卡 +2/上限14，切关由 game 用 player.fireRate 复位
+    this._fireRate = 2;                       // 当前射速（发/秒）：默认 2，卡 +2/上限 20（cards.ATTRIBUTE_STATS），切关由 game 用 player.fireRate 复位
     this._skillQueued = false;
     this._creditQueued = 0; // 测试积分待消费值（按测试键 +TEST.ADD_SCORE，由 game 消费后加分）
 

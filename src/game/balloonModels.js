@@ -124,6 +124,42 @@ export function fitToRadius(obj, radius) {
   obj.scale.setScalar((radius * 2) / maxDim);
 }
 
+/**
+ * 由已加载的 GLB 缓存体造一个「可直接挂到气球上的模型克隆」。
+ *
+ * 为什么单独成函数：脸谱 Boss 的「预建其它几张脸」必须和构造函数挂本体走**完全同一套**口径
+ * （贴合半径 → MODEL_TUNING 微调 → 独立材质克隆），否则预建出来的脸会有姿态/尺寸差异，
+ * 变脸时看得见跳一下（第四十九修）。
+ *
+ * @returns {{clone: THREE.Object3D, mats: THREE.Material[], tune: object}}
+ */
+export function buildModelClone(gltfScene, url, radius, tint = null, tuningOverride = null, extraScale = 1) {
+  const clone = gltfScene.clone(true);
+  fitToRadius(clone, radius);
+
+  // 应用手动微调：位置(米)叠加在「居中」之上；旋转(角度°)转弧度覆盖原生朝向；scale 在「自动贴合」基础上再缩放（见文件顶部 MODEL_TUNING）
+  const tune = { ...(MODEL_TUNING[url] || { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 }), ...(tuningOverride || {}) };
+  clone.position.add(new THREE.Vector3(tune.pos[0], tune.pos[1], tune.pos[2]));
+  clone.rotation.set(
+    THREE.MathUtils.degToRad(tune.rot[0]),
+    THREE.MathUtils.degToRad(tune.rot[1]),
+    THREE.MathUtils.degToRad(tune.rot[2])
+  );
+  clone.scale.multiplyScalar((tune.scale ?? 1.0) * extraScale); // 在 fitToRadius 贴合缩放之上叠加手动缩放 + 逐段 taper
+
+  // 每个气球独立克隆材质，互不影响闪烁/染色
+  const mats = [];
+  clone.traverse((o) => {
+    if (o.isMesh) {
+      o.material = o.material.clone();
+      if (tint != null) o.material.color.setHex(tint); // 通用身体按类型 tint 染色
+      o.userData.sharedGeo = true; // 几何体与 _cache 里的 gltf.scene 共享：销毁气球时勿 dispose（否则复用要重传显存）
+      mats.push(o.material);
+    }
+  });
+  return { clone, mats, tune };
+}
+
 // 把模型挂到气球上；fire-and-forget（async，不阻塞构造）。
 // balloon.mesh 是球体(Mesh)：模型作为子节点挂上后隐藏球体材质，碰撞/血条/朝向逻辑都照常。
 // tint：通用身体(基础怪)按类型染色用；专用模型传 null 不打 tint。
@@ -178,38 +214,23 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
     .then((gltfScene) => {
       // 气球可能在加载期间已被打死/移除：直接释放克隆体，不挂场景
       if (!current()) return; // 缓存几何体属于共享资源，不能由失效实例释放
-      const clone = gltfScene.clone(true);
-      fitToRadius(clone, radius);
-
-      // 应用手动微调：位置(米)叠加在「居中」之上；旋转(角度°)转弧度覆盖原生朝向；scale 在「自动贴合」基础上再缩放（见文件顶部 MODEL_TUNING）
-      const tune = { ...(MODEL_TUNING[url] || { pos: [0, 0, 0], rot: [0, 0, 0], scale: 1.0 }), ...(tuningOverride || {}) };
-      clone.position.add(new THREE.Vector3(tune.pos[0], tune.pos[1], tune.pos[2]));
-      clone.rotation.set(
-        THREE.MathUtils.degToRad(tune.rot[0]),
-        THREE.MathUtils.degToRad(tune.rot[1]),
-        THREE.MathUtils.degToRad(tune.rot[2])
-      );
-      clone.scale.multiplyScalar((tune.scale ?? 1.0) * extraScale); // 在 fitToRadius 贴合缩放之上叠加手动缩放 + 逐段 taper
-
-      // 每个气球独立克隆材质，互不影响闪烁/染色
-      const modelMats = [];
-      clone.traverse((o) => {
-        if (o.isMesh) {
-          o.material = o.material.clone();
-          if (tint != null) o.material.color.setHex(tint); // 通用身体按类型 tint 染色
-          o.userData.sharedGeo = true; // 几何体与 _cache 里的 gltf.scene 共享：销毁气球时勿 dispose（否则复用要重传显存）
-          modelMats.push(o.material);
-        }
-      });
+      // 贴合半径 + 手动微调 + 独立材质克隆：抽成共享函数，供「脸谱 Boss 预建其它几张脸」走同一套口径
+      const { clone, mats: modelMats, tune } = buildModelClone(gltfScene, url, radius, tint, tuningOverride, extraScale);
 
       balloon.mesh.add(clone);
       hideLoadDot(balloon);                    // 模型就位：收起加载光点
       balloon.mesh.material.visible = false; // 隐藏程序化球体（碰撞仍靠 position）
-      balloon.bodyModel = clone;
-      balloon._modelMats = modelMats;
-      // 命中球按模型视觉尺寸放大：fitToRadius 让模型 maxDim=2*radius，再叠加 tune.scale/extraScale；
-      // effectiveRadius 已含 mesh.scale，故 hitRadius 可覆盖整个模型（含上半身）
-      balloon.hitRadius = balloon.effectiveRadius * (tune.scale ?? 1.0) * extraScale;
+      // 第四十九修：脸谱 Boss 用 prebuildBalloonVariants 预建了其它几张脸 —— 若本体到位时已经切到别的脸，
+      //   本体只挂上去藏着，**不接管** bodyModel（当前显示的那张是变体，见 setBalloonVariant）；
+      //   否则黑阶段的「b.bodyModel.visible=false」会隐藏一张已经隐藏的，反而让变体继续露在外面。
+      if (balloon._variantActiveUrl && balloon._variantActiveUrl !== url) {
+        clone.visible = false;
+        balloon._baseModel = clone;
+        balloon._baseMats = modelMats;
+      } else {
+        balloon.bodyModel = clone;
+        balloon._modelMats = modelMats;
+      }
     })
     .catch(fallback);
 }
@@ -219,6 +240,9 @@ export function attachBalloonModel(balloon, url, radius, tint = null, tuningOver
 // tuningOverride：可选，覆盖 MODEL_TUNING 的 {pos,rot,scale}（如龙身统一 scale:1.0 抵消骑士默认 0.5）
 // extraScale    ：可选，叠加在「自动贴合」之上的额外缩放（龙身逐段 taper 经此传入）
 export function swapBalloonModel(balloon, newUrl, radius, tuningOverride = null, extraScale = 1) {
+  // 第四十九修：本函数是「兜底重建」路径（预建的脸还没到位 / 已被摘掉时才会走到）。
+  //   先把预建的多张脸全部摘掉并释放，免得它们和下面新挂的模型重叠在同一位置。
+  dropBalloonVariants(balloon);
   // 移除并释放旧模型
   if (balloon.bodyModel) {
     balloon.mesh.remove(balloon.bodyModel);
@@ -233,6 +257,106 @@ export function swapBalloonModel(balloon, newUrl, radius, tuningOverride = null,
   }
   // 挂载新模型（模型已在 _cache 中，克隆很快）
   attachBalloonModel(balloon, newUrl, radius, null, tuningOverride, extraScale, null);
+}
+
+/**
+ * 第四十九修 · 摘掉并释放「预建的多张脸」。由 swapBalloonModel 的兜底重建路径调用。
+ *   · 正被 bodyModel 引用的那一个**跳过**（交给调用方的常规 dispose 处理，避免重复释放）。
+ *   · 同时清空 _variants / _baseModel / _variantActiveUrl ⇒ 之后 setBalloonVariant 一律返回 false，
+ *     调用方会自动回退到 swapBalloonModel。
+ */
+export function dropBalloonVariants(balloon) {
+  if (!balloon) return;
+  balloon._variantActiveUrl = null;
+  balloon._variantBaseUrl = null;
+  balloon._baseModel = null;
+  balloon._baseMats = null;
+  const vs = balloon._variants;
+  balloon._variants = null;
+  if (!vs) return;
+  for (const url of Object.keys(vs)) {
+    const v = vs[url];
+    if (!v || !v.clone) continue;
+    if (v.clone === balloon.bodyModel) continue;      // 留给调用方释放
+    if (v.clone.parent) v.clone.parent.remove(v.clone);
+    v.clone.traverse((o) => {
+      if (o.isMesh) {
+        if (!o.userData.sharedGeo) o.geometry?.dispose?.();
+        o.material?.dispose?.();
+      }
+    });
+  }
+}
+
+/**
+ * 第四十九修 · 「变脸不重建模型」：把 Boss 的**其它几张脸**提前建好挂在 mesh 上（默认隐身），
+ * 之后变脸只切 visible（见 setBalloonVariant）。
+ *
+ * 为什么：旧路径 swapBalloonModel 每次变脸都 dispose 旧材质 + 新建克隆材质。three r168 里
+ *   material.dispose() → releaseMaterialProgramReferences → programCache.releaseProgram
+ *   （vendor/three.module.js:29310 / :21065），**引用计数归零就删掉 GL program**，
+ *   于是下一次渲染那一帧要同步重新编译着色器 —— 现场就是「第 6 关 Boss 一变脸就卡一下」。
+ *   预建之后三张脸的材质同时存在（同一个 program 的引用计数 ≥ 3），变脸只改 visible：
+ *   零创建、零 dispose、零编译。
+ *
+ * @param {object}   balloon
+ * @param {string[]} urls      要预建的模型 url（**不含**构造函数已经挂上的那张）
+ * @param {number}   radius    与本体同一个 attach 半径（必须一致，否则脸会一大一小）
+ * @param {string}   baseUrl   构造函数已经挂上的那张（切回它时用本体，不重建）
+ * @returns {Promise<boolean>} 全部预建成功才 true；失败时调用方回退 swapBalloonModel（行为与改造前一致）
+ */
+export function prebuildBalloonVariants(balloon, urls, radius, baseUrl, tuningOverride = null, extraScale = 1, tint = null) {
+  if (!balloon || !Array.isArray(urls) || !urls.length) return Promise.resolve(false);
+  balloon._variantBaseUrl = baseUrl || null;
+  balloon._variants = balloon._variants || {};
+  const jobs = urls.map((url) => loadBalloonModel(url)
+    .then((scene) => {
+      if (!balloon.alive || !balloon.mesh) return false;   // 加载期间 Boss 已被打死/移除
+      if (balloon._variants[url]) return true;             // 幂等：重复预建直接跳过
+      const { clone, mats } = buildModelClone(scene, url, radius, tint, tuningOverride, extraScale);
+      clone.visible = false;                               // 默认隐身，等 setBalloonVariant 点亮
+      balloon.mesh.add(clone);
+      balloon._variants[url] = { clone, mats };
+      return true;
+    })
+    .catch(() => false));
+  return Promise.all(jobs).then((r) => r.every(Boolean));
+}
+
+/**
+ * 第四十九修 · 切到预建好的某张脸（**只切 visible**）。返回 false ⇒ 调用方回退 swapBalloonModel。
+ *
+ * 顺带把 bodyModel / _modelMats 指向「当前显示的那张」—— 屏幕上其它读写这两个字段的逻辑
+ * （黑阶段隐身 b.bodyModel.visible=false、受击闪烁 _modelMats、dispose 释放）因此不用做任何改动。
+ */
+export function setBalloonVariant(balloon, url) {
+  if (!balloon || !balloon._variants) return false;
+  const isBase = url === balloon._variantBaseUrl;
+  const v = balloon._variants[url];
+  if (!isBase && !v) return false;                        // 还没预建好 / 不是这几张脸
+  // 本体可能比变体晚到位：第一次切换时才把「本体」记下来（迟到分支里已经记过则不覆盖）
+  if (!balloon._baseModel && balloon.bodyModel && balloon.bodyModel.parent === balloon.mesh) {
+    balloon._baseModel = balloon.bodyModel;
+    balloon._baseMats = balloon._modelMats;
+  }
+  if (isBase) {
+    if (!balloon._baseModel) return false;                // 本体还没加载出来 → 回退
+  } else if (v.clone.parent !== balloon.mesh) {
+    return false;                                         // 变体已被摘掉（走过兜底重建）→ 回退
+  }
+  if (balloon._baseModel) balloon._baseModel.visible = false;
+  for (const url2 of Object.keys(balloon._variants)) balloon._variants[url2].clone.visible = false;
+  if (isBase) {
+    balloon._baseModel.visible = true;
+    balloon.bodyModel = balloon._baseModel;
+    balloon._modelMats = balloon._baseMats;
+  } else {
+    v.clone.visible = true;
+    balloon.bodyModel = v.clone;
+    balloon._modelMats = v.mats;
+  }
+  balloon._variantActiveUrl = url;
+  return true;
 }
 
 // 预捕获 DepthSprite 数据源：黑阶段留空期提前触发捕获，

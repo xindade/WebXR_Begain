@@ -3,6 +3,12 @@
 > 主题：让 VR+ 平台（及其配套 `查看游戏版本号.bat`）能正确显示我们打包的 APK 版本号
 > （DeepmindHacker / 2.0.5），而不是「查无此包」或隐身。
 > 本文档记录**真因**与**唯一改动点**，供后续复现 / 移植直接照抄。
+>
+> ★ **当前身份（2026-10-15 起，以此为准）**：`applicationId = com.DX.WeirdTurning`，
+> `versionName = 1.5.3`，`versionCode = 153`，显示名 `WeirdTurning`。
+> 下面各节里出现的 `com.GoodNet.DeepmindHacker` / `2.0.5` / `205` 是**改名前的历史记录**，
+> 保留只为还原当时的排查过程，**别照着抄**。改身份统一走 `tools\rebrand.ps1`
+> （改源码 + 重打包 + 用 aapt2 对产物自证，一条命令）。
 
 ---
 
