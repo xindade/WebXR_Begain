@@ -38,6 +38,7 @@ for (const skill of ['buddha', 'sword']) {
         _buddhaFx: { update: () => false, isDamaging: true, scale: 1, position: new THREE.Vector3() },
         leftSword: { getBlade(hilt, tip) { hilt.set(0, 0, -1); tip.set(0, 0, 1); } },
         _hilt: new THREE.Vector3(), _tip: new THREE.Vector3(), _gameTime: 1,
+        hud: { setShopCoin() {} },   // 第五十五修：_onKilled 会入账商店币
       });
       const survivor = enemy();
       survivor.hp = 1e9;

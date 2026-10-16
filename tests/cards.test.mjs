@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { pickCards } from '../src/game/cardDraft.js';
-import { RESUPPLY_CARD, availableAttributes, ATTRIBUTE_STATS } from '../src/content/cards.js';
+import { RESUPPLY_CARD, availableAttributes, ATTRIBUTE_STATS, ATTR_TYPES } from '../src/content/cards.js';
 
 const A = (id) => ({ id, label: id, desc: id, color: '#fff', apply: () => {} });
 
@@ -73,9 +73,14 @@ test('availableAttributes：全部满级时只给战场补给卡（RESUPPLY_CARD
   assert.equal(pickCards(pool, ['selfRepair', 'hp'])[0].id, 'resupply');
 });
 
-test('第9关真实卡池：回血保证确实落在"自我修复"上', () => {
+test('第9关真实卡池（第五十五修：血上限固定 100，已无生命卡）：回血保证落在"自我修复"上', () => {
   const player = { fireRate: 2, shotCount: 1, atk: 100, skillCost: 500, skillDamageMul: 1, regen: 0, maxHp: 100 };
-  const pool = availableAttributes(player, ['skillCost', 'skillDamage', 'selfRepair', 'hp']);
-  assert.deepEqual(pool.map(p => p.id), ['skillCost', 'skillDamage', 'selfRepair', 'hp']);
-  assert.equal(pickCards(pool, ['selfRepair', 'hp'])[0].id, 'selfRepair');
+  const pool = availableAttributes(player, ['skillCost', 'skillDamage', 'selfRepair']);
+  assert.deepEqual(pool.map(p => p.id), ['skillCost', 'skillDamage', 'selfRepair']);
+  assert.equal(pickCards(pool, ['selfRepair'])[0].id, 'selfRepair');
+});
+
+test('第五十五修：血上限固定 100 —— 属性卡表里不再有「生命+50」', () => {
+  assert.ok(!ATTR_TYPES.some(c => c.id === 'hp'), '生命卡应已从 ATTR_TYPES 移除');
+  assert.equal(ATTRIBUTE_STATS.hp, undefined, '成长上限表里也不该再有 hp');
 });

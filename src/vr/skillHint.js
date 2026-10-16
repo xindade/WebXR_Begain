@@ -138,91 +138,105 @@ export class SkillHintPanel {
     if (b.y) this.mesh.position.y -= step;   // 左Y键=下
   }
 
+  // 四行版式（第五十九修 · 现场口径）：
+  //   ① 技能信息（名字 + 消耗）  ② 冷却条（状态文字 + 进度）  ③ 攻击力 / 弹道  ④ 射速 / 击杀充能
+  //   加速期在第 4 行下方再补一行金色「加速 N.Ns」（属于第 4 行的补充信息，不另起一栏）。
+  //   行高/基线全部来自 SKILL_HINT（可热调）；边框按状态取色，与旧版一致。
   _draw(s) {
     const { red, ready, cd, cdTotal, skillCost, game } = s;
     const cfg = SKILL_HINT;
     const c = this.ctx;
-    c.clearRect(0, 0, this.w, this.h);
+    const W = this.w, H = this.h;
+    const PAD = cfg.PAD_X > 0 ? cfg.PAD_X : 34;
+    const S = cfg.STREAK || {};
+    c.clearRect(0, 0, W, H);
+    c.textAlign = 'left';
+
     // 背景
     c.fillStyle = 'rgba(8,12,20,0.86)';
-    roundRect(c, 0, 0, this.w, this.h, 28); c.fill();
+    roundRect(c, 0, 0, W, H, 28); c.fill();
 
     // 边框按状态取色
     let border = cfg.IDLE_BORDER, borderW = 6;
     if (red)                       { border = cfg.FLASH_BORDER;      borderW = 12; }
     else if (ready)                { border = cfg.READY_BORDER;      borderW = 6;  }
     else if (cd > 0)               { border = cfg.COOLDOWN_BORDER;   borderW = 6;  }
-    else                          { border = cfg.INSUFFICIENT_BORDER; borderW = 6;  }
+    else                          { border = cfg.INSUFFICIENT_BORDER; borderW = 6; }
     c.strokeStyle = border;
     c.lineWidth = borderW;
-    roundRect(c, 8, 8, this.w - 16, this.h - 16, 22); c.stroke();
+    roundRect(c, 8, 8, W - 16, H - 16, 22); c.stroke();
 
-    // 标题：技能名
-    const name = this._skillName(game);
+    // ===== 第一行：技能信息（名字 + 消耗）=====
     c.fillStyle = border;
-    c.font = 'bold 40px sans-serif';
-    c.textAlign = 'center';
-    c.fillText('⚡ ' + name, this.w / 2, 58);
+    c.font = 'bold 38px sans-serif';
     c.textAlign = 'left';
+    c.fillText('⚡ ' + this._skillName(game), PAD, cfg.ROW1_Y);
+    // 消耗：现在放得出（就绪/冷却中）金色，积分不够浅灰 —— 一眼看出「能不能放」
+    c.fillStyle = (cd <= 0 && !ready) ? cfg.INSUFFICIENT_TEXT : '#ffd24a';
+    c.font = 'bold 30px sans-serif';
+    c.textAlign = 'right';
+    c.fillText('消耗 ' + skillCost, W - PAD, cfg.ROW1_Y);
+
+    // ===== 第二行：冷却条（状态文字 + 进度条）=====
+    let barCol = cfg.COOLDOWN_BAR_COLOR, frac = 0, label, labelCol;
+    if (cd > 0) {
+      label = '冷却 ' + cd.toFixed(1) + 's'; labelCol = cfg.COOLDOWN_BORDER;
+      frac = cdTotal > 0 ? Math.max(0, Math.min(1, 1 - cd / cdTotal)) : 0;   // 0→刚释放，1→就绪
+    } else if (ready) {
+      label = '技能就绪 · 扣左手柄 Grip 释放'; labelCol = cfg.READY_BORDER;
+      frac = 1; barCol = cfg.READY_BORDER;
+    } else {
+      label = '积分不足 · 现有 ' + Math.floor(game.score || 0); labelCol = cfg.INSUFFICIENT_TEXT;
+      frac = skillCost > 0 ? Math.max(0, Math.min(1, (game.score || 0) / skillCost)) : 0;
+      barCol = cfg.INSUFFICIENT_BORDER;
+    }
+    c.fillStyle = labelCol;
+    c.font = 'bold 26px sans-serif';
+    c.textAlign = 'left';
+    c.fillText(label, PAD, cfg.ROW2_Y);
+    const bx = PAD, by = cfg.ROW2_BAR_Y, bw = W - PAD * 2, bh = cfg.ROW2_BAR_H;
+    c.fillStyle = cfg.COOLDOWN_BG;
+    roundRect(c, bx, by, bw, bh, 10); c.fill();
+    if (frac > 0) { c.fillStyle = barCol; roundRect(c, bx, by, bw * frac, bh, 10); c.fill(); }
+
+    // ===== 第三行：攻击力 / 弹道 =====
+    const p = game.player || {};
+    const shots = (p.shotCount > 1) ? (p.shotCount + ' 发/枪') : '单发';
+    c.fillStyle = '#9fe8ff';
+    c.font = '28px sans-serif';
+    c.textAlign = 'left';
+    c.fillText('攻击力 ' + (p.atk != null ? p.atk : '-'), PAD, cfg.ROW3_Y);
+    c.textAlign = 'right';
+    c.fillText('弹道 ' + shots, W - PAD, cfg.ROW3_Y);
+
+    // ===== 第四行：射速 / 击杀充能（充能 = 连杀计数，与边框方块同源）=====
+    c.textAlign = 'left';
+    c.fillText('射速 ' + (p.fireRate != null ? p.fireRate : '-') + ' 发/秒', PAD, cfg.ROW4_Y);
+    c.textAlign = 'right';
+    c.font = 'bold 28px sans-serif';
+    c.fillStyle = s.boost ? (S.BOOST_COLOR || '#ffd24a') : '#ffffff';
+    c.fillText((cfg.CHARGE_LABEL || '充能') + ' ' + this._streakFill + '/' + this._streakNeed, W - PAD, cfg.ROW4_Y);
+    if (s.boost) {
+      c.fillStyle = S.BOOST_COLOR || '#ffd24a';
+      c.font = 'bold 26px sans-serif';
+      c.fillText((S.BOOST_LABEL || '加速') + ' ' + (s.boostLeft || 0).toFixed(1) + 's', W - PAD, cfg.ROW5_BOOST_Y);
+    }
 
     // 调试：显示当前相对右手柄的本地坐标（调位时把这三个值抄进 SKILL_HINT.POSITION 即可）
     if (cfg.DEBUG) {
       c.fillStyle = '#ffd43b';
-      c.font = 'bold 22px sans-serif';
-      c.fillText('调试 x:' + this.mesh.position.x.toFixed(3) + ' y:' + this.mesh.position.y.toFixed(3) + ' z:' + this.mesh.position.z.toFixed(3), 28, 92);
+      c.font = 'bold 18px sans-serif';
+      c.textAlign = 'left';
+      c.fillText('调试 x:' + this.mesh.position.x.toFixed(3) + ' y:' + this.mesh.position.y.toFixed(3) + ' z:' + this.mesh.position.z.toFixed(3), PAD, 176);
     }
-
-    if (red) {
-      c.fillStyle = cfg.FLASH_BORDER;
-      c.font = 'bold 34px sans-serif';
-      c.fillText('技能就绪', 28, 124);
-      c.fillStyle = '#ffffff';
-      c.font = 'bold 28px sans-serif';
-      c.fillText('用「中指」扣左手柄', 28, 176);
-      c.fillText('握把键(Grip)释放', 28, 216);
-    } else if (cd > 0) {
-      // 冷却中：剩余秒数 + 恢复进度条
-      c.fillStyle = cfg.COOLDOWN_BORDER;
-      c.font = 'bold 34px sans-serif';
-      c.fillText('冷却中 ' + cd.toFixed(1) + 's', 28, 116);
-      const bx = 28, by = 144, bw = this.w - 56, bh = 36;
-      c.fillStyle = cfg.COOLDOWN_BG;
-      roundRect(c, bx, by, bw, bh, 10); c.fill();
-      const frac = cdTotal > 0 ? Math.max(0, Math.min(1, 1 - cd / cdTotal)) : 0;  // 0→释放时，1→就绪
-      if (frac > 0) { c.fillStyle = cfg.COOLDOWN_BAR_COLOR; roundRect(c, bx, by, bw * frac, bh, 10); c.fill(); }
-      c.fillStyle = '#cfd6e4';
-      c.font = '24px sans-serif';
-      c.fillText('恢复中… ' + Math.round(frac * 100) + '%', 28, 214);
-    } else if (ready) {
-      c.fillStyle = cfg.READY_BORDER;
-      c.font = 'bold 34px sans-serif';
-      c.fillText('✓ 就绪', 28, 116);
-      c.fillStyle = '#ffffff';
-      c.font = 'bold 28px sans-serif';
-      c.fillText('扣左手柄 Grip 释放', 28, 176);
-    } else {
-      // 积分不足
-      c.fillStyle = cfg.INSUFFICIENT_TEXT;
-      c.font = 'bold 30px sans-serif';
-      c.fillText('需 ' + skillCost + ' 积分', 28, 124);
-      c.fillStyle = '#cfd6e4';
-      c.font = '24px sans-serif';
-      c.fillText('继续击杀以蓄能', 28, 176);
-    }
-
-    // 底部积分（始终显示当前/所需）；基线抬到 h-42 给「贴边框的计数方块」让位
-    c.fillStyle = '#9fe8ff';
-    c.font = '28px sans-serif';
-    c.fillText('积分 ' + Math.floor(game.score) + ' / ' + skillCost, 28, this.h - 42);
 
     this._drawStreak(c, s);
     this.tex.needsUpdate = true;
   }
 
-  // 连杀计数（第四十四修）：沿**面板边框**等距的方块 + 右下角「杀敌 N/M」。
   //   · 杀一个亮一个（子弹击杀，见 game._bulletKill）；加速期间新攒的点改用金色；
   //   · 集齐（= 触发加速）那一瞬整圈闪一下（放大 + 变白）；
-  //   · 方块贴着边框线画 → 不占正文区，不挡准星；文字最后画 = 永远在面板最上层。
+  //   · 方块贴着边框线画 → 不占正文区，不挡准星（正文四行的 PAD_X 已避开方块）。
   _drawStreak(c, s) {
     const S = SKILL_HINT.STREAK || {};
     if (S.ENABLED === false) return;
@@ -245,16 +259,8 @@ export class SkillHintPanel {
         c.fillRect(p.x - e * 0.5, p.y - e * 0.5, e, e);
       }
     }
-    // 右下角「杀敌 N/M」——最后画 = 最上层
-    c.textAlign = 'right';
-    c.font = 'bold 30px sans-serif';
-    c.fillStyle = s.boost ? (S.BOOST_COLOR || '#ffd24a') : (S.COUNT_COLOR || '#ffffff');
-    c.fillText((S.COUNT_LABEL || '杀敌') + ' ' + fill + '/' + need, this.w - 40, this.h - 42);
-    if (s.boost) {
-      c.font = 'bold 24px sans-serif';
-      c.fillText((S.BOOST_LABEL || '加速') + ' ' + (s.boostLeft || 0).toFixed(1) + 's', this.w - 40, this.h - 76);
-    }
-    c.textAlign = 'left';
+    // 第五十九修：右下角「杀敌 N/M / 加速 N.Ns」已搬到正文第 4 行（击杀充能）——
+    //   这里只画边框方块，避免同一信息画两遍、并与第 4 行 / 加速行重叠。
   }
 
   _skillName(game) {

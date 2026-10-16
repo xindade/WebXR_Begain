@@ -1,5 +1,5 @@
 // 抽卡卡牌配置（对齐 iMA 笔记「选项卡调整」）
-// 属性类（加法叠加 + 封顶）：射速 / 子弹 / 攻击 / 技能消耗 / 技能伤害 / 自我修复 / 生命
+// 属性类（加法叠加 + 封顶）：射速 / 子弹 / 攻击 / 技能消耗 / 技能伤害 / 自我修复
 // 技能类（红色）：如来神掌 / 激光剑 / 散射强化（仅第3关机制关固定三张）
 //
 // 卡面统一用 canvas 程序化「简笔画」图标（见 cardDraft.drawSketchIcon）+ 文字，不再依赖 PNG。
@@ -44,14 +44,6 @@ export const ATTR_TYPES = [
     color: '#16a085', icon: 'selfRepair',
     apply: (p) => { p.regen = Math.min(10, (p.regen || 0) + 2); },
   },
-  {
-    id: 'hp', label: '生命+50', desc: '生命上限+50（上限400），并回50',
-    color: '#2980b9', icon: 'hp',
-    apply: (p) => {
-      p.maxHp = Math.min(400, (p.maxHp || 100) + 50);
-      p.hp = Math.min(p.maxHp, (p.hp || 0) + 50);
-    },
-  },
 ];
 
 // 成长上限的**唯一口径**（第五十四修起，ATTR_TYPES 里的 apply 也读这里，避免「卡面写一套、代码封一套」）。
@@ -59,7 +51,7 @@ export const ATTR_TYPES = [
 export const ATTRIBUTE_STATS = {
   fireRate: ['fireRate', 2, 20, 2], multiShot: ['shotCount', 1, 12, 1], atk: ['atk', 100, 700, 100],
   skillCost: ['skillCost', -100, 100, 500], skillDamage: ['skillDamageMul', 1, 5, 1],
-  selfRepair: ['regen', 2, 10, 0], hp: ['maxHp', 50, 400, 100],
+  selfRepair: ['regen', 2, 10, 0],
 };
 export function attributePreview(card, player) {
   const stats = ATTRIBUTE_STATS[card.id];
@@ -67,7 +59,7 @@ export function attributePreview(card, player) {
   const [key, step, limit, base] = stats;
   const before = player[key] ?? base;
   const after = step > 0 ? Math.max(before, Math.min(limit, before + step)) : Math.min(before, Math.max(limit, before + step));
-  return `${before} → ${after}${card.id === 'hp' ? '，并回血50' : ''}`;
+  return `${before} → ${after}`;
 }
 export function availableAttributes(player, ids = ATTR_TYPES.map(c => c.id)) {
   const useful = card => {
@@ -81,7 +73,7 @@ export function availableAttributes(player, ids = ATTR_TYPES.map(c => c.id)) {
   return pool;
 }
 
-// 满级兜底卡：主池已无任何可用成长卡时使用；同时作为第9关「回血保证」的最终兜底。
+// 满级兜底卡：主池已无任何可用成长卡时使用（第五十五修：生命上限卡已移除，血上限固定 100）。
 export const RESUPPLY_CARD = {
   id: 'resupply', label: '战场补给', desc: '回满生命，并获得3秒护盾', color: '#16a085', icon: 'hp',
   apply: p => { p.hp = p.maxHp; p.shieldTime = Math.max(p.shieldTime || 0, 3); },

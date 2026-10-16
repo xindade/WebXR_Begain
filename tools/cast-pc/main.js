@@ -119,6 +119,17 @@ let PORT = Number(argValue('port', 8443));   // 实际启动端口由 tryListen 
 // 且 EXE 定位是「纯接收端」——游戏本体由头显 APK 自带，没必要把整个项目目录暴露出去。
 // ★ 第二十二修：打包运行**永不** serve 项目根，只 serve 内置目录（见 currentServeRoot）。
 const NO_SERVE = hasFlag('no-serve') || (typeof app.isPackaged === 'boolean' && app.isPackaged);
+// ★ 第五十六修：平台「关闭游戏」（0x10 CloseGame）到达后，EXE 自己退出。
+//   默认开；平台侧 kill 打空时这是最后的收场保障。要保留 EXE 常驻（排练/调试）加 `--keep-alive`。
+const EXIT_ON_CLOSE = !hasFlag('keep-alive') && !hasFlag('no-exit-on-close');
+// ★ 第五十七修：现场**不许弹「A JavaScript error occurred in the main process」模态框**。
+//   Electron 默认把 main 进程的未捕获异常做成模态对话框 —— 一弹就挡住 app.quit()，
+//   现场表现正是「平台点了关闭 / 关了游戏，EXE 反而弹个错窗口、关不掉」。
+//   这里改成：写日志（含 userData/cast-pc-errors.log）+ 继续跑 —— 接收端继续推流比死掉有价值。
+//   要恢复 Electron 默认行为（弹窗/崩溃）加 `--strict-errors`。
+const STRICT_ERRORS = hasFlag('strict-errors');
+process.on('uncaughtException', (err) => { logError('未捕获异常（已拦截，进程继续）', err); if (STRICT_ERRORS) process.exit(1); });
+process.on('unhandledRejection', (reason) => { logError('未处理的 Promise 拒绝（已拦截）', reason); });
 const ROOT = path.resolve(argValue('root', path.join(__dirname, '..', '..')));
 // 「游戏目录」这类运维面板：开发模式默认可见，正式包只在 --panels 时可见（现场按 H 也看不到）
 const PANELS = hasFlag('panels') || !app.isPackaged;
@@ -568,7 +579,7 @@ app.whenReady().then(() => {
     if (pathname === '/api/time') return handleTime(req, res);
     if (pathname === '/api/info') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({
+      res.end(safeJson({
         port: PORT, ips: lanIPs(),
         server: Date.now(),   // ★ 第三十二修：本机时间（排障用；正式对时走 GET /api/time）
         gameRoot: GAME_ROOT, extCfg: EXT_CFG,
@@ -597,7 +608,7 @@ app.whenReady().then(() => {
         license: licenseSummary(),
         // ★ 第二十四修：清单状态（ver / 指纹 / 什么时候清的旧配置）—— 现场排障第一眼看这里
         manifest: manifestSummary(),
-      }));
+      }, '/api/info'));
       return;
     }
     // ★ 第二十四修：清单管辖的配置路径（/src/content/**、/src/core/userConfig.js）**只认清单缓存**，
@@ -1240,15 +1251,15 @@ function handleLicenseCurrent(req, res) {
   //   头显据此**跳过** LicenseVerify（否则拿不到 license 会判 DENY，游戏起不来）。
   //   ⚠ 必须 200 + off:true，**不能** 404 —— 404 在头显侧的含义是「直播端版本过旧」。
   if (!LICENSE_ENABLED) {
-    return res.end(JSON.stringify({
+    return res.end(safeJson({
       ok: true, off: true, nonce, why: '授权验证已关闭（第二十三修）', state: licenseUiState(),
     }));
   }
   const st = licenseState();
   if (!LICENSE.ok || !nonce) {
-    return res.end(JSON.stringify({ ok: false, nonce, why: nonce ? st.why : '缺少 nonce（头显必须给随机数）', state: st }));
+    return res.end(safeJson({ ok: false, nonce, why: nonce ? st.why : '缺少 nonce（头显必须给随机数）', state: st }));
   }
-  res.end(JSON.stringify({
+  res.end(safeJson({
     ok: true,
     license: LICENSE.text,
     nonce,
@@ -1385,7 +1396,7 @@ function handleTime(req, res) {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Private-Network': 'true',
   });
-  res.end(JSON.stringify({ server: Date.now(), session: SESSION_ID }));
+  res.end(safeJson({ server: Date.now(), session: SESSION_ID }));
 }
 
 function handleLaunchRequest(req, res) {
@@ -1401,7 +1412,7 @@ function handleLaunchRequest(req, res) {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     // session：本局局号。头显把它存进下发配置里；下次启动若对不上就整包重下（见「局号失效」注释）。
     // exp 一并回给头显：它拿 dev+exp+voucher 就能在**页面侧**向 /api/master/allow 复验同一张条子。
-    res.end(JSON.stringify({
+    res.end(safeJson({
       allow: r.allow, voucher: r.voucher, ttl: r.ttl, exp: r.entry.exp || null,
       why: r.reason, reason: r.reason,
       session: SESSION_ID, server: Date.now(),
@@ -1437,7 +1448,7 @@ function handleMasterAllow(req, res) {
     console.log(`[cast-pc] 门禁查询 ${r.allow ? 'ALLOW' : 'DENY '} dev=${r.entry.dev || '(空)'}`
       + ` ip=${ip} room=${room || '-'} why=${r.reason}`);
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({
+    res.end(safeJson({
       allow: r.allow, reason: r.reason, voucher: r.voucher, ttl: r.ttl,
       session: SESSION_ID, room: room || null, server: Date.now(),
       // ★ 第十八修：把「本轮是否已开始」一并回去 —— 页面据此把「正常等待开始」与「授权没过」
@@ -1756,7 +1767,7 @@ async function handleConfigDump(req, res) {
   const q = (() => { try { return new URL(req.url, 'https://x').searchParams; } catch (e) { return new URLSearchParams(''); } })();
   const json = (obj) => {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify(obj));
+    res.end(safeJson(obj));
   };
   // ★ 门禁总闸（兜底 0 天）：与 launch/request 同一条判据 —— 少一处就会留下后门。
   const gate = licenseGate();
@@ -1934,7 +1945,7 @@ function handleRoundEnd(req, res) {
       }, '画面侧：' + why);
     }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ok: true, round: r }));
+    res.end(safeJson({ ok: true, round: r }));
   });
 }
 
@@ -1958,7 +1969,7 @@ function handleManualGameResult(req, res) {
     }, '手工触发（/api/platform/game-result）');
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     // dest 一并回给调用方：现场最怕「发出去了但没人收」——直接看目标地址就知道发对没有
-    res.end(JSON.stringify({
+    res.end(safeJson({
       ok, results: PLATFORM_CH.results, why: PLATFORM_CH.lastResultWhy,
       dest: platformTargets().map((t) => `${t}:${GAME_CH_ACK_PORT}`),
     }));
@@ -1978,7 +1989,7 @@ function handleRoundStart(req, res) {
     const why = String((body && body.why) || '平台已开始本局').slice(0, 80);
     const r = roundSet(true, '画面侧上报：' + why);
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ok: true, round: r }));
+    res.end(safeJson({ ok: true, round: r }));
   });
 }
 
@@ -2171,8 +2182,54 @@ const PLATFORM_CH = {
   lastFromIp: null,    // ★ 平台自己发帧过来的源 IP —— 上行帧的目标就是它（见 platformTargets()）
   results: 0, lastResultAt: 0, lastResultWhy: null,   // CMD 7 上报计数 / 最近一次（现场排障看这个）
 };
+// ★ 第五十七修：退出定时器**不放状态对象里** —— setTimeout 返回的 Timeout 句柄不可 JSON 序列化
+//   （其 _idlePrev 指向 Node 内部的 TimersList），一旦被 /api/info 序列化就抛
+//   「Converting circular structure to JSON」→ main 进程弹模态框、平台点关闭也关不掉。
+let closeExitTimer = null;
+// ★ 第五十七修：错误落盘（打包后没有控制台，出问题至少要留一份能带回的证据）
+function logError(tag, err) {
+  const msg = '[' + new Date().toISOString() + '] ' + tag + '：' + (err && err.stack ? err.stack : String(err));
+  console.error('[cast-pc] ' + msg);
+  try { fs.appendFileSync(path.join(app.getPath('userData'), 'cast-pc-errors.log'), msg + String.fromCharCode(10)); } catch (e) { /* 落盘失败就算了 */ }
+}
 /** 供 /api/info 显示（现场排障第一眼看这个） */
-function platformChannelSnapshot() { return { ...PLATFORM_CH }; }
+/**
+ * 第五十七修：**状态序列化兜底**。
+ *
+ * <p>响应体里混进句柄（Timeout / Socket / Server）时 JSON.stringify 会抛 circular 异常，
+ *    而 main 进程未捕获异常 = 弹模态框（现场就是「关不掉」）。凡是要把「状态对象」塞进
+ *    响应体的地方都走这个函数：序列化失败也只回一个可读的 JSON，不炸进程。
+ *
+ *    第五十八修：**所有 HTTP JSON 响应**（/api/info、/api/master/allow、/api/launch/request、/api/config、
+ *    /api/round/*、/api/platform/*、/api/license/*）一律走本函数 —— 任何一条响应把句柄带出去，
+ */
+function safeJson(obj, why) {
+  try { return JSON.stringify(obj); }
+  catch (e) {
+    logError('状态序列化失败（' + (why || 'safeJson') + '）', e);
+    return JSON.stringify({ ok: false, why: (why || '状态序列化失败') + '：' + e.message });
+  }
+}
+/**
+ * 平台游戏通道状态快照（/api/info 与界面用）。
+ *
+ * ★ 第五十七修：**必须白名单投影**。这里曾经是 `{ ...PLATFORM_CH }`，而 PLATFORM_CH 里一度存着
+ *   退出用的 setTimeout 句柄 —— 于是 /api/info 一序列化就抛 circular 异常，main 进程弹
+ *   「A JavaScript error occurred in the main process」模态框（现场：平台点关闭 → EXE 报错且关不掉，
+ *   模态框还挡住了紧随其后的 app.quit）。
+ *   规矩：**句柄（Timeout / Socket / Server）一律放模块级变量，状态对象只放纯数据。**
+ */
+function platformChannelSnapshot() {
+  return {
+    enabled: PLATFORM_CH.enabled, bound: PLATFORM_CH.bound, why: PLATFORM_CH.why,
+    platformIp: PLATFORM_CH.platformIp, machines: PLATFORM_CH.machines, frames: PLATFORM_CH.frames,
+    lastFromIp: PLATFORM_CH.lastFromIp,
+    lastStartAt: PLATFORM_CH.lastStartAt, lastStartFrom: PLATFORM_CH.lastStartFrom,
+    lastCloseAt: PLATFORM_CH.lastCloseAt, exitArmed: !!closeExitTimer,
+    results: PLATFORM_CH.results, lastResultAt: PLATFORM_CH.lastResultAt,
+    lastResultWhy: PLATFORM_CH.lastResultWhy,
+  };
+}
 
 // 游戏通道的 socket 与平台 IP：升到模块级，好让「本局结束上报」这类异步动作也能发帧
 let platformSock = null;
@@ -2346,6 +2403,19 @@ function startPlatformGameChannel() {
         console.log(`[cast-pc] ← 平台「关闭游戏」CMD 16 CloseGame（来自 ${rinfo.address}:${rinfo.port}）`);
         roundSet(false, '平台「关闭游戏」（游戏通道 0x10 closeGame）');
         sendFrame(PC_FRAME_CLOSE_ACK, null, rinfo.address);   // 平台在等这个确认（抓包 7ms）
+        // ★ 第五十六修：**EXE 自己退出**。平台结束本局时是「启动器 kill（按登记名）+ 0x10 closeGame 同发」，
+        //   而启动器只按**进程名**杀 —— 平台登记的路径/进程名与现场实际 EXE 不一致时（改名、换版本、
+        //   手工双击启动），kill 会静默打空，现象就是「平台点了结束游戏，EXE 还开着」。
+        //   这里认平台自己发来的 0x10 CloseGame（PC 与头显两路同发，实测样本），延迟 0.8s 自行退出 ——
+        //   先让上面那帧 ack 与本轮收尾（清单清理等）落完；`--keep-alive` / `--no-exit-on-close` 可关掉。
+        if (EXIT_ON_CLOSE) {
+          if (closeExitTimer) clearTimeout(closeExitTimer);
+          closeExitTimer = setTimeout(() => {
+            console.log('[cast-pc] 收到平台「关闭游戏」CMD 16 → 本进程自行退出（EXIT_ON_CLOSE；--keep-alive 可关）');
+            try { app.quit(); } catch (e) { /* 忽略 */ }
+            setTimeout(() => process.exit(0), 1500);   // app.quit 那一路被拦时的硬兜底
+          }, 800);
+        }
         return;
       }
       if (b0 === PC_FRAME_REGISTER) {

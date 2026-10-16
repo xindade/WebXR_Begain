@@ -173,6 +173,10 @@ function makeCtx(fx) {
     _damageFeedback(b, killed) { trace.push('dmg:' + b.key + ':' + b._lastDamage + ':' + (killed ? 'kill' : 'hit')); },
     _onKilled(b) { trace.push('onKilled:' + b.key); const i = list.indexOf(b); if (i !== -1) list.splice(i, 1); },
     _bulletKill(b) { trace.push('bulletKill:' + b.key); },
+    // 第五十五修：_collide 新增的两个钩子。_itemLevel 恒 0 ⇒ 专打强者倍率 = 1（轨迹应与旧实现一致）
+    _itemLevel() { return 0; },
+    _applyShopDamage: Game.prototype._applyShopDamage,
+    _shopBulletKill() {},   // 不写 trace：旧实现没有这一步，轨迹才可比
   };
   return { ctx, trace, all };
 }

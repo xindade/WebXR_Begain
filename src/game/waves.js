@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM, SPAWN_RING, SPAWN_LAYER, ELITE_TUNING, levelSecondsOf, levelTimeScale } from '../core/constants.js';
-import { scriptFor, scriptEventTimes, layerOfType, comboTotal, DIR_TEXT, FUSE, LAYER, isClimaxEvent, climaxEliteHp, eliteTravelSpeed } from '../content/spawnDirector.js';
+import { scriptFor, scriptEventTimes, layerOfType, comboTotal, DIR_TEXT, FUSE, LAYER, isClimaxEvent, isClimaxGateBanner, pickFuseAbsorb, climaxEliteHp, eliteTravelSpeed } from '../content/spawnDirector.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { ELITE_SCHEDULE, ELITE_WINDOW, ELITE_BASE_HP, RANGED_DPS_HP } from '../content/eliteMonsters.js';
 import { isBoss } from '../content/levels.js';
@@ -539,6 +539,10 @@ export class WaveManager {
 
   // 每帧推进脚本：取 (上一帧, 本帧] 区间内到期的事件并执行
   _updateSpawnScript(dt) {
+    // ★ 第五十七修（现场口径）：末尾批的「…精英来袭」横幅要**等场上精英清完**才放 ——
+    //   到点先看有没有精英：有 → 本帧不推进脚本时钟（后面的清场融合 / 精英生成一并推迟），
+    //   直到精英被杀；上限 SPAWN_LAYER.HOLD_MAX_S 秒兜底（绝不软锁）。
+    if (this._holdClimaxBanner(dt)) return;
     if (!this._script) return;
     this._scriptElapsed += dt;
     const from = this._scriptPrev, to = this._scriptElapsed;
@@ -549,6 +553,34 @@ export class WaveManager {
       if (this._trashMulUntil && to >= this._trashMulUntil) { this._trashMul = 1; this._trashMulUntil = 0; }
     }
     this._scriptPrev = to;
+  }
+
+  /**
+   * 末尾横幅闸门（第五十七修）。
+   * @returns {boolean} true = 本帧冻结脚本时钟（还在等场上的精英被清掉）
+   */
+  _holdClimaxBanner(dt) {
+    if (!SPAWN_LAYER.HOLD_CLIMAX_BANNER || !this._script) { this._climaxHeld = false; return false; }
+    const evs = this._script.events;
+    let due = false;
+    for (const ev of evs) {
+      if (!isClimaxGateBanner(ev, evs)) continue;
+      if (scriptEventTimes(ev, this._scriptPrev, this._scriptElapsed + dt).length) { due = true; break; }
+    }
+    if (!due) { this._gateWait = 0; this._gateLogged = false; this._climaxHeld = false; return false; }
+    if (this._countElites() <= 0) { this._gateWait = 0; this._gateLogged = false; this._climaxHeld = false; return false; }
+    this._gateWait = (this._gateWait || 0) + dt;
+    if (!this._gateLogged) {
+      this._gateLogged = true;
+      this.log && this.log('[出怪] 场上还有精英 → 末尾横幅推迟到精英清完（脚本时钟暂停）');
+    }
+    if (this._gateWait > (SPAWN_LAYER.HOLD_MAX_S || 30)) {
+      this._gateWait = 0; this._gateLogged = false; this._climaxHeld = false;
+      this.log && this.log(`[出怪] 等精英超过 ${SPAWN_LAYER.HOLD_MAX_S}s 上限 → 横幅直接放行（不软锁）`);
+      return false;
+    }
+    this._climaxHeld = true;
+    return true;
   }
 
   _runScriptEvent(ev) {
@@ -695,16 +727,12 @@ export class WaveManager {
       //   旧口径只清杂鱼（!isElite）不动精英，金点批收尾时同样只清杂鱼 ⇒ 它继续往玩家飘，看着就像"又冒出来一个"。
       //   现在：精英**优先**成为光点（视觉上就是"被吸走"），再清杂鱼；**非末尾批维持原口径**（精英留给玩家打）。
       const climax2 = isClimaxEvent(ev);
-      const absorb = (pick) => {
-        for (let i = this.balloons.list.length - 1; i >= 0; i--) {
-          const b = this.balloons.list[i];
-          if (!b.alive || b.isBoss || !pick(b)) continue;
-          if (origins.length < FUSE.COUNT) origins.push(b.mesh.position.clone());
-          this.balloons.remove(b);        // 直接移除 = 不结算积分（用户确认第 3 条）
-        }
-      };
-      if (climax2) absorb((b) => b.isElite);
-      absorb((b) => !b.isElite);
+      // 第五十七修（现场口径）：**只吃 FUSE.COUNT 个** —— 多出来的小怪留在场上（旧实现是全清），
+      //   不足的再从最近传送门补光点（见下面那段）。精英优先、离汇聚点近的先吃。
+      for (const b of pickFuseAbsorb(this.balloons.list, FUSE.COUNT, { center: fusePos, climax: climax2 })) {
+        origins.push(b.mesh.position.clone());
+        this.balloons.remove(b);        // 直接移除 = 不结算积分（用户确认第 3 条）
+      }
     }
     // 不足 → 从最近传送门补足（用户：「如果光点小于5个，则从传送门新增光点」）
     const portals = this.getPortals ? this.getPortals() : null;
@@ -1389,7 +1417,8 @@ export class WaveManager {
     if (this.elapsed < stopAt) this._refillDrip(dt);
 
     // 时间窗结束且场上清空（含飞行光点）→ 通关
-    if (this.elapsed >= stopAt && this._active === 0) this.cleared = true;
+    //   玩家杀掉最后一只精英的那一帧会被直接判「本关清空」，末尾融合/横幅全被吞掉。
+    if (this.elapsed >= stopAt && this._active === 0 && !this._climaxHeld) this.cleared = true;
   }
 
   // 每 5 秒检查：内圈存活数 → RING_TABLE → 内圈系数 → 外圈目标

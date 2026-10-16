@@ -33,6 +33,8 @@ export class Player {
     this.skillDamageMul = 1;           // 技能伤害倍率（笔记默认 ×1，卡 +1/次，上限 ×5）
     this.regen = 0;                    // 自我修复 %/s（笔记默认 0，卡 +2/次，上限 10%）
     this.forceSingleShot = false;      // 抽卡等需要精确选靶时强制单发（由外部置位）
+    this.bonusShotCount = 0;           // 第五十五修 · 商店道具「多才是王道」：临时追加的弹道数（由 game._tickShopItems 维护）
+    this.skillCdDown = 0;              // 第五十五修 · 商店「技能冷却-」：累计减少的冷却秒数（见 game._skillCdTotal）
     this.multiShotChance = 0;          // 已弃用：随机多重射击改为 shotCount 确定性（爆炸系统已删除）
     this.maxHp = SHIP.MAX_HP;
     this.hp = SHIP.MAX_HP;
@@ -75,7 +77,8 @@ export class Player {
   //   返回**这一枪实际打出的弹数**（第五十修：龙族宝箱按打出的发数给加成；旧注释写的「返回是否开火」从来没实现过）
   // boost（第四十九修）：连杀加速期打出的子弹 —— 交给 BulletManager 用实例色染蓝、曳光加长
   fire(shot, bullets, audio, boost = false) {
-    const n = this.forceSingleShot ? 1 : (this.shotCount || 1);
+    // 第五十五修：商店道具「多才是王道」在基础弹道数上叠加临时弹道（抽卡/商店关强制单发时不叠加）
+    const n = this.forceSingleShot ? 1 : (this.shotCount || 1) + (this.bonusShotCount || 0);
     if (n <= 1) {
       bullets.spawn(shot.position, shot.direction, this.atk, boost);
     } else {

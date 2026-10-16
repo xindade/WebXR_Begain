@@ -12,7 +12,7 @@ import {
 } from '../src/content/spawnDirector.js';
 import { ELITE_TUNING, SPAWN_LAYER, levelSecondsOf } from '../src/core/constants.js';
 import { ENEMY_TYPES } from '../src/content/enemies.js';
-import { LEVELS, isBoss, isLaser } from '../src/content/levels.js';
+import { LEVELS, isBoss, isLaser, isShop } from '../src/content/levels.js';
 
 test('三层定义齐全，光点颜色互不相同（白 / 蓝 / 紫红）', () => {
   for (const id of ['trash', 'mini', 'skill', 'support']) {
@@ -72,8 +72,8 @@ test('脚本只写给普通关：机制关(3/9/15)与 Boss 关(6/12/18)必须为
     [1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 16, 17]);
   for (const lv of LEVELS) {
     const s = scriptFor(lv.n);
-    if (isBoss(lv) || isLaser(lv)) {
-      assert.equal(s, null, `第${lv.n}关是 Boss/机制关，不该写脚本`);
+    if (isBoss(lv) || isLaser(lv) || isShop(lv)) {
+      assert.equal(s, null, `第${lv.n}关是 Boss/机制关/商店关，不该写脚本`);
       continue;
     }
     assert.ok(s, `第${lv.n}关是普通关，必须配脚本（否则没有任何精英会出）`);

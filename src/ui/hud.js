@@ -11,6 +11,13 @@ export class HUD {
     this.top.style.cssText = 'position:absolute;top:14px;left:16px;font-size:15px;line-height:1.5;text-shadow:0 1px 3px #000;';
     this.root.appendChild(this.top);
 
+    // 商店币（第五十五修）：仅商店关显示（射击气球购买用），比技能积分独立
+    this.coin = document.createElement('div');
+    this.coin.style.cssText = 'position:absolute;top:52px;left:16px;font-size:16px;font-weight:bold;color:#ffd43b;text-shadow:0 1px 3px #000;display:none;';
+    this.root.appendChild(this.coin);
+    this._coin = 0;
+    this._coinVisible = false;
+
     this.hpWrap = document.createElement('div');
     // ★ 第二十三修（2026-09-23）：给这条 2D 飞毯血条一个 id，好让正式包用 CSS 隐藏它
     //   （用户实测：头显 2D 页面上它就是右上角那条绿色长条。VR 里看左手腕面板，见 vr/wrist-ui.js）。
@@ -63,6 +70,15 @@ export class HUD {
   setScore(s) { this._score = s; this._renderTop(); }
   _renderTop() {
     this.top.innerHTML = `${this._level || ''}<br>分数 ${this._score || 0}`;
+  }
+
+  // 商店币（第五十五修）：数值 + 显隐分开控制（显隐只在商店关打开）
+  setShopCoin(n) { this._coin = n || 0; this._renderShopCoin(); }
+  showShopCoin(on) { this._coinVisible = !!on; this._renderShopCoin(); }
+  _renderShopCoin() {
+    if (!this._coinVisible) { this.coin.style.display = 'none'; return; }
+    this.coin.style.display = 'block';
+    this.coin.textContent = `商店币 ${Math.round(this._coin)}`;
   }
 
   setHp(cur, max) {

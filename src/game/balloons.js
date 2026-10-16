@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ENEMY_TYPES } from '../content/enemies.js';
-import { BALLOON, MOVE, SHURIKEN, PROJECTILE, ELITE_LABEL, BOSS_LABEL, HEAL_LINK } from '../core/constants.js';
+import { BOMB_LABEL, BALLOON, MOVE, SHURIKEN, PROJECTILE, ELITE_LABEL, BOSS_LABEL, HEAL_LINK } from '../core/constants.js';
 import { ELITE_DISPLAY_NAME, eliteLabelText } from '../content/spawnDirector.js';
 import { attachBalloonModel, fitToRadius, loadBalloonModel, attachDragonSegment, hideLoadDot } from './balloonModels.js';
 
@@ -42,7 +42,63 @@ const _camPos    = new THREE.Vector3();   // update() 血条 lookAt 的相机世
 const _shieldSp  = new THREE.Vector3();   // getShieldBlock() 盾牌世界坐标
 const _flashCol  = new THREE.Color();     // 第四十九修：闪烁色的临时量（受击白 / 回血绿），避免每帧 new
 const _shieldCt  = new THREE.Vector3();   // getShieldBlock() 气球中心世界坐标
+const _bombQuat  = new THREE.Quaternion(); // 「爆」标记：所有实例共用同一朝向（都正面朝相机）
+const _bombPos   = new THREE.Vector3();    // 「爆」标记：实例世界坐标
+const _bombScale = new THREE.Vector3();    // 「爆」标记：实例缩放
+const _bombM4    = new THREE.Matrix4();    // 「爆」标记：实例矩阵
+
+// ============================================================
+// 基础怪「爆」标记（第五十六修）—— 基础小怪（L1 杂鱼，非精英/非 Boss）头顶一个「爆」字，
+//   提示「撞到飞毯边缘会自爆」。用**单个 InstancedMesh**（无论多少只都只有 1 个 draw call）；
+//   所有实例朝向相同（正面朝相机）⇒ 共用一个旋转矩阵，逐帧只改位置/缩放。
+// ============================================================
+let _bombTex = null;
+function _bombLabelTexture() {
+  if (_bombTex) return _bombTex;
+  const S = BOMB_LABEL;
+  const c = document.createElement('canvas');
+  c.width = S.CANVAS; c.height = S.CANVAS;
+  const x = c.getContext('2d');
+  const mid = S.CANVAS / 2;
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.font = `bold ${Math.round(S.CANVAS * 0.72)}px sans-serif`;
+  x.lineJoin = 'round';
+  x.lineWidth = S.OUTLINE_W;
+  x.strokeStyle = S.OUTLINE;
+  x.strokeText(S.TEXT, mid, mid);          // 先描边（暗红）
+  // 第五十七修：字与发光都画**纯白** —— 真色由实例色决定（常态暖黄 / 内圈闪烁红），见 bombMarkColor
+  x.shadowColor = S.GLOW ? (S.GLYPH || '#ffffff') : 'transparent';
+  x.shadowBlur = S.GLOW || 0;
+  x.fillStyle = S.GLYPH || '#ffffff';
+  x.fillText(S.TEXT, mid, mid);            // 后填充（白 + 白发光，颜色交给实例色）
+  _bombTex = new THREE.CanvasTexture(c);
+  return _bombTex;
+}
+
+const _bombCol = new THREE.Color();                       // 「爆」标记：实例色临时量
+const _bombColNormal = new THREE.Color(BOMB_LABEL.COLOR).getHex();        // 常态（暖黄）
+const _bombColBlink = new THREE.Color(BOMB_LABEL.BLINK_COLOR).getHex();   // 内圈闪烁（红）
+
+/**
+ * 「爆」标记的颜色（纯函数，便于单测）。
+ *   第五十七修（现场）：进内圈（水平距圆心 ≤ BOMB_LABEL.INNER_RADIUS）= 危险区 → 按 BLINK_ON 节拍闪红；
+ *   内圈之外一律常态暖黄。time 由调用方累加（秒）。
+ */
+export function bombMarkColor(b, time) {
+  const S = BOMB_LABEL;
+  if (!S.BLINK || !b || !b.mesh || !b.mesh.position) return _bombColNormal;
+  const p = b.mesh.position;
+  if (Math.hypot(p.x, p.z) > S.INNER_RADIUS) return _bombColNormal;
+  const on = Math.floor(time / Math.max(0.05, S.BLINK_ON)) % 2 === 0;
+  return on ? _bombColBlink : _bombColNormal;
+}
+
+/** 「爆」标记的判定（纯函数，便于单测）：活着的**基础小怪** —— 非精英 / 非 Boss / 非龙部件 / 非受控。 */
+export function isBombMarkTarget(b) {
+  return !!(b && b.alive && !b.isElite && !b.isBoss && !b.isDragonPart && !b.controlled);
+}
 const _orbTmp    = new THREE.Vector3();   // 忍者蓄力光球定位临时量（_updateChargeOrb 复用，消除每帧 new 的 GC 压力）
+let _balloonUid = 0;      // 气球唯一 id（第五十五修：穿甲弹用它记录「已命中过谁」，避免同一发反复结算）
 
 export class Balloon {
   constructor(typeId, opts = null) {
@@ -75,6 +131,7 @@ export class Balloon {
     this.selfDamage = t.selfDamage !== undefined ? t.selfDamage : BALLOON.DAMAGE;
     this.damageReduction = t.damageReduction || 0;  // 0~1 减伤比例（脸谱 Boss 95%）
     this.alive = true;
+    this.uid = ++_balloonUid;
     // 召唤怪专用
     this.minions = [];
     this.summonTimer = 0;
@@ -698,6 +755,7 @@ export class BalloonManager {
     this.depthDebug = false; // DepthSprite 深度调试：按 D 切换（中心亮=凸、边缘亮=凹）
     this.projectiles = null; // 远程投射物管理器（由 game.js 注入）；非空时忍者/幽灵/章鱼才会投掷
     this._playerPos = null;  // 每帧玩家位置（update 注入），供「最近发射者」判定
+    this._bombMarks = null;  // 「爆」标记 InstancedMesh（惰性创建，见 _updateBombMarks）
   }
 
   setProjectileManager(m) { this.projectiles = m; }
@@ -747,6 +805,7 @@ export class BalloonManager {
       if (b.depthSprite) b.depthSprite.material.uniforms.uDebugDepth.value = this.depthDebug ? 1 : 0;
     }
     this._applySeparation();
+    this._updateBombMarks(camera, dt);   // 第五十六修：基础怪头顶「爆」标记（1 个 InstancedMesh；dt 供内圈闪烁）
     this._applyHealAura(dt);
 
   }
@@ -832,6 +891,53 @@ export class BalloonManager {
         }
       }
     }
+  }
+
+  // 「爆」标记（第五十六修）：把所有基础怪头顶的「爆」字写进一个 InstancedMesh。
+  //   容量 BOMB_LABEL.MAX；超出时只画前 MAX 只（正常同屏杂鱼远小于此值）。
+  _updateBombMarks(camera, dt = 0) {
+    const S = BOMB_LABEL;
+    if (!S.ENABLED) { if (this._bombMarks) this._bombMarks.visible = false; return; }
+    if (!this._bombMarks) {
+      const geo = new THREE.PlaneGeometry(1, 1);
+      const mat = new THREE.MeshBasicMaterial({
+        map: _bombLabelTexture(), transparent: true,
+        // 第五十七修（现场）：depthTest=true → 被**前面的怪**挡住。旧口径 false 会「糊在它前方的怪身上」。
+        depthTest: !!S.DEPTH_TEST, depthWrite: false,
+        side: THREE.DoubleSide, toneMapped: false, fog: false,
+      });
+      const m = new THREE.InstancedMesh(geo, mat, Math.max(1, S.MAX | 0));
+      m.name = 'bomb-marks';
+      m.frustumCulled = false;   // 实例位置每帧变，交给 GPU 前先关掉包围球剔除
+      m.renderOrder = S.DEPTH_TEST ? (S.RENDER_ORDER || 0) : 998;   // 第五十七修：参与深度测试后不再抢最上层
+      m.count = 0;
+      this._bombMarks = m;
+      // 第五十七修：先把整池刷成常态色 —— 提前建好 instanceColor（否则首次闪烁才上传整块缓冲）
+      _bombCol.setHex(_bombColNormal);
+      for (let k = 0; k < m.instanceMatrix.count; k++) m.setColorAt(k, _bombCol);
+      if (m.instanceColor) m.instanceColor.needsUpdate = true;
+      this.scene.add(m);
+    }
+    this._bombT = (this._bombT || 0) + dt;   // 第五十七修：闪烁用的内部时钟（秒）
+    const inst = this._bombMarks;
+    inst.visible = true;
+    if (!camera) { inst.count = 0; return; }
+    camera.getWorldQuaternion(_bombQuat);
+    _bombScale.set(S.SIZE, S.SIZE, 1);
+    let n = 0;
+    for (const b of this.list) {
+      if (n >= inst.instanceMatrix.count) break;
+      if (!isBombMarkTarget(b) || !b.mesh.visible) continue;
+      const r = b.effectiveRadius || b.radius || 0.3;
+      _bombPos.set(b.mesh.position.x, b.mesh.position.y + r * 2.6 + (S.Y_PAD || 0), b.mesh.position.z);
+      _bombM4.compose(_bombPos, _bombQuat, _bombScale);
+      inst.setMatrixAt(n, _bombM4);
+      inst.setColorAt(n, _bombCol.setHex(bombMarkColor(b, this._bombT || 0)));   // 第五十七修：内圈闪红
+      n++;
+    }
+    inst.count = n;
+    inst.instanceMatrix.needsUpdate = true;
+    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
   }
 
   clear() {

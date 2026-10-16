@@ -141,6 +141,13 @@ export class WristUI {
           `飞毯血量: ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`,
           `目标    : 到达底边过关`,
         ]
+      : game.shopMode
+      ? [
+          `关卡    : ${game.levelIndex + 1} (商店)`,
+          `商店币  : ${Math.round(game.shopCoin || 0)}`,
+          `倒计时  : ${game._shopLeft || 0}s`,
+          `飞毯血量: ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`,
+        ]
       : [
           `关卡    : ${game.levelIndex + 1}`,
           `剩余敌人: ${game.waves.remaining}`,

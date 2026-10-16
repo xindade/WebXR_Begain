@@ -340,6 +340,56 @@ export function eliteEvents(n) {
 export function isClimaxEvent(ev) { return !!(ev && ev.goldReturn); }
 
 /**
+ * 「末尾批预告横幅」判定（纯函数，第五十七修）。
+ *
+ * <p>末尾批的脚本形态：`banner`（如 31s）→ `elite { goldReturn }`（如 33s）→ …。玩家口径是
+ *    「到横幅时间先看场上有没有精英，有就推迟，直到精英被杀，横幅才出现」——
+ *    闸门因此打在**横幅**上：横幅一放，后面的清场融合与精英生成才跟着走。
+ *
+ * <p>判据：这条 banner 之后**第一个精英事件**带 goldReturn（中间又插了 banner 就不算）。
+ */
+export function isClimaxGateBanner(ev, events) {
+  if (!ev || ev.do !== 'banner' || !Array.isArray(events)) return false;
+  const i = events.indexOf(ev);
+  if (i < 0) return false;
+  for (let k = i + 1; k < events.length; k++) {
+    const e = events[k];
+    if (e.do === 'elite') return isClimaxEvent(e);
+    if (e.do === 'banner') return false;
+  }
+  return false;
+}
+
+/**
+ * 清场融合「吃谁」（纯函数，第五十七修）。
+ *
+ * <p>玩家口径：末尾批把**普通小怪化成光点**（不够就从传送门补光点），**多出来的小怪留在场上**。
+ *    旧实现是「全都清掉、只记前 COUNT 个位置」——多出来的小怪也一起没了。
+ *
+ * <p>规则：① 末尾批（climax）先把精英吃进来（可视化「被吸走」，防上一批精英残留）；
+ *    ② 每档只吃到 count 为止；③ 离 center 近的先吃（汇聚点附近的先被吸进去）。
+ *
+ * @param {Array} list 场上气球（balloons.list）
+ * @param {number} count 最多吃几个（= FUSE.COUNT）
+ * @param {{center?: object, climax?: boolean}} opts center = 汇聚点（缺省按场上顺序）
+ * @returns {Array} 要被吸收（从场上移除）的气球，长度 ≤ count
+ */
+export function pickFuseAbsorb(list, count, opts = {}) {
+  const { center = null, climax = false } = opts;
+  const cap = Math.max(0, count | 0);
+  const out = [];
+  const dist2 = (b) => (center && b.mesh && b.mesh.position) ? b.mesh.position.distanceToSquared(center) : 0;
+  const take = (eliteOnly) => {
+    const arr = (list || []).filter((b) => b && b.alive && !b.isBoss && (eliteOnly ? b.isElite : !b.isElite));
+    arr.sort((a, b) => dist2(a) - dist2(b));
+    for (const b of arr) { if (out.length >= cap) return; out.push(b); }
+  };
+  if (climax) take(true);
+  take(false);
+  return out;
+}
+
+/**
  * 末尾批里「某一只」的血量。
  * @param {number} base           该只的基础血量（ELITE_BASE_HP[型]）
  * @param {number} batchBaseTotal 本批全部成员的基础血量之和（按型 × 只数）

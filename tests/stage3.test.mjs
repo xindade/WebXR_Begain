@@ -505,3 +505,63 @@ function makeAudioStubManager() {
   a.master = { connect() {}, disconnect() {} };
   return { a, oscs, noises, filters };
 }
+
+// ---------- ④c 技能框四行版式（第五十九修）----------
+
+test('技能框四行版式：技能名+消耗 / 冷却条 / 攻击力·弹道 / 射速·击杀充能（第五十九修）', () => {
+  const p = new SkillHintPanel();
+  const texts = [];
+  const origCtx = p.ctx;
+  // 记录型 ctx：只关心 fillText 的内容与纵向位置（四行版式的判据就是「谁画在哪一行」）
+  p.ctx = new Proxy({}, {
+    get: (_t, key) => (key === 'measureText' ? () => ({ width: 0 })
+      : (...args) => { if (key === 'fillText') texts.push({ t: String(args[0]), y: args[2] }); }),
+    set: () => true,
+  });
+  const row = (y) => texts.filter((x) => x.y === y).map((x) => x.t).join(' | ');
+  try {
+    // ① 积分不足（未就绪）
+    p.update(DT, fakeSkillGame({ player: { skillCost: 100, atk: 12, fireRate: 1.2, shotCount: 3 }, score: 0 }));
+    assert.ok(row(SKILL_HINT.ROW1_Y).includes('如来神掌'), '第 1 行是技能名');
+    assert.ok(row(SKILL_HINT.ROW1_Y).includes('消耗 100'), '第 1 行带消耗（原来只写在「需 N 积分」里）');
+    assert.equal(row(SKILL_HINT.ROW2_Y), '积分不足 · 现有 0', '第 2 行是冷却条的状态文字');
+    assert.ok(row(SKILL_HINT.ROW3_Y).includes('攻击力 12'), '第 3 行：攻击力');
+    assert.ok(row(SKILL_HINT.ROW3_Y).includes('弹道 3 发/枪'), '第 3 行：弹道');
+    assert.ok(row(SKILL_HINT.ROW4_Y).includes('射速 1.2 发/秒'), '第 4 行：射速');
+    assert.ok(row(SKILL_HINT.ROW4_Y).includes('充能 0/10'), '第 4 行：击杀充能');
+    assert.equal(texts.filter((x) => x.t.includes('0/10')).length, 1, '计数只画一遍（不再面板两处重复）');
+
+    // ② 就绪：状态文字换成释放提示；单发时写「单发」
+    texts.length = 0;
+    p.update(DT, fakeSkillGame({ player: { skillCost: 100, atk: 12, fireRate: 1.2, shotCount: 1 }, score: 500 }));
+    assert.ok(row(SKILL_HINT.ROW2_Y).includes('技能就绪'), '就绪态在第 2 行');
+    assert.ok(row(SKILL_HINT.ROW3_Y).includes('弹道 单发'), 'shotCount = 1 → 「单发」');
+
+    // ③ 冷却中
+    texts.length = 0;
+    p.update(DT, fakeSkillGame({ skillCooldown: 6, player: { skillCost: 100, atk: 5, fireRate: 2, shotCount: 1 }, score: 900 }));
+    assert.ok(row(SKILL_HINT.ROW2_Y).startsWith('冷却 '), '冷却态在第 2 行');
+
+    // ④ 加速期：第 4 行下方补一行金色「加速 N.Ns」
+    texts.length = 0;
+    p.update(DT, fakeSkillGame({
+      _rapidUntil: 12, _gameTime: 11, _bulletStreak: 3,
+      player: { skillCost: 100, atk: 5, fireRate: 2, shotCount: 1 }, score: 900,
+    }));
+    assert.ok(row(SKILL_HINT.ROW4_Y).includes('充能 3/10'));
+    assert.ok(row(SKILL_HINT.ROW5_BOOST_Y).includes('加速 1.0s'), '加速剩余时间挂在第 4 行下方');
+  } finally {
+    p.ctx = origCtx;
+  }
+});
+
+test('技能框四行版式：行基线自上而下、互不重叠、都在画布内（第五十九修）', () => {
+  const { h } = SKILL_HINT.CANVAS;
+  const ys = [SKILL_HINT.ROW1_Y, SKILL_HINT.ROW2_Y, SKILL_HINT.ROW2_BAR_Y, SKILL_HINT.ROW3_Y, SKILL_HINT.ROW4_Y, SKILL_HINT.ROW5_BOOST_Y];
+  for (let i = 1; i < ys.length; i++) assert.ok(ys[i] > ys[i - 1], '行基线必须自上而下递增');
+  assert.ok(SKILL_HINT.ROW2_BAR_Y + SKILL_HINT.ROW2_BAR_H < SKILL_HINT.ROW3_Y, '冷却条不许压到第 3 行');
+  assert.ok(ys[ys.length - 1] < h - 2 * SKILL_HINT.STREAK.INSET, '最后一行仍在画布/边框方块以内');
+  assert.ok(SKILL_HINT.PAD_X > SKILL_HINT.STREAK.SIZE, '左右内边距要避开边框上的连杀方块');
+  assert.equal(SKILL_HINT.CHARGE_LABEL, '充能', '第 4 行计数前缀（现场口径「击杀充能」）');
+  assert.equal(SKILL_HINT.DEBUG, false, '调位完成：默认关闭调试坐标行');
+});

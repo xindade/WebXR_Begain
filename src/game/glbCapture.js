@@ -64,7 +64,9 @@ function readRT(renderer, rt) {
 // 把已加载 GLB 渲染为「多帧 idle sheet」。
 // 模型绕 Y 做 sin 摆动（首尾角度自然衔接，循环播放不跳变）。
 // 返回 { albedo, depth, frameCount, cols, rows }。失败（捕获为空）时 reject，由调用方回退为可见球体。
-export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.0 }) {
+// cap：每帧分辨率（默认 CAP=512）。商店立绘（enemyPortrait）用 256 —— 卡面只有 224px 宽，
+//   而每次抓帧有 2 次 readRenderTargetPixels 同步回读，256² 比 512² 少 4 倍像素，现场不卡。
+export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.0, cap: capOpt = CAP }) {
   frames = Math.max(1, frames | 0);
 
   // —— 栅格布局：把 frames 帧排成接近正方形的网格，避免单行超宽（如 8 帧 → 4096 宽）。
@@ -74,7 +76,7 @@ export function captureGLB(renderer, gltfScene, { radius, frames = 1, swing = 0.
 
   // 按设备 maxTextureSize 收敛每帧分辨率，杜绝纹理超限失效
   const maxTex = (renderer.capabilities && renderer.capabilities.maxTextureSize) || 4096;
-  let cap = CAP;
+  let cap = capOpt;
   if (cols * cap > maxTex || rows * cap > maxTex) {
     cap = Math.max(16, Math.floor(maxTex / Math.max(cols, rows)));
     console.warn(`[glbCapture] sheet 超过纹理上限(${maxTex})，每帧分辨率降至 ${cap}`);

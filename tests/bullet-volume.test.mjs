@@ -6,7 +6,7 @@
 //
 // 锁三件事：
 //   ① 上限只有一处口径（cards.ATTRIBUTE_STATS），卡面 desc 与代码封顶必须一致；
-//   ② 扇形几何：正中永远有一条精确对准准星的弹道，最外侧 = 半角，半角随弹道数增长到 12 条用满；
+//   ② 扇形几何（第五十六修：SPREAD_ANGLE 0.15 → 0.30，整体张角翻倍；正中那条仍精确对准准星）：正中永远有一条精确对准准星的弹道，最外侧 = 半角，半角随弹道数增长到 12 条用满；
 //   ③ 池子不变量：最坏并发弹数（含连杀加速与瞬时散射）不得越过子弹池 / 曳光池。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +14,7 @@ import * as THREE from 'three';
 import { ATTRIBUTE_STATS, ATTR_TYPES } from '../src/content/cards.js';
 import { Player } from '../src/game/player.js';
 import { BulletManager } from '../src/game/bullets.js';
-import { SHOOT, FX, RAPID_FIRE, SCATTER, SCATTER_BURST } from '../src/core/constants.js';
+import { SHOOT, FX, RAPID_FIRE, SCATTER, SCATTER_BURST, SHOP } from '../src/core/constants.js';
 import { parseGunDebug } from '../src/core/gunDebug.js';
 
 const AIM = new THREE.Vector3(0, 0, -1);
@@ -96,15 +96,15 @@ test('第五十四修 · 最外侧弹道正好落在半角上，且半角随弹�
     assert.ok(spreadDeg(outer) > prev, `n=${n} 扇形应比上一次更宽`);
     prev = spreadDeg(outer);
   }
-  // 12 条 = SPREAD_FULL_N，用满 SPREAD_ANGLE（≈8.53°，总张角 ≈17.06°）
+  // 12 条 = SPREAD_FULL_N，用满 SPREAD_ANGLE（≈16.70°，总张角 ≈33.40°）
   assert.equal(halfAngle(12), SHOOT.SPREAD_ANGLE);
-  assert.ok(Math.abs(spreadDeg(Math.atan(halfAngle(12))) - 8.53) < 0.02, '12 条半角 ≈ 8.53°');
-  // 相邻间隔恒定 ≈ 1.56°（总张角 ÷ (n-1)）——「加一条弹道 = 外沿再展开一个步进」
+  assert.ok(Math.abs(spreadDeg(Math.atan(halfAngle(12))) - 16.70) < 0.03, '12 条半角 ≈ 16.70°（第五十六修：SPREAD_ANGLE 0.15 → 0.30）');
+  // 相邻间隔恒定 ≈ 3.04°（第五十六修 ×2）（总张角 ÷ (n-1)）——「加一条弹道 = 外沿再展开一个步进」
   const gap = (2 * spreadDeg(Math.atan(halfAngle(12)))) / 11;
-  assert.ok(Math.abs(gap - 1.55) < 0.02, '相邻弹道间隔 ≈ 1.55°');
-  // 7 条时与第五十四修之前（恒定半角 0.08 ⇒ ≈9.15°）基本一致 —— 中局手感不要被这一修掀翻
+  assert.ok(Math.abs(gap - 3.04) < 0.05, '相邻弹道间隔 ≈ 3.04°（第五十六修）');
+  // 7 条 = 第五十六修之前宽度的两倍（改前恒定半角 0.08 ⇒ ≈9.15°；0.30 下 ≈18.59°）
   const total7 = 2 * spreadDeg(Math.atan(halfAngle(7)));
-  assert.ok(Math.abs(total7 - 9.15) < 0.5, `7 条总张角 ${total7.toFixed(2)}° 应贴近改前的 9.15°`);
+  assert.ok(Math.abs(total7 - 18.3) < 0.6, `7 条总张角 ${total7.toFixed(2)}° 应贴近改前 9.15° 的两倍`);
 });
 
 test('第五十四修 · SPREAD_FULL_N=2 退回「恒定半角」（第五十四修之前的行为）', () => {
@@ -164,4 +164,29 @@ test('第五十四修 · ?gun= 解析：夹到卡池上限，非法输入一律�
   for (const bad of [null, '', '   ', 'abc', '0', '0x0', 'x']) {
     assert.equal(parseGunDebug(bad), null, `\`${bad}\` 不该生效`);
   }
+});
+
+
+// ---------- ⑤ 第五十六修：商店特殊弹的「夸张化」外观 ----------
+
+test('第五十六修 · 穿甲弹 / 追踪弹：红、大、长曳光 的口径只在一处', () => {
+  assert.equal(SHOP.CANDY_COLOR, 0xff2f36, '穿甲弹：亮青 → 亮红');
+  assert.ok(SHOP.CANDY_SCALE > 1, '穿甲弹弹体放大');
+  assert.ok(SHOP.CANDY_TRAIL_MUL > 1, '穿甲弹曳光加长');
+  assert.ok(SHOP.DOG_SCALE > 1, '追踪弹弹体放大');
+  assert.ok(SHOP.DOG_TRAIL_MUL > 1, '追踪弹曳光加长');
+  assert.equal(SHOP.DOG_FROM_MUZZLE, true, '追踪弹从枪口射出');
+});
+
+test('第五十六修 · 体积倍率写进实例矩阵：默认弹不变形，仍是同一个 InstancedMesh', () => {
+  const mgr = new BulletManager(new THREE.Scene());
+  const m = new THREE.Matrix4();
+  mgr.spawn(new THREE.Vector3(), new THREE.Vector3(0, 0, -1), 10, false, { scale: SHOP.CANDY_SCALE });
+  mgr.spawn(new THREE.Vector3(), new THREE.Vector3(0, 0, -1), 10);
+  mgr.sync();
+  mgr._instanced.getMatrixAt(0, m);
+  assert.equal(Math.round(m.elements[0]), SHOP.CANDY_SCALE, '特殊弹按 scale 放大');
+  mgr._instanced.getMatrixAt(1, m);
+  assert.equal(Math.round(m.elements[0]), 1, '普通弹不受影响');
+  assert.equal(mgr._instanced.instanceMatrix.count, SHOOT.BULLET_POOL_SIZE, '仍是一个 InstancedMesh（零新增 Draw Call）');
 });

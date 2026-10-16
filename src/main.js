@@ -960,12 +960,13 @@ if (MIRROR.AUTO_OPEN && MIRROR.MODE === 'popup') {
 }
 
 // ── 右侧关卡快捷进入面板 ──
-// 普通关仅显示数字；特殊关（危机/激光/Boss）在数字后附加最多三个汉字标签。
+// 普通关仅显示数字；特殊关（危机/商店/Boss）在数字后附加最多三个汉字标签。
 // 点击：桌面（无 VR 设备）直接开局预览；头显（PICO 浏览器）支持 WebXR 则进 VR 后由 sessionstart 触发。
 function levelShortTag(lv) {
   if (lv.kind === 'normal') return '';
   if (lv.kind === 'crisis') return '危机';
   if (lv.kind === 'laser') return '激光';
+  if (lv.kind === 'shop') return '商店';
   return lv.boss === 'dragon' ? '龙关' : '首领'; // boss 子类：龙 Boss=龙关，其余=首领
 }
 async function startLevelAt(idx) {

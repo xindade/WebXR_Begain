@@ -18,14 +18,17 @@ import { CloudFx } from './cloudFx.js';
 import { IntroVideo } from './introVideo.js';
 import { OpeningModel } from './openingModel.js';
 import { Portal } from './portal.js';
+import { ShopDraft } from './shop.js';        // 第五十五修：商店关（替代原激光机制关）
+import { portraitCanvas, portraitKey, PORTRAIT_STEP_MS } from './enemyPortrait.js'; // 第五十七修 v2：精英预告卡立绘
 import { BuddhaFx } from './buddhaFx.js';
-import { LEVELS, isLaser, isBoss, levelTitleText, shouldShowLevelTitle } from '../content/levels.js';
+import { LEVELS, isLaser, isBoss, isShop, levelTitleText, shouldShowLevelTitle, levelTitleDelay } from '../content/levels.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { scriptFor } from '../content/spawnDirector.js';
 import { ELITE_SCHEDULE } from '../content/eliteMonsters.js';
 import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
 import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO, HIT_FEEDBACK, FX, MID_WARNING, RAPID_FIRE, levelSecondsOf, CARD, GOLD_ORB, ELITE_FEEDBACK, HEAL_LINK, LEVEL_TITLE, HEAL_ON_DEATH, DRAGON_CHEST } from '../core/constants.js';
+import { warFeedMul, lifestealChance, strongHunterMul, mibCooldown } from '../content/shopItems.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO, HIT_FEEDBACK, FX, MID_WARNING, RAPID_FIRE, levelSecondsOf, CARD, GOLD_ORB, ELITE_FEEDBACK, HEAL_LINK, LEVEL_TITLE, HEAL_ON_DEATH, DRAGON_CHEST, SHOP } from '../core/constants.js';
 import { DamageNumbers } from './damageNumbers.js';
 import { FxEffects } from './fx.js';
 import { WarningBanner3D, midWarningDue } from './warningBanner.js';  // 第四十二修：中场预警横幅
@@ -34,7 +37,7 @@ import { setRenderer, loadBalloonModel, preCaptureDepthSprite, warmModelGpu } fr
 import { DifficultyController } from './difficultyController.js';
 import { VRPlusGame, VRPlus } from '../net/vrplus.js';   // VR+ 平台桥接：cmd 3 启动 / 4 开始 / 5 中途结束 + 下行 inbox 监听
 
-const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关' };
+const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关', shop: '商店关' };
 const ORIGIN = new THREE.Vector3(0, 0, 0);
 const _WORLD_UP = new THREE.Vector3(0, 1, 0);
 
@@ -211,6 +214,21 @@ export class Game {
     this.enemyFreeze = 0;        // 定身咒计时(s)：>0 时敌人暂停行动（Boss 仅前 50% 时长）
     this.selectedSkill = 'scatter'; // 当前装备技能：前期默认「积分散射」；第三关选卡后可替换为 lightsaber/freeze/buddha，左手柄 grip 触发
     this.skillCooldown = 0;      // 技能释放冷却计时(s)：>0 时握柄无效，HUD 显示剩余
+    // —— 第五十五修 · 商店关（第3/9/15关，替代原激光机制关）——
+    this.shopDraft = null;       // ShopDraft 实例（每进一次商店关新建，见 _enterShop）
+    this.shopMode = false;       // 当前是否处于商店关
+    this.shopCoin = 0;           // 商店币：击杀积分等额累积；一局（1→18 关走完）清零，与 score 完全独立
+    this._itemLv = {};           // 本局道具等级 { itemId: level }（可重复购买升级）
+    this._candyCount = 0;        // 串糖葫芦：全局累计已发射弹数（每满 10 发追加穿甲弹）
+    this._mibUntil = 0;          // 多才是王道：临时弹道生效截止时刻（_gameTime 基准）
+    this._mibNextAt = 0;         // 多才是王道：下次自动触发时刻（冷却从买完开始算）
+    this._shopLeft = 0;          // 商店关剩余秒数（供腕表面板显示）
+    // 追踪弹目标解析（打狗还要看主人）：目标已死 / 已离场 → 返回 null（子弹直飞）
+    this._homingTarget = (b) => {
+      const t = b.homing;
+      if (!t || !t.alive || !this.balloons.list.includes(t)) return null;
+      return t.mesh.position;
+    };
 
     this._tmp = new THREE.Vector3();
     this._tmp2 = new THREE.Vector3();
@@ -324,6 +342,12 @@ export class Game {
     this.vignette.clear();
     this.bullets.clear();
     this.score = 0;
+    this.shopCoin = 0;
+    this._itemLv = {};
+    this._candyCount = 0;
+    this._mibUntil = 0;
+    this._mibNextAt = 0;
+    this.hud.showShopCoin(false);
     this.levelIndex = atIndex;
     this.gridPhase = false;
     this._lastCell = 0;
@@ -851,6 +875,7 @@ export class Game {
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon)   { this.dragon.dispose();   this.dragon = null; }
     if (this.cloudFx) { this.cloudFx.dispose(); this.cloudFx = null; } // 清穿云特效
+    if (this.shopDraft) { this.shopDraft.dispose(); this.shopDraft = null; } // 第五十五修：清商店关场地
     this._disposeOpening(); // 清开场动画 + 作废其语音联动（防回菜单残留）
     this.world._restoreFade(); // 恢复穿云淡入改写的材质（防回菜单残留半透明）
     this._introActive = false; this._introT = 0; // 复位开场门控
@@ -879,6 +904,13 @@ export class Game {
     this.player.reset();
     this.score = 0;
     this.attackBonus = 0;     // 回菜单清零攻击力加成
+    this.shopCoin = 0;        // 第五十五修：商店币随本局一起清零
+    this._itemLv = {};
+    this._candyCount = 0;
+    this._mibUntil = 0;
+    this._mibNextAt = 0;
+    this.shopMode = false;
+    this.hud.showShopCoin(false);
     this._clearAttackHint();  // 清残留攻击力提示
     this.levelIndex = 0;
     this.gridPhase = false;
@@ -906,6 +938,7 @@ export class Game {
     if (this.grid) { this.grid.dispose(); this.grid = null; }
     if (this.flipGrid) { this.flipGrid.dispose(); this.flipGrid = null; }
     if (this.dragon) { this.dragon.dispose(); this.dragon = null; }
+    if (this.shopDraft) { this.shopDraft.dispose(); this.shopDraft = null; } // 第五十五修：清上一关商店场地
     this._disposeOpening(); // 清上一关残留的开场动画 + 作废其语音联动（防跨关泄漏）
     if (this._buddhaFx) { this._buddhaFx.dispose(); this._buddhaFx = null; } // 清上一关残留的如来神掌特效
     this._clearPortals(); // 清上一关残留的传送门装饰
@@ -939,8 +972,10 @@ export class Game {
     // 机制关（3/9/15 激光关）：射击固定单发 —— 复用抽卡期间同一套 forceSingleShot
     //   （player.fire 里 n = forceSingleShot ? 1 : shotCount），避免多弹道扇形在需要精确点靶的机制关里分散火力。
     //   出关时会被下一次 _loadLevel 重算为 false；抽卡流程自身仍会在进出抽卡时置位/复位。
-    this.player.forceSingleShot = isLaser(lv);
-    if (isLaser(lv)) {
+    this.shopMode = isShop(lv);                       // 第五十五修：本关是否商店关
+    // 商店关同样强制单发（打气球点靶更准，且避免多重扇形误打相邻气球）
+    this.player.forceSingleShot = isLaser(lv) || this.shopMode;
+    if (isLaser(lv) || this.shopMode) {
       this._pendingBgm = { kind: 'laser', variant: null, intensity: 0.2 };          // 机制关：起步 0.2
     } else if (isBoss(lv)) {
       this._pendingBgm = { kind: 'boss',  variant: null, intensity: BOSS_BGM.START_INTENSITY }; // Boss：0.45
@@ -1022,9 +1057,7 @@ export class Game {
         );
         this.openingModel.start();
       });
-      if (lv.n === 3) this._pendingOpenVoice = 'music/魔法师激光阵语音.wav';
-      else if (lv.n === 9) this._pendingOpenVoice = 'music/魔法师玻璃格子.wav';
-      else this._pendingOpenVoice = 'music/魔法师九宫格.wav';
+      // 第五十五修：商店关不再保留机制关开场语音（后续另配），只留魔术师动画；
     } else if (lv.n === 18) {
       // 第18关 Boss 开头语音：延迟到穿云结束后再播
       this._pendingOpenVoice = MAGICIAN_BOSS.INTRO.VOICE_URL;   // 第三十八修：URL 集中在 constants.MAGICIAN_BOSS.INTRO
@@ -1033,9 +1066,12 @@ export class Game {
       this._pendingOpenVoice = 'music/儿郎冲锋.mp3';
     }
     // ② 小怪关（非 boss、非激光机制）：按本关方向表生成传送门装饰（自带动画+上下浮动）
-    if (!isBoss(lv) && !isLaser(lv)) tasks.push(() => this._spawnPortals(lv));
-    // ③ 机制关几何 / 龙 Boss / 常规出怪（三者互斥）
-    if (isLaser(lv)) {
+    if (!isBoss(lv) && !isLaser(lv) && !this.shopMode) tasks.push(() => this._spawnPortals(lv));
+    // ③ 商店场地 / 机制关几何 / 龙 Boss / 常规出怪（互斥）
+    if (this.shopMode) {
+      // 第五十五修 · 商店关：正前方技能区 + 左手边道具区（不出怪、不掉血、无激光）
+      tasks.push(() => this._enterShop());
+    } else if (isLaser(lv)) {
       tasks.push(() => {
         // 透传 laserMode：'drive' 为第九关（生成→驱赶→保持原地→走格子），'full' 为第三关（搭阵），'flip' 为第十五关（九宫格）
         const holdDur = lv.laserMode === 'flip' ? FLIP.HOLD_DUR : undefined;
@@ -1068,7 +1104,7 @@ export class Game {
       });
     }
     // ④ 非激光关在关卡加载完成后拍照快照（用于死亡重开时恢复属性+分数）
-    if (!isLaser(lv)) tasks.push(() => this._snapshotState());
+    if (!isLaser(lv) && !this.shopMode) tasks.push(() => this._snapshotState());
 
     if (cover) {
       // 淡入登记：先开一张**空表**（forceOn=true，见 world.setFadeRoots）——本关物体在随后几帧
@@ -1090,9 +1126,10 @@ export class Game {
     //   现在按 MECHANIC_DELAY 先排一个**兜底**（语音缺失/ended 不触发也能弹），
     //   并把排期权交给开场语音：播完 → _bindOpeningVoice 里改排成「0.5s 后」（见 _levelTitleDone 防重）。
     this._levelTitleDone = false;
-    const _mech = isLaser(lv);
-    this._queueLevelTitle(_mech ? LEVEL_TITLE.MECHANIC_DELAY
-      : (cover ? LEVEL_TITLE.INTRO_DELAY : LEVEL_TITLE.DELAY));
+    //   第五十八修：商店关(3/9/15)开头只有魔术师动画、**没有开场语音**（第五十五修已去掉），
+    //   所以不再走机制关那套「等动画收场 + 12s 兜底」，改回普通关口径 —— 和普通关一样在**雾里**弹。
+    //   判据抽成纯函数 levelTitleDelay（见 levels.js / 单测）。
+    this._queueLevelTitle(levelTitleDelay(lv, LEVEL_TITLE, cover));
 
     // ====== 关卡开场「雾气窗顺序预载」======
     // 把本关要用的敌人/装饰 GLB 模型 + DepthSprite 捕获，分散到 INTRO_DELAY 秒穿云窗内「每帧处理 1 个」，
@@ -1385,9 +1422,10 @@ export class Game {
       //   弹头刚出膛那几帧整条尾迹会穿到枪管后方（玩家反馈的「曳光延伸到枪管背后」）。
       // 第四十九修：加速弹（b.boost）曳光变蓝 + 加长一倍 —— 让「射速加速」不用看面板也能一眼看出
       tail.add(b.pos, d,
-        b.boost ? RAPID_FIRE.VISUAL.TRACER_COLOR : FX.TRACER.COLOR,
+        // 第五十六修：带 tint 的特殊弹（追踪弹 / 穿甲弹）曳光也用自己的颜色，并按 trailMul 加长
+        (b.tint != null) ? b.tint : (b.boost ? RAPID_FIRE.VISUAL.TRACER_COLOR : FX.TRACER.COLOR),
         b.origin ? b.pos.distanceTo(b.origin) : null,
-        b.boost ? RAPID_FIRE.VISUAL.TRACER_MUL : 1);
+        (b.trailMul > 1) ? b.trailMul : (b.boost ? RAPID_FIRE.VISUAL.TRACER_MUL : 1));
     }
     if (this.projectiles) {
       const list = this.projectiles.list;
@@ -1508,15 +1546,14 @@ export class Game {
     const credit = this.input.consumeCredit();
     if (credit > 0) { this._addScore(credit); this.log(`测试 +${credit} 积分`); }
     this.player.update(dt);
-    this.bullets.update(dt);
+    this.bullets.update(dt, this._homingTarget);   // 第五十五修：追踪弹每帧转向
     const pp = this._playerPos();
 
     // 第四十九修：加速期（连杀 10 触发）当前打出的子弹整批染蓝 + 曳光加长，见 RAPID_FIRE.VISUAL
     const _boostShot = this._gameTime < this._rapidUntil;
+    this._tickShopItems();   // 第五十五修：商店道具逐帧效果（多才是王道自动触发）
     // 第五十修：累计这一帧**实际打出**的弹数（player.fire 返回弹道数）—— 龙族宝箱按它给加成
-    let _shotsFired = 0;
-    for (const shot of this.input.shots) _shotsFired += this.player.fire(shot, this.bullets, this.audio, _boostShot);
-    if (_shotsFired > 0) this._chest?.addShots(_shotsFired);
+    this._firePlayerShots(_boostShot);   // 第五十五修：统一开火入口（宝箱计数 + 串糖葫芦穿甲弹都在里面）
     // 档2：枪口焰 —— 用**真实枪口位姿**（与红射线/子弹同源）闪一下；不改动任何弹道
     //   第四十二修：连方向一起传 —— 焰光沿枪口方向前移 FX.MUZZLE.FORWARD，避免被枪管自身遮住。
     if (FX.MUZZLE.ENABLED && this.input.shots.length > 0) {
@@ -1548,6 +1585,12 @@ export class Game {
     }
     // 激光剑近战命中（所有关卡通用：激光关无普通怪则自然 no-op）
     if (this.leftSword.active && this.leftSword.readyForDamage) this._updateSwordMelee();
+
+    // ====== 商店关（第五十五修）：无敌人，只有可购买的气球 ======
+    if (this.shopMode) {
+      this._updateShop(dt, pp);
+      return;
+    }
 
     // ====== 激光关：无普通敌人，仅激光气球 ======
     if (this.laserMode) {
@@ -1844,6 +1887,7 @@ export class Game {
         for (let j = 0; j < list.length; j++) {
           const balloon = list[j];
           if (!balloon.alive) continue; // 跳过已隐藏的龙气球（复活前），防重复触发
+          if (b._hitUids && b._hitUids.has(balloon.uid)) continue; // 第五十五修：穿甲弹不重复命中同一目标
           // 幽灵怪隐身期间无视子弹（仅蓄力显形时可被击中）
           if (balloon.behavior === 'ghost' && !balloon.revealed) continue;
           if (!!balloon.isBoss !== wantBoss) continue; // pass0 跳过 Boss；pass1 仅 Boss
@@ -1886,11 +1930,19 @@ export class Game {
             }
           }
         }
-        const killed = hitBalloon.takeDamage(b.dmg);
-        this.bullets.release(b);
+        const killed = hitBalloon.takeDamage(this._applyShopDamage(hitBalloon, b.dmg)); // 第五十五修：专打强者
+        if (b.pierce > 0) {
+          // 第五十五修 · 串糖葫芦：穿甲弹命中后不消失，记录已命中目标后继续飞
+          b.pierce--;
+          if (!b._hitUids) b._hitUids = new Set();
+          b._hitUids.add(hitBalloon.uid);
+        } else {
+          this.bullets.release(b);
+        }
         this._damageFeedback(hitBalloon, killed, b.pos);   // 第四十修：伤害数字 + 命中音/轻震动；档2：火花落在弹着点
         if (killed) this._onKilled(hitBalloon);
         if (killed) this._bulletKill(hitBalloon);   // 第四十二修：连杀加速只认子弹击杀
+        if (killed) this._shopBulletKill(hitBalloon);   // 第五十五修：商店道具（打狗/吸血）只认子弹击杀
       }
     }
     this.bullets.sync(); // 碰撞释放后立刻刷新实例矩阵（避免命中子弹滞留一帧）
@@ -1939,7 +1991,8 @@ export class Game {
     // 龙 Boss 部件：隐藏并由 DragonBoss 管理「1秒复活」，不从这里永久移除（且不再连锁炸其他龙部件）
     if (balloon.isDragonPart) {
       if (this.dragon && !this.dragon.dying) {
-        this._addScore(balloon.score);
+      this._addScore(balloon.score);
+      this._addShopCoin(balloon.score);   // 第五十五修：龙部件积分同样计入商店币
         this._spawnExplosionFx(balloon.mesh.position, balloon.effectiveRadius);
         this.dragon.notifyKilled(balloon);
       }
@@ -1951,11 +2004,14 @@ export class Game {
     if (balloon.behavior === 'treasure') {
       const bonus = (balloon.type.baseScore || 0) + (balloon._killsDuringLife || 0) * (balloon.type.perKillScore || 0);
       this._addScore(bonus);
+      this._addShopCoin(bonus);           // 第五十五修：聚宝盆积分同样计入商店币
       this.balloons.remove(balloon);
       return;
     }
     // 第四十六修：精英击杀积分 ×ELITE_FEEDBACK.SCORE_MUL（构筑生效的正反馈）
-    this._addScore(balloon.isElite ? Math.round((balloon.score || 0) * ELITE_FEEDBACK.SCORE_MUL) : balloon.score);
+    const _killScore = balloon.isElite ? Math.round((balloon.score || 0) * ELITE_FEEDBACK.SCORE_MUL) : (balloon.score || 0);
+    this._addScore(_killScore);
+    this._addShopCoin(_killScore);   // 第五十五修：击杀积分等额计入商店币（以战养战再加成）
     this.dda?.notifyKill();   // DDA：记录一次击杀，用于滑窗击杀率统计
 
     // 龙 Boss 关：每消灭1个基础怪(basic, 非龙部件) → 通知龙 Boss 计数（每5个扣1%总血量）
@@ -2171,10 +2227,12 @@ export class Game {
     this.skillCooldown = this._skillCdTotal();
   }
   _skillCdTotal() {
-    if (this.selectedSkill === 'buddha') return BUDDHA.COOLDOWN;
-    if (this.selectedSkill === 'lightsaber') return LASER_SWORD.COOLDOWN;
-    if (this.selectedSkill === 'scatterburst') return SCATTER_BURST.COOLDOWN;
-    if (this.selectedSkill === 'scatter') return SCATTER.COOLDOWN;
+    // 第五十五修：商店关「技能冷却-」叠加生效（只影响总冷却口径；下限 SHOP.CD_FLOOR 防 0 冷却）
+    const _down = this.player.skillCdDown || 0;
+    if (this.selectedSkill === 'buddha') return Math.max(SHOP.CD_FLOOR, BUDDHA.COOLDOWN - _down);
+    if (this.selectedSkill === 'lightsaber') return Math.max(SHOP.CD_FLOOR, LASER_SWORD.COOLDOWN - _down);
+    if (this.selectedSkill === 'scatterburst') return Math.max(SHOP.CD_FLOOR, SCATTER_BURST.COOLDOWN - _down);
+    if (this.selectedSkill === 'scatter') return Math.max(SHOP.CD_FLOOR, SCATTER.COOLDOWN - _down);
     return 0;
   }
 
@@ -2315,6 +2373,10 @@ export class Game {
                   && Math.abs(pos.z) <= (MOVE.BOUND_Z + balloon.effectiveRadius);
       if (inArea) {
         this._spawnExplosionFx(balloon.mesh.position, balloon.effectiveRadius);
+        // 第五十六修：现场「到飞毯边缘爆炸时增加爆炸特效」——除球形冲击外再补碎片 + 火花，
+        //   两者都是预分配实例池（fx.js），只多几次 setMatrixAt，不新增 draw call。
+        this.fx?.debrisBurst(balloon.mesh.position, EXPLOSION.COLOR, 1.8);
+        this.fx?.spark(balloon.mesh.position, 0xffb066);
         this.balloons.remove(balloon);
         this.audio?.playPop();
         // 气球入侵飞船区域即造成伤害，不依赖玩家与爆炸点的距离；伤害按该气球自身自爆值
@@ -2750,6 +2812,7 @@ export class Game {
   }
 
   _enterCard(mid = false) {
+    if (this.shopMode) { this.log('商店关不发选项卡，直接进入下一关'); this._exitShop(); return; } // 第五十五修
     this._draftsThisLevel = (this._draftsThisLevel || 0) + 1;  // 第四十七修：一关一次（通关分支据此跳过第二次）
     this._clearExplosions();
     this.state = 'card';
@@ -2781,10 +2844,10 @@ export class Game {
       this._showRunSummary();
       return;
     } else if (lv.kind === 'boss' || lv.kind === 'laser') {
-      // Boss 关(6/12) + 机制关(9/15)：抽 4–7 池（技能消耗/技能伤害/自我修复/生命）
-      plan = { pool: ['skillCost', 'skillDamage', 'selfRepair', 'hp'] };
+      // Boss 关(6/12)：抽 4–7 池（技能消耗/技能伤害/自我修复）——hp 卡已随第五十五修移除
+      plan = { pool: ['skillCost', 'skillDamage', 'selfRepair'] };
       // 第9关：必定出一张回血卡（自我修复优先，其次生命上限；两张都满级时退化为战场补给）
-      if (lv.n === 9) plan.guarantee = ['selfRepair', 'hp'];
+      if (lv.n === 9) plan.guarantee = ['selfRepair'];
     } else {
       // 普通/危机关：抽 1–5 池（射速/子弹/攻击/技能消耗/技能伤害）
       plan = { pool: ['fireRate', 'multiShot', 'atk', 'skillCost', 'skillDamage'] };
@@ -2831,12 +2894,10 @@ export class Game {
     const credit = this.input.consumeCredit();
     if (credit > 0) { this._addScore(credit); this.log(`测试 +${credit} 积分`); }
     this.player.update(dt);
-    this.bullets.update(dt);
+    this.bullets.update(dt, this._homingTarget);   // 第五十五修：追踪弹每帧转向
     const _boostShot = this._gameTime < this._rapidUntil;
     // 第五十修：累计这一帧**实际打出**的弹数（player.fire 返回弹道数）—— 龙族宝箱按它给加成
-    let _shotsFired = 0;
-    for (const shot of this.input.shots) _shotsFired += this.player.fire(shot, this.bullets, this.audio, _boostShot);
-    if (_shotsFired > 0) this._chest?.addShots(_shotsFired);
+    this._firePlayerShots(_boostShot);   // 第五十五修：统一开火入口（宝箱计数 + 串糖葫芦穿甲弹都在里面）
     this.cards.update(dt, this.bullets, this._playerPos().clone());
     this.bullets.sync(); // 抽卡模式子弹命中后刷新实例矩阵
   }
@@ -2860,6 +2921,223 @@ export class Game {
     }
     this._loadLevel(this.levelIndex);
     this.state = 'playing';
+  }
+
+  // ============================================================
+  // 第五十五修 · 商店关（第3/9/15关，替代原激光机制关）
+  //   正前方技能区 = 技能本体×3（已有技能后 → 技能威力/消耗/冷却）+「购物完成」；
+  //   左手边道具区 = 道具×3（6 选 3 不重复）+「刷新」；打中气球即购买。
+  // ============================================================
+
+  /** 玩家是否已拥有「三选一」技能（默认的积分散射不算 —— 正前方要卖技能本体） */
+  _hasChosenSkill() { return !!this.selectedSkill && this.selectedSkill !== 'scatter'; }
+
+  _itemLevel(id) { return (this._itemLv && this._itemLv[id]) || 0; }
+
+  /** 商店币入账：击杀积分等额 +「以战养战」加成（无上限；一局结束清零） */
+  _addShopCoin(n) {
+    const v = Math.round(n || 0);
+    if (!v) return;
+    this.shopCoin += Math.round(v * warFeedMul(this._itemLevel('warFeed')));
+    this.hud.setShopCoin(this.shopCoin);
+  }
+
+  /** 建商店场地（由 _loadLevel 的分帧任务调用，位置与 LaserLevel 相同） */
+  _enterShop() {
+    this.shopDraft = new ShopDraft(this.world.scene);
+    this.shopDraft.open(this._playerPos(), {
+      getShopCoin: () => this.shopCoin,
+      spendShopCoin: (c) => { this.shopCoin = Math.max(0, this.shopCoin - c); this.hud.setShopCoin(this.shopCoin); },
+      hasSkill: () => this._hasChosenSkill(),
+      getItemLevels: () => this._itemLv,
+      // 第五十六修：第 3 关商店价格减半（技能本体/强化/道具；刷新价不变）
+      priceMul: () => (LEVELS[this.levelIndex] && LEVELS[this.levelIndex].n === 3) ? SHOP.LEVEL3_PRICE_MUL : 1,
+      onBuySkill: (id) => this._applySkillCard(id),
+      onBuyUpgrade: (id) => this._applySkillUpgrade(id),
+      onBuyItem: (id) => this._buyShopItem(id),
+      // 第五十七修：右手边「精英预告」卡要知道本店是第几关（决定预告窗口）
+      shopLevel: LEVELS[this.levelIndex].n,
+      onDenied: (msg) => this.midWarning?.show(msg),
+    });
+    this.hud.setShopCoin(this.shopCoin);
+    this.hud.showShopCoin(true);
+    this._warmShopPortraits();   // 第五十七修 v2：预告卡立绘（异步逐张换图，不挡进店）
+    this.hud.message('商店关 · 魔术空间', `射击气球购买 · 打「购物完成」可提前离开（${SHOP.COUNTDOWN}s）`, '#ffd43b');
+    this.log(`第 ${LEVELS[this.levelIndex].n} 关 · 商店关：正前方技能区 / 左手边道具区（商店币 ${this.shopCoin}）`);
+  }
+
+  /**
+   * 第五十七修 v2：右手边「精英预告」卡的立绘 —— 把精英的 GLB 离屏渲成正视图塞进卡面。
+   * 一次只抓一张：抓帧含同步回读（readRenderTargetPixels），扎堆会连掉好几帧；
+   * 抓到一张立刻换一张卡面，玩家进店看到的是「? → 立绘」逐张补齐。
+   * 离店（或又进了一次店，shopDraft 已换人）立刻停手；立绘有全局缓存，下次进店命中缓存不再抓。
+   */
+  _warmShopPortraits() {
+    const shop = this.shopDraft;
+    const renderer = this.world && this.world.renderer;
+    if (!shop || !renderer) return;              // 无渲染器（单测 / 无 WebGL）→ 卡面直接留在「?」
+    const specs = shop.previewPortraits();
+    let i = 0;
+    const step = () => {
+      if (this.shopDraft !== shop || !shop.active) return;   // 已经离店：停手
+      const spec = specs[i++];
+      if (!spec) return;
+      Promise.resolve(portraitCanvas(renderer, spec)).then((cv) => {
+        if (cv && this.shopDraft === shop) shop.setPortrait(portraitKey(spec), cv);
+        setTimeout(step, PORTRAIT_STEP_MS);
+      });
+    };
+    setTimeout(step, PORTRAIT_STEP_MS);
+  }
+
+  /** 商店关每帧：气球交互 + 倒计时 + 收尾判定 */
+  _updateShop(dt, pp) {
+    if (!this.shopDraft) return;
+    this.shopDraft.update(dt, this.bullets, pp, this.world.camera);
+    this.bullets.sync();
+    this._shopLeft = Math.ceil(this.shopDraft.timer);
+    this.hud.setScore(this.score);
+    this.hud.setShopCoin(this.shopCoin);
+    this.hud.setHp(this.player.hp, this.player.maxHp);
+    this.hud.setCountdown(this._shopLeft);
+    if (this.shopDraft.finished) this._exitShop();
+  }
+
+  /** 离开商店关（购物完成 / 倒计时结束）→ 下一关；商店关**不发选项卡** */
+  _exitShop() {
+    this.shopMode = false;
+    this.player.forceSingleShot = false;
+    this.hud.clearCountdown();
+    this.hud.showShopCoin(false);
+    this.hud.clearMessage();
+    const lv = LEVELS[this.levelIndex];
+    if (lv && lv.n === 3) { this._addScore(500); this.log('第3关奖励：+500 积分'); }  // 保留原「选完技能赠 500」
+    this.log('商店关结束 → 进入下一关');
+    this.levelIndex++;
+    if (!this.player.buddhaUnlocked) this.player.buddhaUnlocked = true; // 与抽卡分支同口径
+    if (this.levelIndex >= LEVELS.length) {
+      // 商店关在 3/9/15，走不到这里；照抄抽卡分支的保底口径
+      this.state = 'over';
+      this._roundOver = true;
+      this._endRound('通关');
+      this.hud.message('通关！', '按「开始游戏」重新挑战', '#2ecc71');
+      this.hud.showStart();
+      return;
+    }
+    this._loadLevel(this.levelIndex);
+    this.state = 'playing';
+  }
+
+  /** 技能强化（第9/15关商店）：威力+ / 消耗- / 冷却- */
+  _applySkillUpgrade(id) {
+    if (id === 'skillDamageUp') {
+      this.player.skillDamageMul = Math.min(5, (this.player.skillDamageMul || 1) + 1);
+      this.log(`技能威力+：技能伤害 ×${this.player.skillDamageMul}`);
+    } else if (id === 'skillCostDown') {
+      this.player.skillCost = Math.max(100, (this.player.skillCost || 500) - 100);
+      this.log(`技能消耗-：技能消耗 ${this.player.skillCost} 积分`);
+    } else if (id === 'skillCdDown') {
+      this.player.skillCdDown = (this.player.skillCdDown || 0) + SHOP.CD_DOWN;
+      this.log(`技能冷却-：累计 -${this.player.skillCdDown}s`);
+    }
+  }
+
+  /** 道具购买（可重复升级）：等级 +1；买完即生效 */
+  _buyShopItem(id) {
+    this._itemLv[id] = (this._itemLv[id] || 0) + 1;
+    const lv = this._itemLv[id];
+    if (id === 'moreIsBetter') {
+      this._mibUntil = this._gameTime + SHOP.MIB_DURATION;   // 买完立刻生效
+      this._mibNextAt = this._gameTime + mibCooldown(lv);    // 冷却从买完开始算
+      this.log(`多才是王道 Lv.${lv}：+${SHOP.MIB_SHOTS} 弹道 ${SHOP.MIB_DURATION}s，冷却 ${mibCooldown(lv)}s`);
+      return;
+    }
+    this.log(`道具升级：${id} Lv.${lv}`);
+  }
+
+  /** 商店道具逐帧效果（目前只有「多才是王道」的自动触发与到期收回） */
+  _tickShopItems() {
+    const lv = this._itemLevel('moreIsBetter');
+    if (lv <= 0) { if (this.player.bonusShotCount) this.player.bonusShotCount = 0; return; }
+    if (this._gameTime >= this._mibNextAt) {
+      this._mibUntil = this._gameTime + SHOP.MIB_DURATION;
+      this._mibNextAt = this._gameTime + mibCooldown(lv);
+    }
+    this.player.bonusShotCount = this._gameTime < this._mibUntil ? SHOP.MIB_SHOTS : 0;
+  }
+
+  /** 商店道具（击杀时结算）：打狗还要看主人 / 吸血子弹 —— 只认子弹击杀 */
+  _shopBulletKill(balloon) {
+    const dog = this._itemLevel('dogOwner');
+    if (dog > 0) this._spawnHomingBullets(balloon, dog);
+    const ls = this._itemLevel('lifesteal');
+    if (ls > 0 && Math.random() < lifestealChance(ls) && this.player.hp < this.player.maxHp) {
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + 1);
+      this.hud.setHp(this.player.hp, this.player.maxHp);
+    }
+  }
+
+  /** 打狗还要看主人：向击杀点 DOG_RADIUS 内最近的精英/Boss 发射追踪弹（伤害 = 攻击力×DOG_DMG_MUL）。第五十六修：弹体更大、曳光更长，并改从**枪口**射出 */
+  _spawnHomingBullets(balloon, count) {
+    const at = balloon && balloon.mesh && balloon.mesh.position;
+    if (!at) return;
+    const r2 = SHOP.DOG_RADIUS * SHOP.DOG_RADIUS;
+    let best = null, bestD = Infinity;
+    for (const t of this.balloons.list) {
+      if (!t.alive || t === balloon || !(t.isElite || t.isBoss)) continue;
+      const d = t.mesh.position.distanceToSquared(at);
+      if (d > r2 || d >= bestD) continue;
+      bestD = d; best = t;
+    }
+    if (!best) return;   // 场上半径内没有精英 → 不生成（口径）
+    const dmg = (this.player.atk || 100) * SHOP.DOG_DMG_MUL;
+    // 第五十六修：追踪弹改从**枪口**射出（SHOP.DOG_FROM_MUZZLE=false 回到旧口径「从击杀点射出」）
+    // 第五十七修（现场）：**不能读 input.shots** —— 那个数组每帧开头就清空、只有「本帧真开了一枪」才有值，
+    //   而击杀常发生在没开火的帧（子弹飞一会儿才命中）⇒ 会退回击杀点，现场现象就是「追踪弹不是从枪口出的」。
+    //   改成直接问 input.getMuzzle()：当前枪口位姿，与红射线 / 普通子弹同源。
+    let from = at;
+    if (SHOP.DOG_FROM_MUZZLE && this.input && typeof this.input.getMuzzle === 'function') {
+      const mp = this._dogMuzzlePos || (this._dogMuzzlePos = new THREE.Vector3());
+      const md = this._dogMuzzleDir || (this._dogMuzzleDir = new THREE.Vector3());
+      this.input.getMuzzle(mp, md);
+      from = mp;
+    }
+    const dir = this._tmp.copy(best.mesh.position).sub(from).normalize();
+    const opts = { homing: best, tint: SHOP.DOG_COLOR, scale: SHOP.DOG_SCALE, trailMul: SHOP.DOG_TRAIL_MUL };
+    for (let i = 0; i < count; i++) {
+      this.bullets.spawn(from, dir, dmg, false, opts);
+    }
+  }
+
+  /** 专打强者：对精英 / Boss 的最终伤害 ×(1 + 0.2×等级) */
+  _applyShopDamage(target, dmg) {
+    const lv = this._itemLevel('strongHunter');
+    if (lv <= 0 || !target) return dmg;
+    if (!(target.isElite || target.isBoss)) return dmg;
+    return dmg * strongHunterMul(lv);
+  }
+
+  /** 统一开火入口：打出子弹 + 宝箱计数 + 串糖葫芦穿甲弹（返回本帧实际打出弹数） */
+  _firePlayerShots(boost) {
+    let n = 0;
+    for (const shot of this.input.shots) n += this.player.fire(shot, this.bullets, this.audio, boost);
+    if (n <= 0) return 0;
+    this._chest?.addShots(n);
+    const lv = this._itemLevel('candyString');
+    if (lv > 0) {
+      this._candyCount += n;
+      const shot = this.input.shots[this.input.shots.length - 1];
+      if (shot) {
+        while (this._candyCount >= SHOP.CANDY_EVERY) {
+          this._candyCount -= SHOP.CANDY_EVERY;
+          for (let k = 0; k < lv; k++) {
+            this.bullets.spawn(shot.position, shot.direction, this.player.atk, false,
+              { pierce: SHOP.CANDY_PIERCE, tint: SHOP.CANDY_COLOR, scale: SHOP.CANDY_SCALE, trailMul: SHOP.CANDY_TRAIL_MUL });
+          }
+        }
+      }
+    }
+    return n;
   }
 
   _gameOver() {

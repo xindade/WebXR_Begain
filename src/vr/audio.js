@@ -4,7 +4,7 @@
 //          机制关(laser：第3/9/15关) → 'laser'；Boss 关(第6/12/18关) → 'boss'。
 // 全部由代码实时合成，替换原 music/*.wav 文件 BGM。语音(_pendingOpenVoice)仍走文件 playVoice。
 
-import { BGM_VOLUME, HIT_FEEDBACK } from '../core/constants.js'; // 各关卡 BGM 音量倍率（normal/laser/boss），可经 userConfig 热调
+import { BGM_VOLUME, HIT_FEEDBACK, SFX_GAIN } from '../core/constants.js'; // 各关卡 BGM 音量倍率（normal/laser/boss），可经 userConfig 热调
 
 // ===== 关卡和弦 / 贝斯 / 音序（MIDI 音高；A4=69=440Hz）=====
 const NORMAL_CHORDS = {
@@ -57,6 +57,11 @@ export class AudioManager {
     this.master = this.ctx.createGain();
     this.master.gain.value = 0.5 * this.volume;
     this.master.connect(this.ctx.destination);
+    // 第五十六修：音效总线 —— 所有程序化音效汇到这里再进 master（gain = SFX_GAIN，默认 ×3）。
+    //   与 BGM 分开：BGM 走 bgmBus.base × BGM_VOLUME，不受本值影响。
+    this.sfxBus = this.ctx.createGain();
+    this.sfxBus.gain.value = SFX_GAIN * this.volume;
+    this.sfxBus.connect(this.master);
     return true;
   }
 
@@ -598,7 +603,7 @@ export class AudioManager {
     lfoGain.gain.value = 0.04;                        // 颤音深度
     lfo.connect(lfoGain).connect(g.gain);             // 叠加到增益（音量抖动）
     osc.connect(bp); osc2.connect(bp);
-    bp.connect(g).connect(this.master);
+    bp.connect(g).connect(this.sfxBus);
     osc.start(t); osc2.start(t); lfo.start(t);
     this._laserHums[key] = { osc, osc2, g, lfo };
   }
@@ -729,7 +734,7 @@ export class AudioManager {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(this._jitter(0.25, HIT_FEEDBACK.SOUND.VOLUME_JITTER), t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
-    src.connect(lp).connect(g).connect(this.master);
+    src.connect(lp).connect(g).connect(this.sfxBus);
     src.start(t); src.stop(t + 0.12);
   }
 
@@ -743,7 +748,7 @@ export class AudioManager {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.3, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-    osc.connect(g).connect(this.master);
+    osc.connect(g).connect(this.sfxBus);
     osc.start(t); osc.stop(t + 0.15);
   }
 
@@ -764,7 +769,7 @@ export class AudioManager {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(this._jitter(S.HIT_VOLUME, S.VOLUME_JITTER), t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
-    g.connect(this.master);
+    g.connect(this.sfxBus);
     const o = this.ctx.createOscillator();
     o.type = "triangle";
     const f = this._jitter(1500, S.PITCH_JITTER);
@@ -801,7 +806,7 @@ export class AudioManager {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime(cfg.g, t + 0.012);
     g.gain.exponentialRampToValueAtTime(0.001, t + cfg.d + 0.06);
-    o.connect(g).connect(this.master);
+    o.connect(g).connect(this.sfxBus);
     o.start(t); o.stop(t + cfg.d + 0.08);
   }
 
@@ -819,7 +824,7 @@ export class AudioManager {
       g.gain.setValueAtTime(0.0001, at);
       g.gain.linearRampToValueAtTime(0.18, at + 0.01);
       g.gain.exponentialRampToValueAtTime(0.001, at + 0.3);
-      o.connect(g).connect(this.master);
+      o.connect(g).connect(this.sfxBus);
       o.start(at); o.stop(at + 0.32);
     }
   }
@@ -842,7 +847,7 @@ export class AudioManager {
       g.gain.setValueAtTime(0.0001, at);
       g.gain.linearRampToValueAtTime(0.22, at + 0.008);
       g.gain.exponentialRampToValueAtTime(0.001, at + 0.18);
-      o.connect(g).connect(this.master);
+      o.connect(g).connect(this.sfxBus);
       o.start(at); o.stop(at + 0.2);
     }
     // ② 金属过载：锯齿上行 + 低通扫开
@@ -858,7 +863,7 @@ export class AudioManager {
     g2.gain.setValueAtTime(0.0001, t + 0.12);
     g2.gain.linearRampToValueAtTime(0.16, t + 0.2);
     g2.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
-    o2.connect(lp).connect(g2).connect(this.master);
+    o2.connect(lp).connect(g2).connect(this.sfxBus);
     o2.start(t + 0.12); o2.stop(t + 0.52);
     // ③ 收尾气流（噪声高通，短促）
     const nz = this.ctx.createBufferSource();
@@ -869,7 +874,7 @@ export class AudioManager {
     g3.gain.setValueAtTime(0.0001, t + 0.1);
     g3.gain.linearRampToValueAtTime(0.1, t + 0.16);
     g3.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
-    nz.connect(hp).connect(g3).connect(this.master);
+    nz.connect(hp).connect(g3).connect(this.sfxBus);
     nz.start(t + 0.1); nz.stop(t + 0.45);
   }
 
@@ -881,7 +886,7 @@ export class AudioManager {
     const ctx = this.ctx;
     const out = ctx.createGain();
     out.gain.value = vol;
-    out.connect(this.master);
+    out.connect(this.sfxBus);
     const tone = (type, f0, f1, dur, amp) => {
       const o = ctx.createOscillator();
       o.type = type;
@@ -964,7 +969,7 @@ export class AudioManager {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.18, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-    src.connect(bp).connect(g).connect(this.master);
+    src.connect(bp).connect(g).connect(this.sfxBus);
     src.start(t); src.stop(t + 0.18);
   }
 
@@ -975,7 +980,7 @@ export class AudioManager {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.22, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-    g.connect(this.master);
+    g.connect(this.sfxBus);
     const o1 = this.ctx.createOscillator();
     o1.type = 'triangle';
     o1.frequency.setValueAtTime(2400, t);
@@ -1046,6 +1051,7 @@ export class AudioManager {
   setVolume(value) {
     this.volume = value;
     if (this.master) this.master.gain.value = 0.5 * value;
+    if (this.sfxBus) this.sfxBus.gain.value = SFX_GAIN * value;
     for (const [el, base] of this._media) el.volume = Math.max(0, Math.min(1, base * value));
   }
   setPaused(paused) {

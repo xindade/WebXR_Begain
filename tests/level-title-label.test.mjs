@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { LEVELS, levelName, levelTitleText, shouldShowLevelTitle, isLaser } from '../src/content/levels.js';
+import { LEVELS, levelName, levelTitleText, shouldShowLevelTitle, levelTitleDelay, isShop } from '../src/content/levels.js';
 import { LEVEL_TITLE, ELITE_LABEL, BOSS_LABEL, MID_WARNING, CLOUD } from '../src/core/constants.js';
 import { WarningBanner3D, styleConfig } from '../src/game/warningBanner.js';
 import { Balloon } from '../src/game/balloons.js';
@@ -47,12 +47,12 @@ test('18 关每关都有场景名（机制关 3/9/15 共用「魔术空间」，
     assert.ok(lv.name.trim().length > 0, `第 ${lv.n} 关的 name 是空的`);
   }
   // 现场口径（第二轮）：三个机制关统一叫「魔术空间」（同一个主题）⇒ 唯一性判据要排掉机制关
-  const mech = LEVELS.filter((lv) => isLaser(lv)).map((lv) => lv.name);
-  assert.deepEqual([...new Set(mech)], ['魔术空间'], '机制关统一叫「魔术空间」');
-  const others = LEVELS.filter((lv) => !isLaser(lv)).map((lv) => lv.name);
-  assert.equal(new Set(others).size, others.length, '非机制关的关卡名不能重复');
-  assert.ok(!others.includes('魔术空间'), '机制关的名字不该被非机制关占用');
-  assert.equal(new Set(names).size, names.length - 2, '三个机制关共用一个名字 ⇒ 唯一名少 2 个');
+  const mech = LEVELS.filter((lv) => isShop(lv)).map((lv) => lv.name);
+  assert.deepEqual([...new Set(mech)], ['魔术空间'], '商店关(3/9/15)统一叫「魔术空间」');
+  const others = LEVELS.filter((lv) => !isShop(lv)).map((lv) => lv.name);
+  assert.equal(new Set(others).size, others.length, '非商店关的关卡名不能重复');
+  assert.ok(!others.includes('魔术空间'), '商店关的名字不该被非商店关占用');
+  assert.equal(new Set(names).size, names.length - 2, '三个商店关共用一个名字 ⇒ 唯一名少 2 个');
 });
 
 test('levelName：查得到、越界给空串（调用方据此不弹卡）', () => {
@@ -74,13 +74,33 @@ test('levelTitleText：把 {n} / {name} 填好；没名字的关卡给空串', (
 test('标题卡判据：总开关 / 机制关跳过 / 无名不弹', () => {
   const lv1 = LEVELS[0];
   const lv3 = LEVELS.find((l) => l.n === 3);
-  assert.ok(isLaser(lv3), '第 3 关是机制关');
+  assert.ok(isShop(lv3), '第 3 关是商店关（第五十五修：原激光机制关）');
   assert.equal(shouldShowLevelTitle(lv1, LEVEL_TITLE), true);
   // 第四十九修（返工）：现场「机制关看不到关卡名」⇒ 改成**延后弹**（等魔术师收场），不再直接跳过
   assert.equal(shouldShowLevelTitle(lv3, LEVEL_TITLE), true, '机制关也要显示关卡名（延后弹，见 MECHANIC_DELAY）');
   assert.equal(shouldShowLevelTitle(lv3, { ...LEVEL_TITLE, SKIP_MECHANIC: true }), false, '逃生开关：置 true 就不弹');
   assert.equal(shouldShowLevelTitle(lv1, { ...LEVEL_TITLE, ENABLED: false }), false);
   assert.equal(shouldShowLevelTitle(null, LEVEL_TITLE), false);
+
+test(
+  '标题卡排期（levelTitleDelay）：激光机制关等语音收场；商店关改成和普通关同口径（第五十八修）',
+  () => {
+    const lv3 = LEVELS.find((l) => l.n === 3);   // 商店关（第五十五修起替代激光机制关）
+    const lv1 = LEVELS[0];                       // 普通关
+    const laser = { n: 3, kind: 'laser', name: '激光关' };
+    assert.equal(levelTitleDelay(laser, LEVEL_TITLE, true), LEVEL_TITLE.MECHANIC_DELAY,
+      '激光关先排兜底，等开场语音 ended 再改排');
+    assert.equal(levelTitleDelay(laser, LEVEL_TITLE, false), LEVEL_TITLE.MECHANIC_DELAY,
+      '激光关不看云雾：没有雾也照样等语音（否则会和魔术师动画叠在一起）');
+    assert.equal(levelTitleDelay(lv3, LEVEL_TITLE, true), LEVEL_TITLE.INTRO_DELAY,
+      '商店关只有魔术师动画、没有语音 ⇒ 和普通关一样在雾里弹');
+    assert.equal(levelTitleDelay(lv3, LEVEL_TITLE, false), LEVEL_TITLE.DELAY);
+    assert.equal(levelTitleDelay(lv1, LEVEL_TITLE, true), LEVEL_TITLE.INTRO_DELAY);
+    assert.ok(LEVEL_TITLE.INTRO_DELAY < LEVEL_TITLE.MECHANIC_DELAY,
+      '「提前了」的口径：商店关比机制关那 12s 兜底早得多');
+    assert.equal(levelTitleDelay(null, LEVEL_TITLE, false), LEVEL_TITLE.DELAY, '容错：没有 lv 也不能给 NaN');
+  }
+);
   assert.equal(shouldShowLevelTitle({ n: 99, kind: 'normal' }, LEVEL_TITLE), false, '没名字 → 不弹');
 });
 
