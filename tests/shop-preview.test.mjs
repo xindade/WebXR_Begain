@@ -12,8 +12,8 @@ import { SHOP, CARD } from '../src/core/constants.js';
 import { ShopDraft } from '../src/game/shop.js';
 import { elitePortrait } from '../src/content/eliteBrief.js';
 import { ENEMY_TYPES } from '../src/content/enemies.js';
-import { portraitKey, portraitCanvas, composePortrait, PORTRAIT_MAIN_FRAC, PORTRAIT_SHIELD_FRAC } from '../src/game/enemyPortrait.js';
-import { makeCardTexture, makeBadge } from '../src/game/cardDraft.js';
+import { portraitKey, portraitCanvas, composePortrait, opaquePixels, PORTRAIT_MAIN_FRAC, PORTRAIT_SHIELD_FRAC, PORTRAIT_FALLBACK_COLOR } from '../src/game/enemyPortrait.js';
+import { makeCardTexture, makeBadge, titleFont, TITLE_MAX_W, TITLE_FONT_MAX, TITLE_FONT_MIN } from '../src/game/cardDraft.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CARD_DRAFT = fs.readFileSync(path.join(HERE, '..', 'src', 'game', 'cardDraft.js'), 'utf8');
@@ -44,7 +44,7 @@ test('第 15 关：精英都介绍过了 → 只剩「未知 Boss」三形态各
   const cs = previewCards(15);
   assert.equal(cs.length, 3);
   assert.ok(cs.every((c) => c.label.startsWith('未知 Boss')), '三张都是未知 Boss 的形态卡');
-  assert.deepEqual(cs.map((c) => c.label), ['未知 Boss ①', '未知 Boss ②', '未知 Boss ③']);
+  assert.deepEqual(cs.map((c) => c.label), ['未知 Boss 阶段一', '未知 Boss 阶段二', '未知 Boss 阶段三']);
   // 现场口径：**不剧透**是魔术师
   const text = cs.map((c) => c.label + c.sub).join('|');   // 只看卡面（key 是内部 id，上不了屏）
   assert.ok(!text.includes('魔术师'), '第 18 关 Boss 不得剧透为「魔术师」');
@@ -384,4 +384,104 @@ test('第五十九修 · 预告卡文案全部装得下 4 行（每行约 10 字
   const longest = all.map((c) => c.sub).sort((a, b) => b.length - a.length)[0];
   assert.ok(all.every((c) => c.sub.length <= 34), `文案必须 ≤ 34 字（4 行×约 10 字留余量）：${longest}`);
   assert.ok(longest.length <= 27, `现有最长文案 ${longest.length} 字，本来就该一行不落`);
+});
+// ================= 第六十三修 · 盾甲兵立绘不再「整卡丢失」 =================
+//   现场：「第三关商店中精英兵的预告中盾甲兵图片丢失，目前是图标。」
+//   桌面离线复现（Electron + 真 WebGL）显示链路其实是**通的**（骑士 46040px / 盾牌 35045px），
+//   所以本轮先把**兜底与诊断**补齐 —— 头显上再复现就能一次定位：
+//     ① 两个模型各自独立兜底：旧实现是「主模型 await 一挂，整卡回退简笔画」，
+//        现场看到的「图标」正是这条路径；现在骑士挂了也照样把盾牌画出来；
+//     ② 盾牌没抓到 → 左下角补「盾」简笔画（否则这张卡和铁甲兵长得一模一样）；
+//     ③ 每一步（抓到多少不透明像素 / 哪一步失败）都写进 game 留痕 —— 头显上看不到 DevTools。
+
+test('第六十三修 · 盾牌没抓到：左下角补「盾」简笔画（不能退化成和铁甲兵一样的图）', () => {
+  const orig = globalThis.document.createElement;
+  const calls = [];
+  const ctx = new Proxy({}, { get: (_t, key) => (...args) => { calls.push([key, ...args]); } });
+  globalThis.document.createElement = () => ({ width: 0, height: 0, style: {}, getContext: () => ctx });
+  try {
+    const main = { width: 256, height: 256 };
+    composePortrait(main, null, 256, PORTRAIT_MAIN_FRAC, PORTRAIT_SHIELD_FRAC, 'eShield');
+    assert.equal(calls.filter((c) => c[0] === 'drawImage').length, 1, '骑士照画');
+    assert.ok(calls.some((c) => c[0] === 'stroke' || c[0] === 'lineTo'), '左下角要画「盾」简笔画');
+    const iconCalls = calls.filter((c) => c[0] === 'lineTo' || c[0] === 'arc');
+    assert.ok(iconCalls.length > 0, '简笔画至少有线段 / 圆弧');
+    // 不传兜底 key（非盾甲兵 / 老调用）→ 保持原样：只画骑士，不画任何图标
+    calls.length = 0;
+    composePortrait(main, null, 256);
+    assert.ok(!calls.some((c) => c[0] === 'stroke' || c[0] === 'lineTo'), '没给兜底 key 就不该画简笔画');
+  } finally {
+    globalThis.document.createElement = orig;
+  }
+});
+
+test('第六十三修 · 盾甲兵的 spec 带 sideIcon（兜底画哪枚简笔画），且不污染 portraitKey', () => {
+  const shield = elitePortrait('shield');
+  assert.equal(shield.sideIcon, 'eShield', '盾甲兵的兜底图标 = 「盾」简笔画');
+  assert.ok(CARD_DRAFT.includes("case 'eShield'"), 'drawSketchIcon 必须真有这个 case（否则兜底只会画个圆点）');
+  const knight = elitePortrait('eliteKnight');
+  assert.equal(knight.sideIcon, 'eKnight');
+  assert.equal(knight.shieldModel, null);
+  assert.equal(portraitKey(shield), 'Model/骑士.glb|Model/盾牌.glb', '缓存键口径不变（仍是 url|shieldModel）');
+});
+
+test('第六十三修 · 抓帧失败不再拖垮整卡：两个模型各自独立兜底 + 诊断出口', () => {
+  const SRC = fs.readFileSync(path.join(HERE, '..', 'src', 'game', 'enemyPortrait.js'), 'utf8');
+  // 旧写法：主模型 await 直接挂在 IIFE 里 → 一挂就整卡回退（现场那个「图标」）
+  assert.ok(!SRC.includes('const main = await captureOne(renderer, spec.url);\n    let side = null;'),
+    '★ 主模型抓帧不许再是「一处挂全卡挂」');
+  assert.ok(SRC.includes('let main = null;') && SRC.includes('if (!main && !side) throw new Error'),
+    '两个模型各自 try/catch，只有**两个都没抓到**才回退整卡');
+  assert.ok(SRC.includes('opaquePixels'), '要有「抓到多少不透明像素」的量（0 = 全透明才有意义）');
+  assert.ok(SRC.includes('log = null'), 'portraitCanvas 要能吃一个日志出口（头显上看不到 DevTools）');
+  const GAME = fs.readFileSync(path.join(HERE, '..', 'src', 'game', 'game.js'), 'utf8');
+  assert.ok(GAME.includes("portraitCanvas(renderer, spec, say)"), 'game 必须把立绘诊断接到留痕通道');
+});
+
+test('第六十三修 · opaquePixels：拿不到 2D 上下文返回 -1，绝不抛（单测桩 / 非 canvas）', () => {
+  assert.equal(opaquePixels(null), -1);
+  assert.equal(opaquePixels({ width: 0, height: 0 }), -1);
+  assert.equal(opaquePixels({}), -1);
+  assert.equal(PORTRAIT_FALLBACK_COLOR, '#d7e2ee');
+});
+
+test('第六十三修 · 卡面标题自适应：「未知 Boss 阶段一」不许顶到卡框，短名一字不动', () => {
+  // 假 ctx 按当前 font 里的字号量宽（模拟 CJK 全角 + 拉丁半角），这样「缩字号」才真的能收敛
+  const mk = () => {
+    const c = { font: '' };
+    c.measureText = (s) => {
+      const m = /(\d+)px/.exec(c.font);
+      const size = m ? Number(m[1]) : TITLE_FONT_MAX;
+      let w = 0;
+      for (const ch of String(s)) w += ch.codePointAt(0) > 0x2e80 ? size : size * 0.55;
+      return { width: w };
+    };
+    return c;
+  };
+  const long = '未知 Boss 阶段一';
+  const c = mk();
+  const size = titleFont(c, long);
+  assert.ok(size < TITLE_FONT_MAX, '长名必须缩字号（否则顶到卡框）');
+  assert.ok(size >= TITLE_FONT_MIN, '缩到底也要看得清');
+  assert.ok(c.measureText(long).width <= TITLE_MAX_W, '缩完之后必须真的放得下');
+  const short = mk();
+  assert.equal(titleFont(short, '铁甲兵'), TITLE_FONT_MAX, '短名保持原字号（版式不变）');
+  assert.equal(titleFont(short, '龙 Boss'), TITLE_FONT_MAX);
+  assert.equal(titleFont(short, '未知 Boss 阶段一'), size, '同一口径可重复算（幂等）');
+});
+
+test('第六十四修 · 单模型抓帧按 url 共享（骑士不再被抓两遍）+ 空抓重试一次', () => {
+  const SRC = fs.readFileSync(path.join(HERE, '..', 'src', 'game', 'enemyPortrait.js'), 'utf8');
+  // 现场：盾甲兵卡「只显示了盾牌的」，而同关的铁甲兵卡（同样是 骑士.glb）却正常
+  //   ⇒ 两张卡抓的是同一个 GLB，第二次抓空了。修法 = 按 url 共享同一张结果。
+  assert.ok(SRC.includes('const _modelCache = new Map()'), '要有按**模型 url**的缓存');
+  assert.ok(SRC.includes('function captureModel(renderer, url, say)'), '单模型抓帧走 captureModel');
+  assert.ok(SRC.includes('captureModel(renderer, spec.url, say)') && SRC.includes('captureModel(renderer, spec.shieldModel, say)'),
+    '盾甲兵的骑士与盾牌都走它 ⇒ 骑士与铁甲兵卡共用同一张');
+  assert.ok(!SRC.includes('captureOne(renderer, spec.url, say)') && !SRC.includes('captureOne(renderer, spec.shieldModel, say)'),
+    '★ 不许退回「同一个 GLB 每张卡各抓一遍」（就是那个第二次抓空的坑）');
+  assert.ok(SRC.includes('_modelCache.delete(url)'), '失败不缓存：下次进店还能再试');
+  assert.ok(SRC.includes('tries = 2') && SRC.includes('→ 重试'), '偶发全透明要重试一次（两把都空才判失败）');
+  assert.ok(SRC.includes('n > 0'), '要用「不透明像素 > 0」当成功判据，不能只看 captureGLB 有没有 reject');
+  assert.ok(SRC.includes('合成完成（骑士 '), '合成结果也要报像素数：一条留痕就能区分「骑士空」还是「被挡」');
 });

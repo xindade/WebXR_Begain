@@ -40,11 +40,13 @@ export const ELITE_BRIEF = {
 export function elitePortrait(type) {
   const t = ENEMY_TYPES[type];
   if (!t || !t.model) return null;
-  return { url: t.model, shieldModel: t.shieldModel || null };
+  // sideIcon（第六十三修）：盾牌抓帧失败时合成图左下角画的简笔画 key（见 enemyPortrait.composePortrait）
+  const b = ELITE_BRIEF[type];
+  return { url: t.model, shieldModel: t.shieldModel || null, sideIcon: (b && b.icon) || null };
 }
 
 // —— Boss 介绍 ——
-// phases 存在时：每种形态占一张卡（第 18 关「未知 Boss」用），label 带 ①②③ 序号
+// phases 存在时：每种形态占一张卡（第 18 关「未知 Boss」用），label 带「阶段一/二/三」后缀（第六十三修）
 export const BOSS_BRIEF = {
   face: {
     name: '脸谱 Boss', icon: 'bossFace', color: '#ff4d6d',
@@ -57,15 +59,16 @@ export const BOSS_BRIEF = {
   magician: {
     // ⚠ 名字留「未知 Boss」：现场要求不剧透它是魔术师
     name: '未知 Boss', icon: 'bossUnknown', color: '#c44dff',
+    // 第六十三修：现场逐条给的文案（照抄，别改口径）——阶段一召唤+激光 / 阶段二屏障+闪烁格 / 阶段三前后各 18 球突脸
     phases: [
-      { tip: '双激光左右扫射，先清它召唤出的盾甲兵' },
-      { tip: '玻璃墙整面挡子弹：只打闪烁的格子才伤到它' },
-      { tip: '黑白球墙 5 秒后脱墙追来，贴身前必须清光' },
+      { tip: '会召唤小兵，场地中间出现激光，不能触碰' },
+      { tip: '躲在防弹屏障后面，但闪烁格子似乎可以穿过' },
+      { tip: '前后各召唤18个圆球，会突脸，优先消灭' },
     ],
   },
 };
 
-const PHASE_MARK = ['①', '②', '③', '④', '⑤'];
+const PHASE_NAME = ['阶段一', '阶段二', '阶段三', '阶段四', '阶段五'];
 
 /** 商店关列表（升序），供 shopWindow 定位「下一个商店」 */
 function shopLevels() {
@@ -142,7 +145,7 @@ export function previewCards(shopLevel) {
     if (b.phases) {
       b.phases.forEach((p, i) => cards.push({
         key: lv.boss + '-' + (i + 1), portrait: null,
-        label: b.name + ' ' + (PHASE_MARK[i] || (i + 1)),
+        label: b.name + ' ' + (PHASE_NAME[i] || ('阶段' + (i + 1))),
         sub: p.tip, color: b.color, icon: b.icon,
       }));
     } else {

@@ -98,6 +98,7 @@ test('第四十九修 · game._updateFx：只有加速弹换蓝加长，普通�
       { pos: vec(1, 0, -10), vel: vec(0, 0, -1), origin: vec(1, 0, 0), boost: false },
     ] },
     projectiles: null, damageNumbers: null, _tailDir: new THREE.Vector3(),
+    _updateShopCoinBadge() {},      // 第六十五修：_updateFx 末尾还要下发枪上商店币小框（本用例不关心）
   };
   Game.prototype._updateFx.call(that, 1 / 60);
   assert.equal(calls.length, 2);

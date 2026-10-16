@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { WRIST_UI } from '../core/constants.js';
 
 // 手腕面板（参考 vr-controller-kit skill 的 ui.js 思路，改为自包含实现）
-//   - 左手柄：战斗信息（关卡/剩余/船血/分数 + 龙Boss血条 + 攻/射/额外射击），橙色边框
+//   - 左手柄：战斗信息（关卡/剩余/船血/能量 + 龙Boss血条 + 攻/射/额外射击），橙色边框
 //   - 右手柄：原战斗信息框已迁移到左手柄；右手腕位置现由「技能提示框」(skillHint.js) 占用，本面板隐藏
 // 每个面板 = Canvas2D 画布 → CanvasTexture → PlaneGeometry，挂到手柄 grip 下。
 // 不依赖原项目的 ship.js / buddhaPalm.js，数据直接从 Game 读取。
@@ -117,7 +117,7 @@ export class WristUI {
       c.font = '34px sans-serif';
       // 第五十修（现场口径）：这个血量就是脚下飞毯的血量，面板文案统一叫「飞毯血量」
       c.fillText(`飞毯血量: ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`, 28, by + bh + 92);
-      c.fillText(`分数 : ${game.score}`, 28, by + bh + 140);
+      c.fillText(`能量 : ${game.score}`, 28, by + bh + 140);   // 第六十一修：原「分数/积分」→ 能量
       // —— 玩家战斗属性（攻击力 / 射速 / 额外射击）追加显示 ——
       const _p2 = game.player;
       const _extra2 = (_p2.shotCount > 1) ? (_p2.shotCount + ' 发/枪') : '单发';
@@ -152,7 +152,7 @@ export class WristUI {
           `关卡    : ${game.levelIndex + 1}`,
           `剩余敌人: ${game.waves.remaining}`,
           `飞毯血量: ${fmtHp(game.player.hp)} / ${fmtHp(game.player.maxHp)}`,
-          `分数    : ${game.score}`,
+          `能量    : ${game.score}`,
         ];
     c.fillStyle = '#ffffff';
     c.font = '34px sans-serif';

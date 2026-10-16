@@ -1,4 +1,4 @@
-// 2D HUD 覆盖层：分数、飞船血量、关卡、准星、提示信息
+// 2D HUD 覆盖层：能量（原「分数/积分」）、飞船血量、关卡、准星、提示信息
 // ★ devUI=false（正式包）时不创建桌面「开始游戏」按钮 —— 见构造函数里的说明与
 //   src/core/constants.js 的 RELEASE_UI。
 export class HUD {
@@ -11,7 +11,7 @@ export class HUD {
     this.top.style.cssText = 'position:absolute;top:14px;left:16px;font-size:15px;line-height:1.5;text-shadow:0 1px 3px #000;';
     this.root.appendChild(this.top);
 
-    // 商店币（第五十五修）：仅商店关显示（射击气球购买用），比技能积分独立
+    // 商店币（第五十五修）：仅商店关显示（射击气球购买用），比技能能量独立
     this.coin = document.createElement('div');
     this.coin.style.cssText = 'position:absolute;top:52px;left:16px;font-size:16px;font-weight:bold;color:#ffd43b;text-shadow:0 1px 3px #000;display:none;';
     this.root.appendChild(this.coin);
@@ -69,7 +69,8 @@ export class HUD {
   setLevel(text) { this._level = text; this._renderTop(); }
   setScore(s) { this._score = s; this._renderTop(); }
   _renderTop() {
-    this.top.innerHTML = `${this._level || ''}<br>分数 ${this._score || 0}`;
+    // 第六十一修（现场）：商店币已经代表钱了，技能资源改叫「能量」免得混淆
+    this.top.innerHTML = `${this._level || ''}<br>能量 ${this._score || 0}`;
   }
 
   // 商店币（第五十五修）：数值 + 显隐分开控制（显隐只在商店关打开）

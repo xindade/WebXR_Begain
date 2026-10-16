@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- ★ 关键：页面在 /tools/portrait-preview/ 下，但游戏里的模型路径是相对**站点根**的（Model/xxx.glb），
+       没有这条 base 就会去 /tools/portrait-preview/Model/ 找 → 404 → 每张卡都回退简笔画。 -->
+  <base href="/" />
+  <title>elite portrait preview</title>
+  <!-- 由根目录静态服务提供，所以 vendor / src 都用绝对路径 -->
+  <script type="importmap">
+  { "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/" } }
+  </script>
+</head>
+<body>
+  <div id="out">running…</div>
+  <script type="module" src="/tools/portrait-preview/probe.js"></script>
+</body>
+</html>

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { FX, HEAL_LINK } from '../core/constants.js';
+import { FX, HEAL_LINK, SHOP_COIN } from '../core/constants.js';
 
 // ============================================================
 // 打击感视觉层（档2 · 第四十一修）：曳光 / 命中火花 / 击杀碎片 / 枪口焰
@@ -589,6 +589,138 @@ export class HealPlusFx {
   }
 }
 
+// ---------------------------------------------------------------- 击杀金点（第六十五修 · 飞向枪上的商店币小框）
+//
+// 现场口径：「怪打死后要有金色光点飞到这里接着数字变动」——「这里」= 枪上那个「商店币」小框。
+//   · 起点 = 怪物被击杀的位置；终点 = **小框当帧的世界坐标**（枪拿在手上一直在动，所以必须追踪）；
+//   · 落点用**时间归一**（t/dur 走 0→1，位置 = 起点 → 当帧目标 的平滑插值）：
+//       好处 = 目标在动也**保证在 DUR 秒内精确落到目标上**，不需要「距离阈值」那种会漏判的收尾；
+//   · 池化：ORB.POOL 个槽；池满 → 把金额**并进最老的槽**（不 new、不增长，与 fx.js 其它效果同一套纪律）；
+//   · depthTest:false + renderOrder 998 ⇒ 不被怪/枪模型挡住（「我的钱飞过来了」必须看得见）。
+//
+// 为什么这里可以用 Sprite（本文件开头的纪律是「粒子别用 Sprite」）：
+//   Sprite 无法实例化，但金点要 ① 永远面向玩家 ② 各自独立淡出 ③ 同屏只有个位数
+//   —— 与 HEAL_LINK 的飞行加号同一类问题、同一套解法（池化 Sprite），不是「每帧几百粒」的粒子。
+
+const _coinTexCache = { tex: null };
+function coinTexture() {
+  if (_coinTexCache.tex) return _coinTexCache.tex;
+  const S = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.82)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = g;
+  x.fillRect(0, 0, S, S);
+  _coinTexCache.tex = new THREE.CanvasTexture(c);   // 画成白色：颜色由 SpriteMaterial.color 染（金）
+  _coinTexCache.tex.colorSpace = THREE.SRGBColorSpace;
+  return _coinTexCache.tex;
+}
+
+export class CoinOrbFx {
+  constructor(scene, cfg = {}) {
+    this.scene = scene;
+    this.cfg = cfg;
+    this.slots = [];
+    this._born = 0;                     // 递增序号：池满时按它找「最老的那颗」
+    this._tex = coinTexture();
+    this._to = new THREE.Vector3();     // 复用向量：每帧问一次小框位置
+  }
+
+  /** 还在飞的金点数（商店币小框据此判断「显示值可不可以落后」） */
+  get inflight() { let n = 0; for (const s of this.slots) if (s.active) n++; return n; }
+
+  _grow() {
+    const cfg = this.cfg || {};
+    const mat = new THREE.SpriteMaterial({
+      map: this._tex,
+      color: cfg.COLOR != null ? cfg.COLOR : 0xffd43b,
+      transparent: true, depthTest: false, depthWrite: false,
+    });
+    const sp = new THREE.Sprite(mat);
+    const size = cfg.SIZE || 0.13;
+    sp.scale.set(size, size, 1);
+    sp.visible = false;
+    sp.frustumCulled = false;
+    sp.renderOrder = 998;
+    this.scene.add(sp);
+    this.slots.push({ sp, from: new THREE.Vector3(), t: 0, dur: 0.55, amount: 0, active: false, born: 0 });
+  }
+
+  /**
+   * 从 from 飞一枚金点（世界坐标，立即拷贝；调用方可以放心传复用向量）。
+   * @param {THREE.Vector3} from   起点 = 怪物被击杀的位置
+   * @param {number} amount        这枚金点代表的金额（落地时交给调用方推数字）
+   * @returns {boolean} true = 起了新光点；false = 没飞（关着 / 没起点 / 金额为 0 / 池满已并进老槽）
+   */
+  cast(from, amount) {
+    const cfg = this.cfg || {};
+    const v = Math.round(amount || 0);
+    if (cfg.ENABLED === false || !from || v <= 0) return false;
+    const pool = Math.max(1, cfg.POOL | 0);
+    let slot = this.slots.find((s) => !s.active);
+    if (!slot) {
+      if (this.slots.length < pool) { this._grow(); slot = this.slots[this.slots.length - 1]; }
+      else {                            // 池满：金额并进最老的槽（钱不丢，只是共用一颗光点飞过去）
+        slot = this.slots.reduce((a, b) => (a.born <= b.born ? a : b));
+        slot.amount += v;
+        return false;
+      }
+    }
+    slot.from.copy(from);
+    slot.dur = Math.max(0.05, cfg.DUR || 0.55);
+    slot.t = 0;
+    slot.amount = v;
+    slot.born = ++this._born;
+    slot.active = true;
+    slot.sp.visible = true;
+    slot.sp.position.copy(from);
+    slot.sp.material.opacity = 1;
+    const size = cfg.SIZE || 0.13;
+    slot.sp.scale.set(size, size, 1);
+    return true;
+  }
+
+  /**
+   * 每帧推进（一帧只问一次终点，全部金点共用 —— 它们飞向的是同一个框）。
+   * @param {Function|null} targetOf 填出当帧终点；拿不到 → 该帧全部立刻落地（数字照变，不会卡账）
+   * @returns {number} 本帧落地的金额合计
+   */
+  update(dt, targetOf) {
+    const cfg = this.cfg || {};
+    const arc = cfg.ARC != null ? cfg.ARC : 0;
+    const base = cfg.SIZE || 0.13;
+    // 没有在飞的金点时连终点都不问（省掉每帧一次 getWorldPosition 的矩阵上行）—— 绝大多数帧都是这种
+    const to = (targetOf && this.inflight > 0) ? targetOf(this._to) : null;
+    let landed = 0;
+    for (const s of this.slots) {
+      if (!s.active) { if (s.sp.visible) s.sp.visible = false; continue; }
+      if (!to) { landed += s.amount; s.amount = 0; s.active = false; s.sp.visible = false; continue; }
+      s.t += dt;
+      const k = Math.min(1, s.t / s.dur);
+      const e = k * k * (3 - 2 * k);                       // smoothstep：起飞与落地两端都软
+      s.sp.position.lerpVectors(s.from, to, e);
+      s.sp.position.y += arc * Math.sin(Math.PI * k);       // 抛物线：中段最高
+      s.sp.material.opacity = 1 - k * k * k * k;            // 末段快速淡出（贴到牌子前先化掉）
+      const size = base * (1 + 0.35 * Math.sin(Math.PI * k));   // 中途鼓一下，像被"叮"地吸进去
+      s.sp.scale.set(size, size, 1);
+      if (k >= 1) { landed += s.amount; s.amount = 0; s.active = false; s.sp.visible = false; }
+    }
+    return landed;
+  }
+
+  /** 清空（切关 / 回菜单 / 重开）：在飞的金点直接消失 —— 金额早已计入真实值，显示值由 advanceShown 兜底对齐 */
+  clear() { for (const s of this.slots) { s.active = false; s.amount = 0; s.sp.visible = false; } }
+
+  dispose() {
+    for (const s of this.slots) { this.scene.remove(s.sp); s.sp.material.dispose(); }
+    this.slots.length = 0;
+  }
+}
+
 // ---------------------------------------------------------------- 汇总门面
 export class FxEffects {
   constructor(scene) {
@@ -600,6 +732,7 @@ export class FxEffects {
     this.healLink = new HealLinkFx(scene, HEAL_LINK);   // 第四十六修：治疗线 + 绿色加号（第四十九修起默认关，看 HEAL_LINK.LINES）
     this.healRing = new HealRingFx(scene, HEAL_LINK);   // 第四十九修：回血脉冲环（现场说看不到 → RING_ENABLED 默认 false）
     this.healPlusFx = new HealPlusFx(scene, HEAL_LINK); // 第四十九修返工：粉色飞行加号（当前表现）
+    this.coinOrbFx = new CoinOrbFx(scene, SHOP_COIN.ORB); // 第六十五修：击杀金点 → 枪上的商店币小框
   }
 
   /** 命中火花：colorHex 省略用配置里的默认暖金 */
@@ -621,13 +754,26 @@ export class FxEffects {
   /** 粉色飞行加号（第四十九修返工）：from = 术士位置，to = 被治疗的怪 */
   healPlus(from, to, colorHex) { this.healPlusFx.cast(from, to, colorHex); }
 
-  update(dt) {
+  /** 击杀金点（第六十五修）：from = 怪物被击杀的位置，amount = 这枚金点代表的金额 */
+  coinOrb(from, amount) { this.coinOrbFx.cast(from, amount); }
+
+  /** 还在飞的金点数（商店币小框据此决定显示值要不要落后于真实值） */
+  coinFlightCount() { return this.coinOrbFx.inflight; }
+
+  /**
+   * 每帧驱动全部效果。
+   * @param {Function|null} coinTarget 金点终点提供者：填一个 Vector3 = 枪上商店币小框的当帧世界坐标
+   *   （不传 / 拿不到 → 在飞的金点立刻落地，数字照变，不会卡账）
+   * @returns {number} 本帧落地的金点金额合计（调用方据此把商店币数字推上去）
+   */
+  update(dt, coinTarget = null) {
     this.sparks.update(dt);
     this.debris.update(dt);
     this.muzzleFx.update(dt);
     this.healLink.update(dt);
     this.healRing.update(dt);
     this.healPlusFx.update(dt);
+    return this.coinOrbFx.update(dt, coinTarget);
   }
 
   clear() {
@@ -638,6 +784,7 @@ export class FxEffects {
     this.healLink.clear();
     this.healRing.clear();
     this.healPlusFx.clear();
+    this.coinOrbFx.clear();
   }
 
   dispose() {
@@ -648,5 +795,6 @@ export class FxEffects {
     this.healLink.dispose();
     this.healRing.dispose();
     this.healPlusFx.dispose();
+    this.coinOrbFx.dispose();
   }
 }

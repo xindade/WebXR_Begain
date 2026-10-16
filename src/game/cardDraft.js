@@ -59,7 +59,8 @@ function wrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines, color) {
 }
 
 // 简笔画图标：统一线稿风格（圆头线、粗描边），按 key 画不同图案
-function drawSketchIcon(ctx, key, cx, cy, s, color) {
+//   （导出给 enemyPortrait 用：盾甲兵的盾牌抓帧失败时，左下角画这枚「盾」简笔画兜底）
+export function drawSketchIcon(ctx, key, cx, cy, s, color) {
   ctx.save();
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
@@ -455,9 +456,10 @@ function drawPriceText(ctx, W, text, color) {
 //   位置 / 朝向由调用方摆（商店关：与两列卡同口径，平行于地面的 Z 线）。
 //   set() 只在**文字或颜色真的变了**时重绘 canvas 并置 needsUpdate（每帧调也只上传一次贴图）。
 //   画布 512×160（aspect 3.2）＝ SHOP.BADGE_W / SHOP.BADGE_H（1.44 × 0.45 m，第五十九修放大），文字不会被拉伸。
+//   第三参 size = { w, h } 可覆盖物理尺寸（第六十四修：枪上的「商店币」小框用 0.24 × 0.075）。
 //   字号**自适应**：牌子物理宽度固定，而文字长短差得多（「剩余 60s」vs「技能区 · 商店币 3250」）——
 //   不缩就会溢出画布被裁掉，所以每次重绘都从 84px 起量宽、按 4px 递减到放得下为止。
-export function makeBadge(text, color) {
+export function makeBadge(text, color, size = null) {
   const W = 512, H = 160;
   const cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
@@ -501,8 +503,10 @@ export function makeBadge(text, color) {
   };
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
+  // 第六十四修：物理尺寸可覆盖（枪上的「商店币」小框比商店区域牌子小一号）；
+  //   画布仍是 512×160（宽高比 3.2）⇒ 传进来的 w/h 也要保持 3.2 才不会被拉伸。
   const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(SHOP.BADGE_W, SHOP.BADGE_H),
+    new THREE.PlaneGeometry((size && size.w) || SHOP.BADGE_W, (size && size.h) || SHOP.BADGE_H),
     new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
   );
   const set = (t, c) => {
@@ -528,6 +532,21 @@ export function makeBadge(text, color) {
  * @param {object} [opts] `{ portrait: boolean, image: CanvasImageSource|null, placeholder: string }`
  *   opts.portrait = true → 立绘版式（图区在上、文案下移）；不传则维持原「简笔画图标」版式。
  */
+// 标题自适应字号（第六十三修）：立绘版式标题固定 30px 且**不换行**，而画布只有 256 宽（内边 ~236）。
+//   现场把第 18 关 Boss 三张卡名从「未知 Boss ①」改成「未知 Boss 阶段一」⇒ 量出来会顶到卡框，
+//   故**超宽才**逐档缩到放得下（短名如「铁甲兵」「龙 Boss」字号一点不动，版式不变）。
+//   量宽要用当前字号，所以先在循环里设 font，退出时 font 恰等于返回的字号。
+export const TITLE_MAX_W = 220, TITLE_FONT_MAX = 30, TITLE_FONT_MIN = 20;
+export function titleFont(x, title) {
+  let size = TITLE_FONT_MAX;
+  for (;;) {
+    x.font = 'bold ' + size + 'px sans-serif';
+    if (x.measureText(String(title)).width <= TITLE_MAX_W || size <= TITLE_FONT_MIN) break;
+    size -= 2;
+  }
+  return size;
+}
+
 export function makeCardTexture(title, sub, color, iconKey, opts = {}) {
   // 竖版画布（aspect 256/456≈0.561 ≈ CARD.WIDTH/HEIGHT 0.4/0.71≈0.563，文字不会被拉伸）
   const W = 256, H = 456;
@@ -546,7 +565,8 @@ export function makeCardTexture(title, sub, color, iconKey, opts = {}) {
     titleY = priced ? 288 : 296;
     subY = priced ? 320 : 330;
     drawPortraitSlot(x, W, color, opts.image, iconKey, opts.placeholder, priced);
-    x.fillStyle = color; x.font = 'bold 30px sans-serif'; x.textAlign = 'center';
+    x.fillStyle = color; x.textAlign = 'center';
+    x.font = 'bold ' + titleFont(x, title) + 'px sans-serif';
     x.fillText(title, W / 2, titleY);
     x.font = (priced ? 22 : 20) + 'px sans-serif';
     wrapText(x, sub, W / 2, subY, W - 44, priced ? 28 : 25, priced ? 3 : 4, '#fff');
@@ -554,7 +574,8 @@ export function makeCardTexture(title, sub, color, iconKey, opts = {}) {
     // 顶部简笔画图标（带价位时缩小一档上移，给底部价位让位）
     drawSketchIcon(x, iconKey, W / 2, priced ? 138 : 150, priced ? 110 : 120, color);
     // 中部标题
-    x.fillStyle = color; x.font = 'bold 30px sans-serif'; x.textAlign = 'center';
+    x.fillStyle = color; x.textAlign = 'center';
+    x.font = 'bold ' + titleFont(x, title) + 'px sans-serif';
     titleY = priced ? 288 : 300;
     subY = priced ? 320 : 350;
     x.fillText(title, W / 2, titleY);
@@ -629,7 +650,8 @@ export class CardDraft {
     this._spendScore = state.spendScore || ((c) => { if (state.game) state.game.score -= c; });
     this.active = true;
     this.group.visible = true;
-    this.timer = CARD.DURATION;
+    // 第六十修：卡片存在时长可由外部覆盖（教学关的单张教学卡 12s 自动获得，见 content/tutorial.js）
+    this.timer = (Number.isFinite(state.duration) && state.duration > 0) ? state.duration : CARD.DURATION;
     this.refreshCost = CARD.REFRESH_BASE_COST;
     this.resolving = false;
     this.resolveT = 0;
@@ -649,8 +671,17 @@ export class CardDraft {
 
     const picks = [];
 
-    // 固定技能卡模式（第三关）：只出指定技能卡（红色），不随机、不出刷新卡
-    if (this._state.fixedSkills && this._state.fixedSkills.length) {
+    // 显式卡表（第六十修 · 教学关）：状态里直接给卡定义，不查池也不随机 ——
+    //   教学关要一张固定文案的「连杀加速」教学卡，它不是成长项（apply 为空，见 game._enterTutorialCard）。
+    if (Array.isArray(this._state.cards) && this._state.cards.length) {
+      for (const c of this._state.cards) {
+        picks.push({
+          kind: c.kind || 'attr', def: c, rarity: c.rarity || 'gold',
+          label: c.label, sub: c.desc || '', color: c.color, icon: c.icon || null,
+        });
+      }
+    } else if (this._state.fixedSkills && this._state.fixedSkills.length) {
+      // 固定技能卡模式（第三关）：只出指定技能卡（红色），不随机、不出刷新卡
       for (const id of this._state.fixedSkills) {
         const s = SKILL_CARDS.find(c => c.id === id);
         if (!s) continue;
@@ -658,7 +689,7 @@ export class CardDraft {
       }
     } else {
       // 普通/Boss/机制关：从卡池抽 3 张不重复的属性卡（无刷新卡）
-      const pool = availableAttributes(this._state.player, this._state.pool || undefined);
+      const pool = availableAttributes(this._state.player, this._state.pool || undefined, !!this._state.strictPool);
       const chosen = pickCards(pool, this._guarantee);   // 必出卡优先（支持单卡 / 数组）
       for (const attr of chosen) {
         picks.push({

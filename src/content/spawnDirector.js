@@ -311,6 +311,28 @@ export function scriptEventTimes(ev, from, to) {
   return out;
 }
 
+/**
+ * 纯函数：脚本里最后一个事件的时间点（秒）。
+ *
+ * <p>用途（第六十三修 · 现场「只打死忍者精英而非末尾精英也能通关」）：
+ *    关卡收尾判定必须等**脚本的全部事件都走完**。反例正是现场那条：
+ *    末尾横幅闸门（_holdClimaxBanner）把脚本时钟冻住 → 玩家在关卡时长（如 60s）之后才清完场上的精英
+ *    → 闸门一放行，「时间到 + 场上清空」当场成立 → 关卡在末尾批生成之前就被判通关。
+ *
+ * <p>无限循环事件（`every` 且没写 `until`）**不计入**结束时间：它是「一直有效」的滴流，
+ *    让它无限延长关卡会变成软锁。
+ */
+export function scriptEndTime(script) {
+  if (!script || !Array.isArray(script.events)) return 0;
+  let end = 0;
+  for (const ev of script.events) {
+    if (ev.every && ev.until == null) continue;          // 无限循环：不参与「脚本走完」的判定
+    const t = (ev.every ? ev.until : ev.t) || 0;
+    if (t > end) end = t;
+  }
+  return end;
+}
+
 /** 纯函数：本关脚本里的精英事件按时间顺序（供调度器与日志） */
 export function eliteEvents(n) {
   const s = scriptFor(n);

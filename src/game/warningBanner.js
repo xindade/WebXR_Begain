@@ -54,6 +54,65 @@ export function midWarningDue(elapsed, seconds, alreadyWarned) {
   return Number(elapsed) >= total * MID_WARNING.AT;
 }
 
+/**
+ * 横幅/提示板文案折行（纯函数，便于单测）。
+ *   第六十一修（现场）：「横幅提示有时候超出显示范围了，分两行更好读」；
+ *   第六十二修（现场）：教学提示板要放得下更长的句子 ⇒ 支持 maxLines 行（默认 2，提示板用 3）。
+ *   顺序永远是「**先折行、再降字号**」：折得下就不动字号，折不下才一档一档往下缩，保证顶不出卡片。
+ *   中文没有空格，故按**字符**折：见 _wrapIntoLines。
+ * @param {{font:string, measureText:(s:string)=>{width:number}}} c 画布上下文（单测可传记录桩）
+ * @param {string} text 文案
+ * @param {{maxW?:number, size?:number, minSize?:number, maxLines?:number}} [opts]
+ * @returns {{lines:string[], size:number}} 折行结果 + 最终字号（调用方据此设 font 与行基线）
+ */
+export function wrapBannerText(c, text, opts = {}) {
+  const s = String(text == null ? '' : text);
+  const maxW = opts.maxW > 0 ? opts.maxW : CANVAS_W - 80;
+  const size0 = opts.size > 0 ? opts.size : 88;
+  const minSize = opts.minSize > 0 ? opts.minSize : 44;
+  const maxLines = (opts.maxLines | 0) > 0 ? (opts.maxLines | 0) : 2;
+  const width = (t) => { const m = c.measureText(t); return (m && m.width) || 0; };
+  for (let size = size0; ; size -= 4) {
+    c.font = 'bold ' + size + 'px sans-serif';
+    const lines = _wrapIntoLines(s, maxW, maxLines, width);
+    let widest = 0;
+    for (const l of lines) widest = Math.max(widest, width(l));
+    // 判据两条都要满足：行数达标 **且** 每行都没超宽；退化到 minSize 时按现状返回（绝不死循环）
+    if ((lines.length <= maxLines && widest <= maxW) || size <= minSize) return { lines, size };
+  }
+}
+
+/**
+ * 折成 ≤ maxLines 行：
+ *   在 [1, maxW] 里**二分找最小的行宽预算**，使「按预算按字贪心折行」的行数 ≤ maxLines，再用它折一次。
+ *   为什么取**最小**可行预算：预算越小每行塞得越少 ⇒ 各行长度越接近（避免「一行挤爆、一行空着」）。
+ *   找不到可行预算（这段文字在 maxLines 行里就是放不下）→ 退化成「按最宽可用宽度贪心」，
+ *   行数会超标，交给外层降字号继续兜底。
+ */
+function _wrapIntoLines(s, maxW, maxLines, width) {
+  if (s.length < 2 || maxLines <= 1) return [s];
+  if (width(s) <= maxW) return [s];
+  let lo = 1, hi = Math.ceil(maxW), best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (_greedyLines(s, mid, width).length <= maxLines) { best = mid; hi = mid - 1; } else lo = mid + 1;
+  }
+  return _greedyLines(s, best > 0 ? best : maxW, width);
+}
+
+/** 按**字符**贪心折行（中文没有空格，只能按字切）；budget = 单行允许的最大宽度。 */
+function _greedyLines(s, budget, width) {
+  const out = [];
+  let cur = '';
+  for (const ch of s) {          // for..of 按**码点**迭代，emoji/生僻字不会被劈成半个
+    const next = cur + ch;
+    if (cur && width(next) > budget) { out.push(cur); cur = ch; }
+    else cur = next;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
 export class WarningBanner3D {
   constructor(scene, camera) {
     this.scene = scene;
@@ -107,6 +166,9 @@ export class WarningBanner3D {
     this._t = 0;
     this.sprite.visible = true;
   }
+
+  /** 横幅是否还在屏上（第六十修 · 教学关用它排队：上一块收掉再弹下一块，避免互相覆盖） */
+  get showing() { return this._t !== Infinity; }
 
   update(dt) {
     if (this._t === Infinity) return;
@@ -165,11 +227,21 @@ export class WarningBanner3D {
       c.fillStyle = MID_WARNING.COLOR;
     }
 
+    // 文案：先折行（≤2 行）再整体居中；两行仍放不下就降字号 —— 第六十一修（现场「顶出卡片、又不好读」）
+    const _tri = 96 + 52 + 16;                       // 左右警示三角：中心 96 ± 52 + 余量
+    const { lines, size } = wrapBannerText(c, text, { maxW: CANVAS_W - _tri * 2, size: 88, minSize: 46 });
     c.fillStyle = '#ffe9c9';
-    c.font = 'bold 88px sans-serif';
+    c.font = 'bold ' + size + 'px sans-serif';
     c.textAlign = 'center';
     c.textBaseline = 'middle';
-    c.fillText(text, CANVAS_W / 2, CANVAS_H / 2 + 4);
+    this._fillLines(c, lines, CANVAS_W / 2, CANVAS_H / 2 + 4, size);
+  }
+
+  /** 居中写 1~2 行文案：单行落在 cy，两行以 cy 为中心上下分开（折行后不许再压边框）。 */
+  _fillLines(c, lines, cx, cy, size) {
+    if (lines.length <= 1) { c.fillText(lines[0], cx, cy); return; }
+    const lh = size * 1.05;
+    for (let i = 0; i < lines.length; i++) c.fillText(lines[i], cx, cy - lh / 2 + i * lh);
   }
 
   // —— 回血提示（第五十修）—— 与警告同构的卡片，换成绿色 + 左侧一枚十字
@@ -186,11 +258,13 @@ export class WarningBanner3D {
     c.fillRect(cx - arm, cy - thick / 2, arm * 2, thick);
     c.fillRect(cx - thick / 2, cy - arm, thick, arm * 2);
 
+    // 文案：同警告样式走折行（左侧十字占住 cx=108 ± 34 → 可用宽度从 200 起算）
+    const { lines, size } = wrapBannerText(c, text, { maxW: CANVAS_W - 240, size: 88, minSize: 46 });
     c.fillStyle = HEAL_BANNER.TEXT_COLOR;
-    c.font = 'bold 88px sans-serif';
+    c.font = 'bold ' + size + 'px sans-serif';
     c.textAlign = 'center';
     c.textBaseline = 'middle';
-    c.fillText(text, CANVAS_W / 2 + 40, CANVAS_H / 2 + 4);
+    this._fillLines(c, lines, CANVAS_W / 2 + 40, CANVAS_H / 2 + 4, size);
   }
 
   // —— 关卡标题卡（第四十九修）——

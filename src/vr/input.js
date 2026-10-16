@@ -50,7 +50,7 @@ export class InputManager {
     this._fireRateMul = 1;                    // 射速倍率（旧模型遗留，保留兼容）
     this._fireRate = 2;                       // 当前射速（发/秒）：默认 2，卡 +2/上限 20（cards.ATTRIBUTE_STATS），切关由 game 用 player.fireRate 复位
     this._skillQueued = false;
-    this._creditQueued = 0; // 测试积分待消费值（按测试键 +TEST.ADD_SCORE，由 game 消费后加分）
+    this._creditQueued = 0; // 测试能量待消费值（按测试键 +TEST.ADD_SCORE，由 game 消费后加分）
 
     // handedness -> { controller, prevTrigger, prevGrip }
     this._hands = { left: null, right: null };
@@ -69,7 +69,7 @@ export class InputManager {
       if (e.target?.tagName === 'BUTTON') return;
       this.keys.add(e.code);
       if (e.code === 'KeyF' && !e.repeat) this._skillQueued = true;
-      if (e.code === 'KeyG' && TEST.ENABLED && TEST.DESKTOP_KEY_G) this._creditQueued = TEST.ADD_SCORE; // 测试积分（桌面，等价于 VR 左手 X）
+      if (e.code === 'KeyG' && TEST.ENABLED && TEST.DESKTOP_KEY_G) this._creditQueued = TEST.ADD_SCORE; // 测试能量（桌面，等价于 VR 左手 X）
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.reset());
@@ -359,7 +359,7 @@ export class InputManager {
       } else if (hand === 'left') {
         // 左手扳机：记录扳机边缘状态
         if (ctrl) ctrl.userData.prevTrigger = trigger;
-        // 左手 X 键（buttons[4]，即「右:A / 左:X」的 X）边缘按下 → 测试积分（仅 TEST.ENABLED 时）
+        // 左手 X 键（buttons[4]，即「右:A / 左:X」的 X）边缘按下 → 测试能量（仅 TEST.ENABLED 时）
         if (ctrl) {
           const xNow = btnA;
           if (xNow && !ctrl.userData.prevX && TEST.ENABLED && TEST.VR_BUTTON_LEFT_X && !SKILL_HINT.DEBUG) this._creditQueued = TEST.ADD_SCORE;
@@ -475,6 +475,6 @@ export class InputManager {
   // 技能触发（桌面 F / VR 右手握柄）：返回本帧是否请求释放「选中技能」
   consumeSkill() { const v = this._skillQueued; this._skillQueued = false; return v; }
 
-  // 测试积分触发（桌面 G / VR 左手 X）：返回本帧待加的积分数（0=无），消费后清零
+  // 测试能量触发（桌面 G / VR 左手 X）：返回本帧待加的能量数（0=无），消费后清零
   consumeCredit() { const v = this._creditQueued; this._creditQueued = 0; return v; }
 }

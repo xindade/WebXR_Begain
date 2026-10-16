@@ -40,7 +40,7 @@ test('第 3/9/15 关是商店关：kind=shop、名字仍是「魔术空间」、
 
 test('商店关参数：60 秒倒计时 / 技能 1000 / 强化 1500 / 道具 1000×等级 / 刷新 200 起', () => {
   assert.equal(SHOP.ENABLED, true);
-  assert.equal(SHOP.COUNTDOWN, 60);
+  assert.equal(SHOP.COUNTDOWN, 100, '第六十三修：现场「60 秒不够选择和看信息」→ 100 秒');
   assert.equal(SHOP.SKILL_PRICE, 1000);
   assert.equal(SHOP.UPGRADE_PRICE, 1500);
   assert.equal(SHOP.ITEM_BASE_PRICE, 1000);
@@ -275,7 +275,7 @@ test('商店关 · 结束/清场后入口不可再打（finished 幂等、group 
 
 // ---------- ④ Game 侧（第五十五修）道具数值/钩子 ----------
 
-test('商店币入账：击杀积分等额；「以战养战」按等级加成', () => {
+test('商店币入账：击杀能量等额；「以战养战」按等级加成', () => {
   const g = Object.create(Game.prototype);
   g.shopCoin = 0; g._itemLv = {}; g.hud = { last: -1, setShopCoin(v) { this.last = v; } };
   Game.prototype._addShopCoin.call(g, 30);

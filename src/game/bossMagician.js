@@ -269,6 +269,11 @@ export class MagicianBoss {
 
     if (phase === 'laser') {
       // 第一阶段：激光机制保留（召唤统一由 _updateSummonPool 维护，精英怪 = 盾兵怪）
+      // 第六十三修：进激光阶段就弹预警横幅（走 game._showBanner → 通用一次性横幅，默认 4s）。
+      //   为什么挂在这里：这是「每次进激光」的唯一真值点（含 laser→glass→nine→laser 循环回来那次），
+      //   不需要在 game.update 里另做边沿检测；banner 回调由 game._loadLevel 注入 waves.hooks。
+      const warn = MAGICIAN_BOSS.LASER_WARN;
+      if (warn && warn.ENABLED !== false && warn.TEXT) this.waves?.hooks?.banner?.(warn.TEXT);
       if (this._modelRoot) this._modelRoot.rotation.y = 0;            // 回正前：复位朝向
       this._laser = new BossLaserGroup(this.scene, this.getPlayerPos, this.damagePlayer, MAGICIAN_BOSS.LASER_GROUP);
     } else if (phase === 'glass') {

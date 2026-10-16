@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import { isTutorialLevel } from '../content/tutorial.js';   // 第六十修：教学关（第 1 关）判定
 import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM, SPAWN_RING, SPAWN_LAYER, ELITE_TUNING, levelSecondsOf, levelTimeScale } from '../core/constants.js';
-import { scriptFor, scriptEventTimes, layerOfType, comboTotal, DIR_TEXT, FUSE, LAYER, isClimaxEvent, isClimaxGateBanner, pickFuseAbsorb, climaxEliteHp, eliteTravelSpeed } from '../content/spawnDirector.js';
+import { scriptFor, scriptEventTimes, scriptEndTime, layerOfType, comboTotal, DIR_TEXT, FUSE, LAYER, isClimaxEvent, isClimaxGateBanner, pickFuseAbsorb, climaxEliteHp, eliteTravelSpeed } from '../content/spawnDirector.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { ELITE_SCHEDULE, ELITE_WINDOW, ELITE_BASE_HP, RANGED_DPS_HP } from '../content/eliteMonsters.js';
 import { isBoss } from '../content/levels.js';
@@ -136,6 +137,11 @@ export class WaveManager {
     this._trashMul = (this._script && this._script.trashMul) || 1;
     this._trashMulUntil = (this._script && this._script.trashMulUntil) || 0;
     this._dripStopped = false;   // 第四十七修：每关复位（金点批清空后才置 true）
+
+    // 第六十修 · 教学关（第 1 关）：出怪全部交给 game/tutorial.js（按「打完/超时」推进），
+    //   故让位掉本关编排（SPAWN_SCRIPT[1]）与 DPS 滴流 —— 否则 33s 会自己融合出一只铁甲兵。
+    //   ⚠ 旧编排数据保留：TUTORIAL.ENABLED=false 时这里不生效，第 1 关回到原样（唯一回退开关）。
+    if (isTutorialLevel(level.n)) { this._script = null; this._dripStopped = true; }
     this._elitePlan = this._script ? null : (ELITE_SCHEDULE[level.n] || null);
     this._eliteFired = this._elitePlan ? { early: false, mid: false, late: false } : null;
     // 重置脸谱 Boss 状态（防止上一关残留引用）
@@ -401,7 +407,13 @@ export class WaveManager {
   }
 
   // 本关倒计时秒数（第四十一修）：按关卡取值，取代原来那份全局常量（原 60s 写死在 SPAWN_RING 与 NORMAL_TEST 里各一份）
-  _stopAt() { return levelSecondsOf(this.level ? this.level.n : 0); }
+  // 第六十修：教学关返回 Infinity —— 教学关没有倒计时（否则 40s 一到会在教学半路直接切下一关）。
+  //   Infinity 同时把 _updateDpsSpawn 的「时间到且场上清空 → 通关」判据永久关掉（教学关由脚本收尾）。
+  _stopAt() {
+    const n = this.level ? this.level.n : 0;
+    if (isTutorialLevel(n)) return Infinity;
+    return levelSecondsOf(n);
+  }
 
   // 精英波时间窗：随本关时长等比前移（1~6 关 −20s → 三期一起前移 1/3）
   _eliteWindows() {
@@ -621,7 +633,7 @@ export class WaveManager {
   set onHealPulse(fn) { this.balloons.onHealPulse = fn; }
   get onHealPulse() { return this.balloons.onHealPulse; }
 
-  // 清掉场上全部非精英（不结算积分 —— 它们是被「吸收」进融合光点的）
+  // 清掉场上全部非精英（不结算能量 —— 它们是被「吸收」进融合光点的）
   _clearTrash() {
     for (let i = this.balloons.list.length - 1; i >= 0; i--) {
       const b = this.balloons.list[i];
@@ -635,7 +647,7 @@ export class WaveManager {
     }
   }
 
-  // 清掉场上残留的精英（不结算积分）—— 第四十九修三轮：金点批收尾时不许再留精英，
+  // 清掉场上残留的精英（不结算能量）—— 第四十九修三轮：金点批收尾时不许再留精英，
   //   与 _fuseSpawn 的「末尾批吸收场上精英」配套（那条管出现时，这条管收尾时）。
   _clearElites() {
     for (let i = this.balloons.list.length - 1; i >= 0; i--) {
@@ -731,7 +743,7 @@ export class WaveManager {
       //   不足的再从最近传送门补光点（见下面那段）。精英优先、离汇聚点近的先吃。
       for (const b of pickFuseAbsorb(this.balloons.list, FUSE.COUNT, { center: fusePos, climax: climax2 })) {
         origins.push(b.mesh.position.clone());
-        this.balloons.remove(b);        // 直接移除 = 不结算积分（用户确认第 3 条）
+        this.balloons.remove(b);        // 直接移除 = 不结算能量（用户确认第 3 条）
       }
     }
     // 不足 → 从最近传送门补足（用户：「如果光点小于5个，则从传送门新增光点」）
@@ -811,6 +823,28 @@ export class WaveManager {
         }
       }
     }
+  }
+
+  // 本关的编排脚本是否还有没走完的事件（第六十三修 · 见 _canClear）
+  //   ⚠ 用 _scriptElapsed（脚本时钟）而不是 elapsed：末尾横幅闸门冻住的正是脚本时钟。
+  _scriptPending() {
+    if (!this._script) return false;
+    return this._scriptElapsed < scriptEndTime(this._script) - 1e-6;
+  }
+
+  /**
+   * 关卡收尾判据（第六十三修）。
+   *
+   * <p>修的是现场那条：「有时候只打死忍者精英而非末尾精英也能通关」。
+   *    根因 = 「时间到 + 场上清空」这个判据**不看脚本进度**：
+   *      末尾横幅闸门因场上还有精英（如 35s 那批忍者）把脚本时钟冻在 45s，
+   *      玩家一直杀到关卡时长（60s）之后才把精英清完 → 闸门放行那一帧场上正好空了
+   *      ⇒ 关卡立刻判通关，后面的「前方精英来袭」横幅、清场融合、末尾批**根本没生成**。
+   *    所以补两条：① 脚本事件全部走完；② 没有待结算的末尾批（金点观察队列为空）。
+   *    两者都不会软锁：脚本时间轴有限（scriptEndTime），观察队列最迟 8s 自己丢弃（见 _updateEliteWatch）。
+   */
+  _canClear() {
+    return !this._climaxHeld && !this._scriptPending() && this._eliteWatch.length === 0;
   }
 
   // 批次观察（第四十九修改为按「批」）：本批先出现、随后清空 → 触发金点（hooks.goldToCards）
@@ -1418,7 +1452,7 @@ export class WaveManager {
 
     // 时间窗结束且场上清空（含飞行光点）→ 通关
     //   玩家杀掉最后一只精英的那一帧会被直接判「本关清空」，末尾融合/横幅全被吞掉。
-    if (this.elapsed >= stopAt && this._active === 0 && !this._climaxHeld) this.cleared = true;
+    if (this.elapsed >= stopAt && this._active === 0 && this._canClear()) this.cleared = true;
   }
 
   // 每 5 秒检查：内圈存活数 → RING_TABLE → 内圈系数 → 外圈目标
@@ -1519,8 +1553,8 @@ export class WaveManager {
           this.spawnTimer = plan.cooldown;
         }
       }
-      // 停止补怪后场上清空 → 通关
-      if (this.elapsed >= stopAt && this._active === 0) {
+      // 停止补怪后场上清空 → 通关（第六十三修：还要等脚本走完 + 末尾批结算，见 _canClear）
+      if (this.elapsed >= stopAt && this._active === 0 && this._canClear()) {
         this.cleared = true;
       }
       return;
@@ -1536,7 +1570,7 @@ export class WaveManager {
         this.spawnTimer = NORMAL_TEST.spawnCooldown;
       }
     }
-    if (this.elapsed >= stopAt && this._active === 0) {
+    if (this.elapsed >= stopAt && this._active === 0 && this._canClear()) {
       this.cleared = true;
     }
   }

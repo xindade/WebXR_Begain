@@ -29,7 +29,7 @@ export class Player {
     this.shootCooldown = g.cooldown;   // 射击冷却 ms（实际节流在 input.js，player 仅用于存档快照）
     this.fireRate = 2;                 // 射速基线（发/秒）：笔记 2 发/秒，卡 +2/次，上限 20（见 cards.ATTRIBUTE_STATS；真实节流在 input）
     this.shotCount = g.shotCount;      // 每发子弹的弹道数（fire 确定性扇形）
-    this.skillCost = 500;              // 技能消耗积分（笔记默认 500，卡 -100/次，下限 100）
+    this.skillCost = 500;              // 技能消耗能量（笔记默认 500，卡 -100/次，下限 100）
     this.skillDamageMul = 1;           // 技能伤害倍率（笔记默认 ×1，卡 +1/次，上限 ×5）
     this.regen = 0;                    // 自我修复 %/s（笔记默认 0，卡 +2/次，上限 10%）
     this.forceSingleShot = false;      // 抽卡等需要精确选靶时强制单发（由外部置位）

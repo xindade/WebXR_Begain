@@ -4,7 +4,7 @@
 //          机制关(laser：第3/9/15关) → 'laser'；Boss 关(第6/12/18关) → 'boss'。
 // 全部由代码实时合成，替换原 music/*.wav 文件 BGM。语音(_pendingOpenVoice)仍走文件 playVoice。
 
-import { BGM_VOLUME, HIT_FEEDBACK, SFX_GAIN } from '../core/constants.js'; // 各关卡 BGM 音量倍率（normal/laser/boss），可经 userConfig 热调
+import { BGM_VOLUME, HIT_FEEDBACK, SFX_GAIN, DANGER_ALARM } from '../core/constants.js'; // 各关卡 BGM 音量倍率（normal/laser/boss）+ 内圈报警，均可经 userConfig 热调
 
 // ===== 关卡和弦 / 贝斯 / 音序（MIDI 音高；A4=69=440Hz）=====
 const NORMAL_CHORDS = {
@@ -826,6 +826,46 @@ export class AudioManager {
       g.gain.exponentialRampToValueAtTime(0.001, at + 0.3);
       o.connect(g).connect(this.sfxBus);
       o.start(at); o.stop(at + 0.32);
+    }
+  }
+
+  // 第六十一修 · 内圈报警音（game._updateDangerAlarm 调）：两声极短促的「滴·滴」。
+  //   设计意图：只在「小怪已进内圈、头顶爆字开始闪红」时响，是**唯一提醒玩家回头清场**的声音。
+  //   · 同拍只响一次 —— 由 DangerAlarm 保证每区只让最近的一只发声、全场共用一个节拍，
+  //     否则 4 只怪同时逼近就是 4 声叠在一起，玩家分不清又烦（现场口径）。
+  //   · 越近音高越高（freq 由 DANGER_ALARM.FREQ + PITCH_NEAR × 逼近度算好传进来）；
+  //   · 按扇区做左右声像（pan），一听就知道该往哪边看。
+  playDangerAlarm(opts = {}) {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const C = DANGER_ALARM || {};
+    const t = ctx.currentTime;
+    const freq = opts.freq > 0 ? opts.freq : (C.FREQ > 0 ? C.FREQ : 1180);
+    const vol = opts.gain != null ? opts.gain : (C.GAIN != null ? C.GAIN : 0.16);
+    const pulses = (C.PULSES | 0) > 0 ? (C.PULSES | 0) : 2;
+    const gap = C.PULSE_GAP > 0 ? C.PULSE_GAP : 0.09;
+    const dur = C.PULSE_DUR > 0 ? C.PULSE_DUR : 0.055;
+    // 声像：StereoPanner 是可选 API（老浏览器 / 测试桩没有）→ 拿不到就退化成居中，不影响发声
+    let out = this.sfxBus;
+    try {
+      if (opts.pan && typeof ctx.createStereoPanner === 'function') {
+        const p = ctx.createStereoPanner();
+        p.pan.value = Math.max(-1, Math.min(1, opts.pan));
+        p.connect(this.sfxBus);
+        out = p;
+      }
+    } catch (e) { out = this.sfxBus; }
+    for (let i = 0; i < pulses; i++) {
+      const at = t + i * (dur + gap);
+      const o = ctx.createOscillator();
+      o.type = 'square';
+      o.frequency.setValueAtTime(freq, at);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(vol, at + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+      o.connect(g).connect(out);
+      o.start(at); o.stop(at + dur + 0.01);
     }
   }
 

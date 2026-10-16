@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { TEST } from '../core/constants.js';
 import { Player } from './player.js';
-import { BalloonManager } from './balloons.js';
+import { BalloonManager, isBombMarkTarget } from './balloons.js';
 import { ProjectileManager } from './projectiles.js';
 import { Vignette } from '../vr/vignette.js';
 import { BulletManager } from './bullets.js';
@@ -26,9 +26,14 @@ import { ENEMY_TYPES } from '../content/enemies.js';
 import { scriptFor } from '../content/spawnDirector.js';
 import { ELITE_SCHEDULE } from '../content/eliteMonsters.js';
 import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
-import { ATTR_TYPES, SKILL_CARDS } from '../content/cards.js';
+import { ATTR_TYPES, SKILL_CARDS, attrPoolForLevel } from '../content/cards.js';
+import { isTutorialLevel, TUTORIAL } from '../content/tutorial.js';   // 第六十修：教学关（第 1 关）脚本数据
+import { TutorialRunner } from './tutorial.js';                       // 第六十修：教学关运行态
 import { warFeedMul, lifestealChance, strongHunterMul, mibCooldown } from '../content/shopItems.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO, HIT_FEEDBACK, FX, MID_WARNING, RAPID_FIRE, levelSecondsOf, CARD, GOLD_ORB, ELITE_FEEDBACK, HEAL_LINK, LEVEL_TITLE, HEAL_ON_DEATH, DRAGON_CHEST, SHOP } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO, HIT_FEEDBACK, FX, MID_WARNING, RAPID_FIRE, levelSecondsOf, CARD, GOLD_ORB, ELITE_FEEDBACK, HEAL_LINK, LEVEL_TITLE, HEAL_ON_DEATH, DRAGON_CHEST, SHOP, BOMB_LABEL, DANGER_ALARM } from '../core/constants.js';
+import { basicVoiceNeed } from './basicVoice.js';   // 第六十四修：基础怪「成群」门槛（纯函数）
+import { DangerAlarm } from './dangerAlarm.js';   // 第六十一修：内圈报警（滴滴提醒清场）
+import { TutorialHintBoard } from './tutorialHint.js';   // 第六十二修：教学关常驻提示板（场地前上方）
 import { DamageNumbers } from './damageNumbers.js';
 import { FxEffects } from './fx.js';
 import { WarningBanner3D, midWarningDue } from './warningBanner.js';  // 第四十二修：中场预警横幅
@@ -113,8 +118,21 @@ export class Game {
     this.audio = null; // 由 main 注入
     this.input = null; // 由 main 注入
 
+    // 第六十修 · 教学关（第 1 关）：运行态实例 + 「散射技能免费」标记（_loadLevel 按关重建/复位）
+    this.tutorial = null;          // TutorialRunner | null
+    this._tutorialFreeSkill = false;
+
     this.player = new Player(world.scene, this.rig);
     this.balloons = new BalloonManager(world.scene);
+    // 第六十一修 · 内圈报警：小怪进内圈（头顶爆字闪红）时「滴滴」提醒玩家回头清场。
+    //   规则见 game/dangerAlarm.js（每区只让最近的一只发声 / 全场 2s 一个节拍 / 按方位轮转）。
+    this.dangerAlarm = new DangerAlarm(DANGER_ALARM);
+    this._alarmList = [];      // 复用的候选数组（每帧 length=0 重填，避免 GC）
+    // 第六十二修 · 教学关常驻提示板（场地前上方，"随时能读"；只在教学关显示）。
+    //   在**构造期**就建好并加进 scene：这样它永远在 _loadLevel 的 _sceneBefore 快照里，
+    //   不会被开场穿云当成「本关新物体」从 0 淡入（淡入只由它自己的 FADE_IN 控制）。
+    this.tutorialHint = new TutorialHintBoard(world.scene);
+    this._skillCasts = 0;      // 本关放过几次技能（教学精英「先暂停移动」的解除判据之一）
     this.projectiles = new ProjectileManager(world.scene); // 远程投射物管理器（手里剑 / 鬼火 / 墨汁）
     this.balloons.setProjectileManager(this.projectiles);  // 让气球系统驱动「同种怪里最近者投掷」
     this.vignette = new Vignette(world.camera);            // 命中着色层（相机子节点，随头动）
@@ -212,12 +230,15 @@ export class Game {
     this._chestDone = false;      // 本关宝箱窗口是否已经开过（_clearRoundExtras 复位）
     this._buddhaQueue = [];       // 如来神掌分帧结算队列（第四十二修，见 _drainBuddhaQueue）
     this.enemyFreeze = 0;        // 定身咒计时(s)：>0 时敌人暂停行动（Boss 仅前 50% 时长）
-    this.selectedSkill = 'scatter'; // 当前装备技能：前期默认「积分散射」；第三关选卡后可替换为 lightsaber/freeze/buddha，左手柄 grip 触发
+    this.selectedSkill = 'scatter'; // 当前装备技能：前期默认「能量散射」；第三关选卡后可替换为 lightsaber/freeze/buddha，左手柄 grip 触发
     this.skillCooldown = 0;      // 技能释放冷却计时(s)：>0 时握柄无效，HUD 显示剩余
     // —— 第五十五修 · 商店关（第3/9/15关，替代原激光机制关）——
     this.shopDraft = null;       // ShopDraft 实例（每进一次商店关新建，见 _enterShop）
     this.shopMode = false;       // 当前是否处于商店关
-    this.shopCoin = 0;           // 商店币：击杀积分等额累积；一局（1→18 关走完）清零，与 score 完全独立
+    this.shopCoin = 0;           // 商店币：击杀能量等额累积；一局（1→18 关走完）清零，与 score 完全独立
+    // 第六十五修：击杀金点（fx.CoinOrbFx）的终点 = 枪上「商店币」小框的当帧世界坐标
+    //   （小框没建 / 没挂上 → 返回 null ⇒ 在飞的金点立刻落地，数字照变，不会卡账）
+    this._coinTarget = (out) => (this.rightGun ? this.rightGun.coinBadgeWorldPos(out) : null);
     this._itemLv = {};           // 本局道具等级 { itemId: level }（可重复购买升级）
     this._candyCount = 0;        // 串糖葫芦：全局累计已发射弹数（每满 10 发追加穿甲弹）
     this._mibUntil = 0;          // 多才是王道：临时弹道生效截止时刻（_gameTime 基准）
@@ -933,6 +954,9 @@ export class Game {
     this.audio?.stopAllMedia();
     const lv = LEVELS[i];
     this.normalTest = false; // 默认非测试；仅普通关且 NORMAL_TEST.enabled 时被 startLevel 翻为 true
+    // 第六十修：教学关重建流程（死亡重开也走这里 → 教学从头再来），其它关一律清空
+    this._tutorialFreeSkill = false;
+    this.tutorial = isTutorialLevel(lv.n) ? new TutorialRunner(this) : null;
     // 离开上一关时清理激光关实例与玻璃网格
     if (this.laser) { this.audio?.stopLaserHum('level'); this.laser.dispose(); this.laser = null; }
     if (this.grid) { this.grid.dispose(); this.grid = null; }
@@ -954,6 +978,9 @@ export class Game {
     this.fx.clear();            // 档2：防跨关残留曳光/火花/碎片/枪口焰（切关瞬间的残留最显眼）
     this.midWarning?.hide();    // 第四十二修：切关收掉中场预警横幅
     this._midWarned = false;    // 新一关重新允许弹一次
+    this.dangerAlarm?.reset();  // 第六十一修：报警节拍/轮转记账不跨关
+    this._skillCasts = 0;       // 第六十二修：本关技能释放计数（教学精英暂停判据）
+    this.tutorialHint?.hide();  // 第六十二修：常驻提示板不跨关（只在教学关显示）
     this._bulletStreak = 0; this._rapidUntil = 0; this._setRapidMul(1);  // 连杀/加速不跨关
     this._buddhaQueue.length = 0;  // 清掉上关没结算完的神掌队列
     this.bullets.clear();       // 防跨关残留子弹误击
@@ -1298,6 +1325,38 @@ export class Game {
     return this._tmp;
   }
 
+  // 第六十一修 · 内圈报警：把「已进内圈的基础小怪」按玩家前向分成四区，每区只留最近的一只，
+  //   交给 DangerAlarm 按节拍轮转发声（分区/节拍/音高全在 game/dangerAlarm.js，这里只筛怪 + 取朝向）。
+  //   判据与头顶「爆」字**同源**（isBombMarkTarget + BOMB_LABEL.INNER_RADIUS）
+  //   → 看得见闪红 ⇔ 听得到滴滴，不会「看得见却没声」或「有声却没怪」。
+  _updateDangerAlarm(dt, pp) {
+    if (!this.dangerAlarm || DANGER_ALARM.ENABLED === false) return;
+    const R = BOMB_LABEL.INNER_RADIUS;
+    const list = this._alarmList;
+    list.length = 0;
+    for (const b of this.balloons.list) {
+      if (!isBombMarkTarget(b) || !b.mesh.visible) continue;
+      const p = b.mesh.position;
+      if (Math.hypot(p.x, p.z) > R) continue;      // 内圈之外不报（与「爆」字常态色一致）
+      list.push(p);
+    }
+    if (!list.length) return;
+    this.world.camera.getWorldDirection(this._fwd);
+    // ★ 第六十四修 ★ 这里原来又 negate 了一次 —— 是**重复取反**，必须直接用 getWorldDirection 的结果。
+    //   真因：three 的 Camera 重写了 getWorldDirection（Object3D 的那份取 +Z，Camera 那份 .negate()），
+    //   所以相机上拿到的**已经是真实朝向**（见 vendor/three.module.js 的 class Camera extends Object3D）。
+    //   再取反 = 把玩家的前/后、左/右整体转 180° ⇒ 现场「滴滴听着在左边，怪其实只在正前方」。
+    //   （tests/danger-alarm.test.mjs 顶部的官方约定也是「调用方传真实面朝方向」。）
+    const hit = this.dangerAlarm.update(
+      dt,
+      { x: pp.x, z: pp.z, fx: this._fwd.x, fz: this._fwd.z, inner: R },   // inner 复用上面那同一个 R
+      list, this._gameTime,
+    );
+    if (!hit) return;
+    this.audio?.playDangerAlarm(hit);
+    if (DANGER_ALARM.LOG) this.log(`[报警] ${hit.name} 方向 · 距离 ${hit.dist.toFixed(1)}m（第 ${hit.count} 次）`);
+  }
+
   // ===== 玩家位置策略（2026-09-10 定稿，全项目必读）=====
   // 前提：现实游玩场地也是 4×8 m，与游戏活动区域（|x|≤MOVE.BOUND_X、|z|≤MOVE.BOUND_Z）**一一对应**，
   //       且开局时「玩家现实站位 = 场地中心 = 游戏区域中心 = XR 原点」。
@@ -1381,7 +1440,10 @@ export class Game {
     const pp = this._playerPos();                     // 取一次玩家位置，所有门共用（同步读取，无异步滞留）
     this._portals.forEach((p) => p.update(dt, pp));   // 传送门动画 + 浮动 + 摇杆偏移 + 数值标签
     this.wristUI?.update(dt, this, this.input); // 手腕面板（VR 下显示，桌面忽略）
+    this.tutorialHint?.update(dt);              // 第六十二修：教学提示板淡入 + 轻浮
     this.rightGun.update(dt, this.input, this);  // 右手柄 AK 枪 + 技能就绪提示面板（VR 手持，桌面忽略）
+    // 枪上「商店币」小框的每帧下发见 _updateFx 末尾（第六十五修）：
+    //   要先拿到**本帧金点落地金额**才能推数字，所以必须排在 fx.update 之后 —— _updateFx 正是帧末。
     this.leftSword.update(dt, this.input);        // 左手柄激光剑（VR 手持，桌面忽略）
     this._updateBuddhaFx(dt);
     this._drainBuddhaQueue();   // 第四十二修：神掌命中分帧结算（每帧限量，削掉单帧 GPU 尖峰）
@@ -1407,8 +1469,10 @@ export class Game {
   //   曳光：每帧只扫一遍「玩家子弹 + 敌方投射物」，写进同一条 InstancedMesh（1 draw call）。
   //   必须是帧末调用（所有 update 之后）——位置才是本帧最终值，尾迹与弹头不会错位一帧。
   _updateFx(dt) {
-    if (!this.fx) return;
-    this.fx.update(dt);
+    if (!this.fx) { this._updateShopCoinBadge(0); return; }
+    // 第六十五修：本帧落地的击杀金点金额 → 推「枪上商店币小框」的数字（现场：金点飞到，数字才变）
+    const coinLanded = this.fx.update(dt, this._coinTarget);
+    this._updateShopCoinBadge(coinLanded);
     if (!FX.TRACER.ENABLED) return;
     const tail = this.fx.tracer;
     const d = this._tailDir;
@@ -1542,9 +1606,9 @@ export class Game {
       return;
     }
     this.input.update(dt);
-    // 测试积分键（左手 X / 桌面 G）：按一下 +TEST.ADD_SCORE，用于快速测试技能（受 SCORE_CAP 上限裁剪）
+    // 测试能量键（左手 X / 桌面 G）：按一下 +TEST.ADD_SCORE，用于快速测试技能（受 SCORE_CAP 上限裁剪）
     const credit = this.input.consumeCredit();
-    if (credit > 0) { this._addScore(credit); this.log(`测试 +${credit} 积分`); }
+    if (credit > 0) { this._addScore(credit); this.log(`测试 +${credit} 能量`); }
     this.player.update(dt);
     this.bullets.update(dt, this._homingTarget);   // 第五十五修：追踪弹每帧转向
     const pp = this._playerPos();
@@ -1572,7 +1636,7 @@ export class Game {
     const skillLabel = this.selectedSkill === 'buddha' ? '如来神掌'
                      : this.selectedSkill === 'lightsaber' ? '激光剑'
                      : this.selectedSkill === 'scatterburst' ? '散射强化'
-                     : this.selectedSkill === 'scatter' ? '积分散射' : null;
+                     : this.selectedSkill === 'scatter' ? '能量散射' : null;
     this.hud.setSkill(this._skillLocked ? '技能锁定（等提示结束）' : skillLabel, this.skillCooldown, this._skillCdTotal());
 
     // 激光剑「5秒伤害状态」：完全展开那一刻才起算 DURATION 秒（展开动画 0.5+0.2+0.5 不计入）
@@ -1601,6 +1665,7 @@ export class Game {
     // ====== 普通关 ======
     // 气球以玩家世界位置为终点移动（所有怪追玩家）；碰飞毯区域自爆逻辑不变（见 _checkExplosions）
     this.balloons.update(dt, pp, this.world.camera);
+    this._updateDangerAlarm(dt, pp);   // 第六十一修：内圈报警
     this._updateBasicVoice(dt); // 基础怪群体语音：数量达标播放一次，停顿后再判断
     this._updateDragonChest(dt); // 第五十修：龙族宝箱（计数窗口 → 化光点飞向玩家 → 放行抽卡）
     this.projectiles.update(dt, pp); // 投射物飞行/自旋/命中回收（玩家位置 pp = rig 头部世界坐标）
@@ -1610,12 +1675,16 @@ export class Game {
       this.waves.update(dt);
     }
 
+    // 第六十修 · 教学关：按段落推进（出怪 / 横幅 / 单卡 / 免费技能），
+    //   走完整条链后由 _finishTutorial 交回正常三选一（见 game/tutorial.js）
+    this.tutorial?.update(dt);
+
     // 第四十二修 · 中场预警：普通关/危机关过半时弹一次「更强的敌人来袭」（每关一次）
     //   判据 = 本关时间窗(levelSecondsOf) × MID_WARNING.AT；机制关/Boss 关没有倒计时，不弹。
     //   ⚠ 第四十五修：不再排除 this.normalTest —— 它是「普通关」的代名词（NORMAL_TEST.enabled 默认开），
     //     原来那句 !this.normalTest 让**所有普通关**都跳过判定 ⇒ 横幅在现场从未出现过。
     //     机制关/Boss 关没有倒计时，由 midWarningDue(seconds<=0) 自然挡住。
-    if (MID_WARNING.ENABLED) {
+    if (MID_WARNING.ENABLED && !this._isTutorialLevel()) {   // 第六十修：教学关不弹中场横幅
       const lv = LEVELS[this.levelIndex];
       if (lv && !isBoss(lv) && !isLaser(lv)
           && midWarningDue(this.waves.elapsed, levelSecondsOf(lv.n), this._midWarned)) {
@@ -1640,8 +1709,12 @@ export class Game {
     this.hud.setHp(this.player.hp, this.player.maxHp);
     // 正常测试：显示"距停止补怪"倒计时，便于观察出怪曲线
     if (this.normalTest) {
-      const stopAt = levelSecondsOf(this.level ? this.level.n : 0);   // 第四十一修：倒计时按关卡取（见 constants.LEVEL_SECONDS）
-      this.hud.setCountdown(Math.ceil(Math.max(0, stopAt - this.waves.elapsed)));
+      // 第六十修：教学关没有倒计时（脚本按「打完/超时」推进）→ 收起倒计时，不显示会误导的数字
+      if (this._isTutorialLevel()) this.hud.clearCountdown();
+      else {
+        const stopAt = levelSecondsOf(this.level ? this.level.n : 0);   // 第四十一修：倒计时按关卡取（见 constants.LEVEL_SECONDS）
+        this.hud.setCountdown(Math.ceil(Math.max(0, stopAt - this.waves.elapsed)));
+      }
     }
 
     if (!this.player.alive) { this._restartLevel(); return; }
@@ -1664,19 +1737,52 @@ export class Game {
     }
   }
 
-  // 基础怪群体语音：场上存活基础怪(排除龙身部件)≥ 阈值时播放一次，停顿 PAUSE 秒后再判断
+  // 基础怪群体语音：场上存活基础怪(排除龙身部件)「成群」时播放一次，停顿 PAUSE 秒后再判断。
+  //   第六十四修：门槛不再写死 —— 由 basicVoiceNeed(本关杂鱼配额) 算（原因见 constants.BASIC_VOICE 注释）
+  //   ★★ 第六十六修（现场口径 · 最终结论）：**只有脸谱 Boss 的第一阶段（蓝 · 召唤阵冲锋）才放**，
+  //      其它任何关卡 / 阶段一次都不放 —— 现场原话「其它关卡中不要放，因为太吵了」。
+  //      ⇒ 门禁排在**计数之前**：普通关连怪都不数（见 _basicVoiceAllowed）。
   _updateBasicVoice(dt) {
     if (!this.audio) return;
+    if (!this._basicVoiceAllowed()) return;   // ★ 第六十六修：不是脸谱 Boss 第一阶段 → 整段不参与
     if (this._basicVoiceTimer > 0) { this._basicVoiceTimer -= dt; return; } // 停顿中，暂不判断
     let n = 0;
     for (const b of this.balloons.list) {
       if (b.behavior === 'basic' && !b.isDragonPart && b.alive) n++;
     }
-    if (n >= BASIC_VOICE.THRESHOLD) {
+    const quota = this._basicVoiceQuota();
+    const need = basicVoiceNeed(quota, BASIC_VOICE);
+    if (n >= need) {
       if (this._basicVoiceEl) { try { this._basicVoiceEl.pause(); } catch (e) {} } // 重播前先停上一个，避免叠加
       this._basicVoiceEl = this.audio.playVoice(BASIC_VOICE.URL, BASIC_VOICE.VOLUME); // 播放一次（不循环）
       this._basicVoiceTimer = BASIC_VOICE.PAUSE; // 播放后停顿 PAUSE 秒再判断
+      if (BASIC_VOICE.LOG) this.log(`[冲冲冲] 基础怪 ${n} 只 ≥ 门槛 ${need}（本关配额 ${quota}）`);
     }
+  }
+
+  // 本关「杂鱼配额」= 内圈 + 外圈目标（waves 每 5s 按内圈存活数重算；没有 waves 时返回 0）
+  _basicVoiceQuota() {
+    const w = this.waves;
+    if (!w) return 0;
+    return (w.innerQuota || 0) + (w.outerQuota || 0);
+  }
+
+  /**
+   * ★★ 第六十六修 · 「冲冲冲」门禁：**只有脸谱 Boss 的第一阶段**允许发声。
+   *
+   * <p>现场口径（原话）：「冲冲冲的语音，只有第三关的脸谱Boss的第一阶段才会有，其它关卡中不要放，
+   *    因为太吵了。」—— 这是一条**位置**要求，不是"门槛调高低"：其它关卡要**完全静音**。
+   *
+   * <p>判据 = ① 本关是脸谱 Boss 关（waves.faceBoss 在场）② 相位是 0 = 蓝 = 召唤阵冲锋。
+   *    为什么认「脸谱 Boss 的相位」而不是关卡号：蓝阶段会一次召唤左右各 3×3（共 18 只，中心格骑士、
+   *    其余 basic）冲过来 —— 这正是"冲冲冲"该响的地方；而普通关按配额滴流（前期 6~10 只）声势完全不同。
+   *
+   * <p>⚠ 必须带 alive 判断：Boss 被打死后 waves.faceBoss 仍指向那个气球（见 waves._updateFaceBoss
+   *    的 cleared 分支），少了它，Boss 死的那一帧还会多喊一声。
+   */
+  _basicVoiceAllowed() {
+    const w = this.waves;
+    return !!w && !!w.faceBoss && w.faceBoss.alive === true && w.facePhase === 0;
   }
 
   // 激光关主循环：激光动画 + 保持期发光驱动 + 走格子/九宫格阶段分派
@@ -1980,7 +2086,7 @@ export class Game {
     };
   }
 
-  // 统一加分并钳制到 SCORE_CAP（积分上限 500）；所有 score 增量必须走这里
+  // 统一加分并钳制到 SCORE_CAP（能量上限 500）；所有 score 增量必须走这里
   _addScore(n) {
     this.score = Math.min(this.score + (n || 0), SCORE_CAP);
     this.hud.setScore(this.score);
@@ -1992,7 +2098,7 @@ export class Game {
     if (balloon.isDragonPart) {
       if (this.dragon && !this.dragon.dying) {
       this._addScore(balloon.score);
-      this._addShopCoin(balloon.score);   // 第五十五修：龙部件积分同样计入商店币
+      this._addShopCoin(balloon.score, balloon.mesh.position);   // 第五十五修：龙部件能量同样计入商店币
         this._spawnExplosionFx(balloon.mesh.position, balloon.effectiveRadius);
         this.dragon.notifyKilled(balloon);
       }
@@ -2000,18 +2106,18 @@ export class Game {
       balloon.mesh.visible = false;
       return;
     }
-    // 聚宝盆：无敌，仅寿命到期死亡；结算 = 自身携带积分 + 存活期间每死一个气球 +50
+    // 聚宝盆：无敌，仅寿命到期死亡；结算 = 自身携带能量 + 存活期间每死一个气球 +50
     if (balloon.behavior === 'treasure') {
       const bonus = (balloon.type.baseScore || 0) + (balloon._killsDuringLife || 0) * (balloon.type.perKillScore || 0);
       this._addScore(bonus);
-      this._addShopCoin(bonus);           // 第五十五修：聚宝盆积分同样计入商店币
+      this._addShopCoin(bonus, balloon.mesh.position);           // 第五十五修：聚宝盆能量同样计入商店币
       this.balloons.remove(balloon);
       return;
     }
-    // 第四十六修：精英击杀积分 ×ELITE_FEEDBACK.SCORE_MUL（构筑生效的正反馈）
+    // 第四十六修：精英击杀能量 ×ELITE_FEEDBACK.SCORE_MUL（构筑生效的正反馈）
     const _killScore = balloon.isElite ? Math.round((balloon.score || 0) * ELITE_FEEDBACK.SCORE_MUL) : (balloon.score || 0);
     this._addScore(_killScore);
-    this._addShopCoin(_killScore);   // 第五十五修：击杀积分等额计入商店币（以战养战再加成）
+    this._addShopCoin(_killScore, balloon.mesh.position);   // 第五十五修：击杀能量等额计入商店币（以战养战再加成）
     this.dda?.notifyKill();   // DDA：记录一次击杀，用于滑窗击杀率统计
 
     // 龙 Boss 关：每消灭1个基础怪(basic, 非龙部件) → 通知龙 Boss 计数（每5个扣1%总血量）
@@ -2042,7 +2148,7 @@ export class Game {
       this.player.hp = Math.min(this.player.maxHp, this.player.hp + heal);
       this._healFeedback(heal);
     }
-    // 宝箱怪：死后弹出一次选项卡（占位：暂以奖励积分代替，待 mid-level 卡片系统接入）
+    // 宝箱怪：死后弹出一次选项卡（占位：暂以奖励能量代替，待 mid-level 卡片系统接入）
     if (balloon.behavior === 'chest' && balloon.type.dropCard) {
       this._addScore(50);
       this.log('宝箱怪被击破：待接入 mid-level 选项卡弹出');
@@ -2182,8 +2288,8 @@ export class Game {
   }
 
   _doBuddha() {
-    // 技能统一计费：积分不足则不放（不进冷却，可立即重试）
-    if (this.score < this.player.skillCost) { this.log(`积分不足（需${this.player.skillCost}）`); return false; }
+    // 技能统一计费：能量不足则不放（不进冷却，可立即重试）
+    if (this.score < this.player.skillCost) { this.log(`能量不足（需${this.player.skillCost}）`); return false; }
     this.score -= this.player.skillCost;
     this.hud.setScore(this.score);
     this.log('如来神掌！');
@@ -2212,21 +2318,26 @@ export class Game {
     switch (this.selectedSkill) {
       case 'buddha':
         if (!this.player.buddhaUnlocked) { this.log('如来神掌尚未解锁'); return; } // 还原原语义：未解锁不放（return 不进入冷却）
-        if (!this._doBuddha()) return; // 积分不足 → 不进入冷却，可立即重试
+        if (!this._doBuddha()) return; // 能量不足 → 不进入冷却，可立即重试
         break;
       case 'lightsaber':
-        if (!this._castLaserSword()) return; // 积分不足 → 不进入冷却，可立即重试
+        if (!this._castLaserSword()) return; // 能量不足 → 不进入冷却，可立即重试
         break;
       case 'scatterburst':
-        if (!this._castScatterBurst()) return; // 积分不足 → 不进入冷却，可立即重试
+        if (!this._castScatterBurst()) return; // 能量不足 → 不进入冷却，可立即重试
         break;
       case 'scatter':
-        if (!this._castScatter()) return; // 积分不足 → 不进入冷却，可立即重试
+        if (!this._castScatter()) return; // 能量不足 → 不进入冷却，可立即重试
         break;
     }
+    // 第六十二修：记「本关放了几次技能」。走到这里 = 释放成功（失败的在上面就 return 了）。
+    //   教学关精英用它判断「玩家已经读懂提示 → 可以放它走了」（见 content/tutorial.js 的 eliteHoldOver）。
+    this._skillCasts = (this._skillCasts || 0) + 1;
     this.skillCooldown = this._skillCdTotal();
   }
   _skillCdTotal() {
+    // 第六十修：教学关精英段 —— 散射技能无消耗、无冷却（见 content/tutorial.js 的 ELITE 段）
+    if (this._tutorialFreeSkill) return 0;
     // 第五十五修：商店关「技能冷却-」叠加生效（只影响总冷却口径；下限 SHOP.CD_FLOOR 防 0 冷却）
     const _down = this.player.skillCdDown || 0;
     if (this.selectedSkill === 'buddha') return Math.max(SHOP.CD_FLOOR, BUDDHA.COOLDOWN - _down);
@@ -2236,11 +2347,14 @@ export class Game {
     return 0;
   }
 
-  // 积分散射（默认技能）：消耗 player.skillCost 积分，从枪口喷出 COUNT 弹头，轴向 DIST 米铺成半径 RADIUS 圆盘
+  // 能量散射（默认技能）：消耗 player.skillCost 能量，从枪口喷出 COUNT 弹头，轴向 DIST 米铺成半径 RADIUS 圆盘
   _castScatter() {
-    if (this.score < this.player.skillCost) { this.log(`积分不足（需${this.player.skillCost}）`); return false; }
-    this.score -= this.player.skillCost;
-    this.hud.setScore(this.score);
+    // 第六十修：教学关精英段免费 —— 不扣分、不进冷却（player.skillCost 本身不动，教程结束自动恢复收费）
+    if (!this._tutorialFreeSkill) {
+      if (this.score < this.player.skillCost) { this.log(`能量不足（需${this.player.skillCost}）`); return false; }
+      this.score -= this.player.skillCost;
+      this.hud.setScore(this.score);
+    }
     const muzzle = new THREE.Vector3();
     const dir = new THREE.Vector3();
     this.input.getMuzzle(muzzle, dir); // 右手柄位姿（无则回退相机）
@@ -2258,13 +2372,13 @@ export class Game {
       const bdir = new THREE.Vector3(bx, by, bz).normalize();
       this.bullets.spawn(muzzle, bdir, dmg);
     }
-    this.log(`积分散射！消耗${this.player.skillCost}积分，喷出${SCATTER.COUNT}弹头`);
+    this.log(this._tutorialFreeSkill ? `能量散射！教学免费，喷出${SCATTER.COUNT}弹头` : `能量散射！消耗${this.player.skillCost}能量，喷出${SCATTER.COUNT}弹头`);
     return true;
   }
 
-  // 散射强化（第3关技能卡，一次性）：消耗 player.skillCost 积分，喷出 SCATTER_BURST.COUNT 发、每发 SCATTER_BURST.DAMAGE（×倍率）
+  // 散射强化（第3关技能卡，一次性）：消耗 player.skillCost 能量，喷出 SCATTER_BURST.COUNT 发、每发 SCATTER_BURST.DAMAGE（×倍率）
   _castScatterBurst() {
-    if (this.score < this.player.skillCost) { this.log(`积分不足（需${this.player.skillCost}）`); return false; }
+    if (this.score < this.player.skillCost) { this.log(`能量不足（需${this.player.skillCost}）`); return false; }
     this.score -= this.player.skillCost;
     this.hud.setScore(this.score);
     const muzzle = new THREE.Vector3();
@@ -2283,17 +2397,17 @@ export class Game {
       const bdir = new THREE.Vector3(bx, by, bz).normalize();
       this.bullets.spawn(muzzle, bdir, dmg);
     }
-    this.log(`散射强化！消耗${this.player.skillCost}积分，喷出${n}弹头`);
-    this.selectedSkill = 'scatter'; // 一次性技能：用后回落到默认积分散射（避免空技能）
+    this.log(`散射强化！消耗${this.player.skillCost}能量，喷出${n}弹头`);
+    this.selectedSkill = 'scatter'; // 一次性技能：用后回落到默认能量散射（避免空技能）
     return true;
   }
 
-  // 激光剑：消耗 player.skillCost 积分，激活左手柄「5秒伤害状态」。期间左手自由挥动，剑刃线段扫过怪物即扣血，
+  // 激光剑：消耗 player.skillCost 能量，激活左手柄「5秒伤害状态」。期间左手自由挥动，剑刃线段扫过怪物即扣血，
   // 每只怪 1 秒内只受一次（限频在 _updateSwordMelee 内）。伤害穿透脸谱95%减伤。
   _castLaserSword() {
-    // 已激活时拒绝重复释放：否则 setActive(true) 会把放大动画重置回「短剑」（表现为砍一刀就缩回、还白扣积分）
+    // 已激活时拒绝重复释放：否则 setActive(true) 会把放大动画重置回「短剑」（表现为砍一刀就缩回、还白扣能量）
     if (this.leftSword.active) { this.log('激光剑已激活'); return false; }
-    if (this.score < this.player.skillCost) { this.log(`积分不足（需${this.player.skillCost}）`); return false; }
+    if (this.score < this.player.skillCost) { this.log(`能量不足（需${this.player.skillCost}）`); return false; }
     this.score -= this.player.skillCost;
     this.hud.setScore(this.score);
     this.leftSword.setActive(true);
@@ -2570,6 +2684,14 @@ export class Game {
   }
 
   /**
+   * 第六十二修 · 教学关常驻提示板：把同一句横幅文案钉在**场地前上方**。
+   *   现场「横幅 2s 太短来不及看清」⇒ 板上的字一直留着，直到下一块横幅把它换掉；
+   *   只在教学关会被调用（TutorialRunner 是唯一调用方），切关 / 教学流程结束都会 hide。
+   */
+  _showTutorialHint(text) { this.tutorialHint?.show(text); }
+  _hideTutorialHint() { this.tutorialHint?.hide(); }
+
+  /**
    * 第四十九修 · 关卡标题卡：本关开局弹一次「第 N 关 · 场景名」。
    *   · 名字的唯一来源是 content/levels.js 的 lv.name（改名只动那里）；
    *   · 与精英来袭/中场预警**共用** midWarning 这个 Sprite（同一张 canvas），
@@ -2720,8 +2842,10 @@ export class Game {
     const from = new THREE.Vector3();
     this.world.camera.getWorldPosition(from);
     const dir = new THREE.Vector3();
+    // 第六十五修：相机上的 getWorldDirection **已经是「看向的方向」**（three 的 Camera 重写了它，内部 .negate()）。
+    //   旧注释写的「给 +Z」是错的（实测：看向 -Z 得 (0,0,-1)，见 tests/alarm-facing.test.mjs 同一结论），
+    //   所以原来又 negate 一次 ⇒ 金点其实从**玩家背后** 1.2m 起飞，和这里想要的「准星前方」正相反。
     this.world.camera.getWorldDirection(dir);
-    dir.negate();                       // 相机前向是 -Z（getWorldDirection 给 +Z，同 _enterCard 的处理）
     from.addScaledVector(dir, 1.2);
     from.y -= 0.35;
     const to = new THREE.Vector3(0, CARD.ROW_Y, CARD.ROW_Z);
@@ -2811,6 +2935,76 @@ export class Game {
     }
   }
 
+  // ============================================================
+  // 第六十修 · 教学关（第 1 关）—— 三个钩子
+  //   脚本数据（段落/判据/文案）在 content/tutorial.js，运行态在 game/tutorial.js；
+  //   这里只提供「是不是教学关」「单张教学卡」「收尾交回三选一」。
+  // ============================================================
+
+  /** 当前关是否教学关（倒计时 / 中场横幅 / 出怪都按它让步） */
+  _isTutorialLevel() {
+    const lv = LEVELS[this.levelIndex];
+    return !!lv && isTutorialLevel(lv.n);
+  }
+
+  /**
+   * 教学关的单张卡（选项卡位置，稿子第 3 条）：固定文案「连杀加速」。
+   *   · 走 cardDraft 的 state.cards 显式卡表分支 —— 不查属性池、不随机、不进第 18 关汇总；
+   *   · apply 为空：连杀数由 tutorial._seedStreak 种到 8（教学卡不是成长项）；
+   *   · duration = TUTORIAL.CARD.TIMEOUT（12s 未打破 → 选项卡自动默认选择，稿子第 4 条）。
+   */
+  _enterTutorialCard() {
+    if (this.state !== 'playing') return;
+    this._clearExplosions();
+    this.state = 'card';
+    this.bullets.clear();
+    this.player.forceSingleShot = true;      // 单卡也单发：避免多重射击扇形误打
+    const pp = this._playerPos();
+    this.world.camera.getWorldDirection(this._fwd);
+    this._fwd.negate();                      // 相机前向是 -Z，getWorldDirection 给 +Z（同 _enterCard）
+    this._cardState = {
+      player: this.player,
+      getScore: () => this.score,
+      spendScore: (cost) => { this.score -= cost; },
+      cards: [{
+        id: TUTORIAL.CARD.ID, label: TUTORIAL.CARD.LABEL, desc: TUTORIAL.CARD.DESC,
+        color: TUTORIAL.CARD.COLOR, icon: TUTORIAL.CARD.ICON,
+        apply: () => {},                     // 教学卡不给数值（连杀数由教程种到 8）
+      }],
+      duration: TUTORIAL.CARD.TIMEOUT,
+    };
+    this.hud.message('连杀加速', '射击气球立即获得（' + TUTORIAL.CARD.TIMEOUT + 's 后自动获得）', '#ffd43b');
+    this.log('[教学] 弹出单张教学卡：' + TUTORIAL.CARD.LABEL);
+    this.cards.open(pp, this._fwd.clone(), this._cardState, () => this._onTutorialCardDone());
+  }
+
+  /** 教学卡收尾：回游戏，把控制权交还教学流程（不推关卡） */
+  _onTutorialCardDone() {
+    this.player.forceSingleShot = false;
+    this.hud.clearMessage();
+    this.state = 'playing';
+    this.tutorial?.onCardDone();
+  }
+
+  /** 教学关收尾（稿子第 6 条）：交回正常三选一 → 进第 2 关 */
+  _finishTutorial() {
+    this._tutorialFreeSkill = false;
+    this._hideTutorialHint();        // 第六十二修：出教学关就收起常驻提示板
+    // 第六十二修（现场）：「完成教学关后直接送 500 商店币，给玩家更快启动」——
+    //   到第 3 关商店就能直接买一件，不用先靠打怪攒币才敢进商店。
+    //   ⚠ 这是**教学关专属的一次性奖励**：第 2~18 关通关**一律不奖励**（不做关卡结算奖励）。
+    //     所以它跟「击杀能量入账」根本不是一类东西 —— 直接加 shopCoin 即可，
+    //     不走 _addShopCoin（那条路径是给击杀入账用的，带「以战养战」加成）。
+    const gift = TUTORIAL.DONE.SHOP_COIN | 0;
+    if (gift > 0) {
+      this.shopCoin += gift;
+      this.hud.setShopCoin(this.shopCoin);
+      this.log(`教学关通关奖励：+${gift} 商店币（现有 ${this.shopCoin}）`);
+    }
+    this.log('[教学] 教学关完成 → 正常选项卡');
+    this._enterCard();
+  }
+
   _enterCard(mid = false) {
     if (this.shopMode) { this.log('商店关不发选项卡，直接进入下一关'); this._exitShop(); return; } // 第五十五修
     this._draftsThisLevel = (this._draftsThisLevel || 0) + 1;  // 第四十七修：一关一次（通关分支据此跳过第二次）
@@ -2849,8 +3043,11 @@ export class Game {
       // 第9关：必定出一张回血卡（自我修复优先，其次生命上限；两张都满级时退化为战场补给）
       if (lv.n === 9) plan.guarantee = ['selfRepair'];
     } else {
-      // 普通/危机关：抽 1–5 池（射速/子弹/攻击/技能消耗/技能伤害）
-      plan = { pool: ['fireRate', 'multiShot', 'atk', 'skillCost', 'skillDamage'] };
+      // 普通/危机关：抽属性卡池（射速/子弹/攻击 [+技能消耗/技能伤害]）
+      // 第六十修：**前两关不再出现技能相关的选项卡**（技能消耗/技能伤害）—— 此时玩家还没技能，
+      //   抽到等于空卡；池子与 strictPool 口径见 cards.attrPoolForLevel（有单测锁）。
+      const _attr = attrPoolForLevel(lv.n);
+      plan = { pool: _attr.pool, strictPool: _attr.strictPool };
       if (lv.n === 1) plan.guarantee = 'multiShot';    // 01 关：额外子弹必出
       else if (lv.n === 2) plan.guarantee = 'fireRate'; // 02 关：射速必出
     }
@@ -2861,6 +3058,7 @@ export class Game {
       getScore: () => this.score,
       spendScore: (cost) => { this.score -= cost; },
       pool: plan.pool || null,                 // 普通/Boss/机制关：属性卡池（抽 3 不重复）
+      strictPool: !!plan.strictPool,            // 第六十修：前两关 true → 池子不足 3 张也不从全表补位
       guarantee: plan.guarantee || null,        // 必出卡：01/02 关单卡；第9关回血组（数组，取第一张可用）
       fixedSkills: plan.fixedSkills || null,    // 第三关：固定技能卡
       onSkill: (id) => this._applySkillCard(id),
@@ -2890,9 +3088,9 @@ export class Game {
   // 抽卡模式：允许自由移动 + 射击，子弹命中卡气球即选卡
   _updateCard(dt) {
     this.input.update(dt);
-    // 测试积分键（左手 X / 桌面 G）：抽卡阶段也可加分，方便直接测试刚选的技能
+    // 测试能量键（左手 X / 桌面 G）：抽卡阶段也可加分，方便直接测试刚选的技能
     const credit = this.input.consumeCredit();
-    if (credit > 0) { this._addScore(credit); this.log(`测试 +${credit} 积分`); }
+    if (credit > 0) { this._addScore(credit); this.log(`测试 +${credit} 能量`); }
     this.player.update(dt);
     this.bullets.update(dt, this._homingTarget);   // 第五十五修：追踪弹每帧转向
     const _boostShot = this._gameTime < this._rapidUntil;
@@ -2904,9 +3102,9 @@ export class Game {
 
   _onCardDone() {
     this.player.forceSingleShot = false; // 退出抽卡，恢复枪械模式弹道数
-    // 第3关（首个激光/机制关）选完技能后赠送 500 积分（受上限钳制），便于立即释放激光剑（消耗 500）
+    // 第3关（首个激光/机制关）选完技能后赠送 500 能量（受上限钳制），便于立即释放激光剑（消耗 500）
     const _cleared = LEVELS[this.levelIndex]; // 此刻 levelIndex 仍是刚清的关（下方才 ++）
-    if (_cleared && _cleared.n === 3) { this._addScore(500); this.log('第3关奖励：+500 积分'); }
+    if (_cleared && _cleared.n === 3) { this._addScore(500); this.log('第3关奖励：+500 能量'); }
     this.hud.setScore(this.score); // game.score 已由抽卡实时维护
     this.hud.clearMessage();
     this.levelIndex++;
@@ -2929,17 +3127,45 @@ export class Game {
   //   左手边道具区 = 道具×3（6 选 3 不重复）+「刷新」；打中气球即购买。
   // ============================================================
 
-  /** 玩家是否已拥有「三选一」技能（默认的积分散射不算 —— 正前方要卖技能本体） */
+  /** 玩家是否已拥有「三选一」技能（默认的能量散射不算 —— 正前方要卖技能本体） */
   _hasChosenSkill() { return !!this.selectedSkill && this.selectedSkill !== 'scatter'; }
 
   _itemLevel(id) { return (this._itemLv && this._itemLv[id]) || 0; }
 
-  /** 商店币入账：击杀积分等额 +「以战养战」加成（无上限；一局结束清零） */
-  _addShopCoin(n) {
+  /**
+   * 商店币入账：击杀能量等额 +「以战养战」加成（无上限；一局结束清零）。
+   * 第六十五修：**入账即时**（真实值，商店扣款/切关/对账都读它），但枪上小框的数字等金点落地才变。
+   * @param {number} n          本次金额（未经「以战养战」加成）
+   * @param {THREE.Vector3|null} fromPos 击杀位置 = 金点起飞处（不传 → 不飞金点，数字立刻变）
+   */
+  _addShopCoin(n, fromPos = null) {
     const v = Math.round(n || 0);
     if (!v) return;
-    this.shopCoin += Math.round(v * warFeedMul(this._itemLevel('warFeed')));
+    const amount = Math.round(v * warFeedMul(this._itemLevel('warFeed')));
+    this.shopCoin += amount;
     this.hud.setShopCoin(this.shopCoin);
+    if (amount > 0 && fromPos && this.fx) this.fx.coinOrb(fromPos, amount);
+  }
+
+  /**
+   * 第六十五修 · 枪上「商店币」小框（现场两条口径）。
+   *   ① 「在枪上的这一块信息框给玩家在非商店关时看到商店币数量」⇒ 局内常显（playing / 抽卡），
+   *      菜单与开场影片期间收起（判据见 _shopCoinBadgeOn）；
+   *   ② 「怪打死后要有金色光点飞到这里接着数字变动」⇒ 数字由 shopCoinDisplay.advanceShown 推进：
+   *      有金点在飞时显示值**落后**于真实值，金点一落地就把金额补上；金点全落地 / 被清掉（切关等）
+   *      则自动对齐真实值 —— 所以显示值只会「慢慢追上来」，永远不会和真实值错账。
+   * @param {number} landed 本帧落地的金点金额
+   */
+  _updateShopCoinBadge(landed = 0) {
+    const rg = this.rightGun;
+    if (!rg) return;
+    rg.setShopCoin(this._shopCoinBadgeOn(), this.shopCoin,
+      this.fx ? this.fx.coinFlightCount() : 0, landed);
+  }
+
+  /** 小框显隐：局内常显（现场要求非商店关也看得到商店币）；菜单 / 结束 / 开场影片期间收起 */
+  _shopCoinBadgeOn() {
+    return this.state === 'playing' || this.state === 'card';
   }
 
   /** 建商店场地（由 _loadLevel 的分帧任务调用，位置与 LaserLevel 相同） */
@@ -2982,7 +3208,8 @@ export class Game {
       if (this.shopDraft !== shop || !shop.active) return;   // 已经离店：停手
       const spec = specs[i++];
       if (!spec) return;
-      Promise.resolve(portraitCanvas(renderer, spec)).then((cv) => {
+      const say = (m) => this.log && this.log('[立绘] ' + m);   // 第六十三修：头显上看不到 DevTools，诊断进留痕
+      Promise.resolve(portraitCanvas(renderer, spec, say)).then((cv) => {
         if (cv && this.shopDraft === shop) shop.setPortrait(portraitKey(spec), cv);
         setTimeout(step, PORTRAIT_STEP_MS);
       });
@@ -3011,7 +3238,7 @@ export class Game {
     this.hud.showShopCoin(false);
     this.hud.clearMessage();
     const lv = LEVELS[this.levelIndex];
-    if (lv && lv.n === 3) { this._addScore(500); this.log('第3关奖励：+500 积分'); }  // 保留原「选完技能赠 500」
+    if (lv && lv.n === 3) { this._addScore(500); this.log('第3关奖励：+500 能量'); }  // 保留原「选完技能赠 500」
     this.log('商店关结束 → 进入下一关');
     this.levelIndex++;
     if (!this.player.buddhaUnlocked) this.player.buddhaUnlocked = true; // 与抽卡分支同口径
@@ -3035,7 +3262,7 @@ export class Game {
       this.log(`技能威力+：技能伤害 ×${this.player.skillDamageMul}`);
     } else if (id === 'skillCostDown') {
       this.player.skillCost = Math.max(100, (this.player.skillCost || 500) - 100);
-      this.log(`技能消耗-：技能消耗 ${this.player.skillCost} 积分`);
+      this.log(`技能消耗-：技能消耗 ${this.player.skillCost} 能量`);
     } else if (id === 'skillCdDown') {
       this.player.skillCdDown = (this.player.skillCdDown || 0) + SHOP.CD_DOWN;
       this.log(`技能冷却-：累计 -${this.player.skillCdDown}s`);

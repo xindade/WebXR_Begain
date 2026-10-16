@@ -1,7 +1,12 @@
 import * as THREE from 'three';
 import { SKILL_HINT } from '../core/constants.js';
+import { modelBoxInParentSpace, barrelMount } from './streakCounter.js';   // 第六十一修：面板按枪模型自动定位
 
 const D2R = THREE.MathUtils.degToRad;
+
+// 第六十一修：自动定位用的临时量（模块级复用，避免每帧 new）
+const _left = new THREE.Vector3();
+const _upV = new THREE.Vector3(0, 1, 0);
 
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -42,7 +47,7 @@ export function edgeDotPositions(w, h, n, inset = 13, phase = 0.5) {
 
 // 右手枪中央技能面板：始终浮现（不再隐藏）。三态：
 //   ① 冷却中(skillCooldown>0)  → 橙色边框 + 剩余秒数 + 恢复进度条；
-//   ② 积分不足(score<skillCost) → 灰色边框 + "需 X 积分"；
+//   ② 能量不足(score<skillCost) → 灰色边框 + "需 X 能量"；
 //   ③ 就绪(score≥skillCost 且 cooldown=0) → 达标瞬间红框闪 FLASH_COUNT 下 → 之后金框常亮。
 // 仅在"就绪跳变"(上帧未就绪→本帧就绪)时闪一次；释放技能会扣分+进冷却→未就绪，再次达标→再闪。
 // 参数全部集中在 constants.SKILL_HINT（userConfig 可热调）。
@@ -59,7 +64,7 @@ export class SkillHintPanel {
     mesh.renderOrder = 1000;                 // 始终画在最前，不被枪模型挡住
     mesh.position.set(cfg.POSITION.x, cfg.POSITION.y, cfg.POSITION.z);  // 相对右手柄(grip)本地坐标（默认落在右手枪中央）
     mesh.rotation.set(D2R(cfg.ROTATION.x), D2R(cfg.ROTATION.y), D2R(cfg.ROTATION.z));
-    mesh.visible = true;                     // 始终浮现：进关即显示，不随积分/冷却隐藏
+    mesh.visible = true;                     // 始终浮现：进关即显示，不随能量/冷却隐藏
     this.cv = cv; this.ctx = ctx; this.tex = tex; this.mesh = mesh;
     this.w = cfg.CANVAS.w; this.h = cfg.CANVAS.h;
     this._prevReady = false;   // 上一帧是否"就绪"（检测达标跳变，触发闪烁）
@@ -83,12 +88,54 @@ export class SkillHintPanel {
     if (anchor && this.mesh.parent !== anchor) anchor.add(this.mesh);
   }
 
+  /**
+   * 按**枪模型**自动定位（第六十一修）—— 甩掉「手填 grip 坐标」：
+   *   量出枪模型在持有层(root)空间的包围盒 → 取**最长轴**当枪管轴 →
+   *   沿枪管轴取 MOUNT.ALONG 处（0.5 = 枪身正中）→ 再沿「玩家左手边」偏 LATERAL_GAP 米、上抬 UP。
+   *   ⚠ 本面板仍挂在 grip 上（保持原来那套读得清的角度），所以最后要把「枪空间坐标」换回 grip 空间：
+   *     p_grip = holder.matrix × p_gun（holder = 枪的持有层，与本面板同父）。
+   *   为什么要这样：枪在 GUN.POSITION.y = -0.25（整把枪在手腕下方 25cm），
+   *   手填 grip 坐标必然飘到枪的上方 —— 现场「没往枪的中间移、反而往上方移了」就是这么来的。
+   * @param {THREE.Object3D} model  枪模型（holder 的子节点）
+   * @param {THREE.Object3D} holder 枪的持有层（GUN 变换作用于此）
+   * @returns {boolean} true = 已按枪定位；false = 模型没就绪（调用方继续用 POSITION 兜底）
+   */
+  placeOnGun(model, holder) {
+    const M = SKILL_HINT.MOUNT || {};
+    if (M.ENABLED === false || !model || !holder) return false;
+    if (this._mountModel !== model) {              // 模型换了（首次 / 异步加载完成）→ 重量一次包围盒
+      this._mountModel = model;
+      this._mountBox = modelBoxInParentSpace(model);
+      this._mountKey = null;
+    }
+    const key = [M.ALONG, M.SIDE, M.LATERAL_GAP, M.UP].join('|');
+    if (this._mountKey !== key) {                  // 热调 MOUNT（改 userConfig 刷新）→ 重算一次挂点
+      this._mountKey = key;
+      this._mount = barrelMount(this._mountBox, M);
+      if (this._mount) {
+        _left.copy(_upV).cross(this._mount.axis);  // up × 枪管轴 = 玩家左手边
+        if (_left.lengthSq() < 1e-8) _left.set(-1, 0, 0);   // 枪管恰好竖直时的兜底（防 NaN）
+        const gap = this._mount.radius + (M.LATERAL_GAP || 0);
+        _left.normalize().multiplyScalar((M.SIDE < 0 ? 1 : -1) * gap);
+        this._mountPos = this._mount.position.clone().add(_left).addScaledVector(_upV, M.UP || 0);
+      } else {
+        this._mountPos = null;
+      }
+    }
+    if (!this._mountPos) return false;
+    holder.updateMatrix();                          // GUN 变换每帧 apply → 读 matrix 前先刷新（只差一帧也要对）
+    this.mesh.position.copy(this._mountPos).applyMatrix4(holder.matrix);
+    return true;
+  }
+
   update(dt, game) {
     const cfg = SKILL_HINT;
     const skillCost = game.player ? game.player.skillCost : 0;
     const cd = game.skillCooldown || 0;            // 剩余冷却（秒），>0 表示刚释放后冷却中
     const cdTotal = (typeof game._skillCdTotal === 'function') ? game._skillCdTotal() : 0;
-    const ready = skillCost > 0 && game.score >= skillCost && cd <= 0;  // 两条件同时满足才"就绪"
+    // 第六十修：教学关精英段 —— 散射技能免费（game._tutorialFreeSkill）→ 不看能量，只看冷却
+    const free = !!game._tutorialFreeSkill;
+    const ready = free ? (cd <= 0) : (skillCost > 0 && game.score >= skillCost && cd <= 0);  // 两条件同时满足才"就绪"
 
     // 就绪跳变（未就绪→就绪）：启动一次"闪 N 下"动画（释放后冷却+扣分→未就绪，再次达标→再闪）
     if (ready && !this._prevReady) {
@@ -121,7 +168,7 @@ export class SkillHintPanel {
     this._streakBoost = boost;
     this._streakFlashing = flashing;
 
-    this._draw({ red, ready, cd, cdTotal, skillCost, game, flashing, boost, boostLeft: Math.max(0, until - now) });
+    this._draw({ red, ready, cd, cdTotal, skillCost, game, free, flashing, boost, boostLeft: Math.max(0, until - now) });
   }
 
   // 调试：读取左手柄摇杆(前后左右)与 X/Y键(上下)，按 DEBUG_STEP 平移本面板（实时调位）。
@@ -143,11 +190,12 @@ export class SkillHintPanel {
   //   加速期在第 4 行下方再补一行金色「加速 N.Ns」（属于第 4 行的补充信息，不另起一栏）。
   //   行高/基线全部来自 SKILL_HINT（可热调）；边框按状态取色，与旧版一致。
   _draw(s) {
-    const { red, ready, cd, cdTotal, skillCost, game } = s;
+    const { red, ready, cd, cdTotal, skillCost, game, free } = s;
     const cfg = SKILL_HINT;
     const c = this.ctx;
     const W = this.w, H = this.h;
     const PAD = cfg.PAD_X > 0 ? cfg.PAD_X : 34;
+    const COLON = cfg.COLON || '：';          // 第六十一修：标签与数值之间的分隔符
     const S = cfg.STREAK || {};
     c.clearRect(0, 0, W, H);
     c.textAlign = 'left';
@@ -171,11 +219,18 @@ export class SkillHintPanel {
     c.font = 'bold 38px sans-serif';
     c.textAlign = 'left';
     c.fillText('⚡ ' + this._skillName(game), PAD, cfg.ROW1_Y);
-    // 消耗：现在放得出（就绪/冷却中）金色，积分不够浅灰 —— 一眼看出「能不能放」
-    c.fillStyle = (cd <= 0 && !ready) ? cfg.INSUFFICIENT_TEXT : '#ffd24a';
+    // 消耗：放得出（就绪/冷却中）金色，能量不够浅灰 —— 一眼看出「能不能放」
     c.font = 'bold 30px sans-serif';
     c.textAlign = 'right';
-    c.fillText('消耗 ' + skillCost, W - PAD, cfg.ROW1_Y);
+    // 第六十修：教学免费段显示「免费」；第六十一修：标签与数值**分色** + 中文冒号（现场「直接跟数字、同色分不清」）
+    if (free) {
+      c.fillStyle = cfg.READY_BORDER;
+      c.fillText('免费', W - PAD, cfg.ROW1_Y);
+    } else {
+      this._kv(c, '消耗' + COLON, String(skillCost), W - PAD, cfg.ROW1_Y, 'right',
+        cfg.LABEL_TEXT, (cd <= 0 && !ready) ? cfg.INSUFFICIENT_TEXT : '#ffd24a',
+        'bold 30px sans-serif', 'bold 34px sans-serif');
+    }
 
     // ===== 第二行：冷却条（状态文字 + 进度条）=====
     let barCol = cfg.COOLDOWN_BAR_COLOR, frac = 0, label, labelCol;
@@ -183,10 +238,10 @@ export class SkillHintPanel {
       label = '冷却 ' + cd.toFixed(1) + 's'; labelCol = cfg.COOLDOWN_BORDER;
       frac = cdTotal > 0 ? Math.max(0, Math.min(1, 1 - cd / cdTotal)) : 0;   // 0→刚释放，1→就绪
     } else if (ready) {
-      label = '技能就绪 · 扣左手柄 Grip 释放'; labelCol = cfg.READY_BORDER;
+      label = free ? '技能就绪 · 教学免费 · 扣左手柄 Grip' : '技能就绪 · 扣左手柄 Grip 释放'; labelCol = cfg.READY_BORDER;
       frac = 1; barCol = cfg.READY_BORDER;
     } else {
-      label = '积分不足 · 现有 ' + Math.floor(game.score || 0); labelCol = cfg.INSUFFICIENT_TEXT;
+      label = '能量不足 · 现有 ' + Math.floor(game.score || 0); labelCol = cfg.INSUFFICIENT_TEXT;   // 第六十一修：能量→能量（商店币已经占了「钱」）
       frac = skillCost > 0 ? Math.max(0, Math.min(1, (game.score || 0) / skillCost)) : 0;
       barCol = cfg.INSUFFICIENT_BORDER;
     }
@@ -199,27 +254,23 @@ export class SkillHintPanel {
     roundRect(c, bx, by, bw, bh, 10); c.fill();
     if (frac > 0) { c.fillStyle = barCol; roundRect(c, bx, by, bw * frac, bh, 10); c.fill(); }
 
-    // ===== 第三行：攻击力 / 弹道 =====
+    // ===== 第三行：攻击力 / 弹道（第六十一修：标签灰蓝、数值各自亮色 + 冒号）=====
     const p = game.player || {};
     const shots = (p.shotCount > 1) ? (p.shotCount + ' 发/枪') : '单发';
-    c.fillStyle = '#9fe8ff';
-    c.font = '28px sans-serif';
-    c.textAlign = 'left';
-    c.fillText('攻击力 ' + (p.atk != null ? p.atk : '-'), PAD, cfg.ROW3_Y);
-    c.textAlign = 'right';
-    c.fillText('弹道 ' + shots, W - PAD, cfg.ROW3_Y);
+    this._kv(c, '攻击力' + COLON, String(p.atk != null ? p.atk : '-'), PAD, cfg.ROW3_Y, 'left',
+      cfg.LABEL_TEXT, cfg.VALUE_ATK, '28px sans-serif', 'bold 32px sans-serif');
+    this._kv(c, '弹道' + COLON, shots, W - PAD, cfg.ROW3_Y, 'right',
+      cfg.LABEL_TEXT, cfg.VALUE_SHOT, '28px sans-serif', 'bold 30px sans-serif');
 
     // ===== 第四行：射速 / 击杀充能（充能 = 连杀计数，与边框方块同源）=====
-    c.textAlign = 'left';
-    c.fillText('射速 ' + (p.fireRate != null ? p.fireRate : '-') + ' 发/秒', PAD, cfg.ROW4_Y);
-    c.textAlign = 'right';
-    c.font = 'bold 28px sans-serif';
-    c.fillStyle = s.boost ? (S.BOOST_COLOR || '#ffd24a') : '#ffffff';
-    c.fillText((cfg.CHARGE_LABEL || '充能') + ' ' + this._streakFill + '/' + this._streakNeed, W - PAD, cfg.ROW4_Y);
+    const _rate = (p.fireRate != null ? p.fireRate : '-') + ' 发/秒';
+    this._kv(c, '射速' + COLON, _rate, PAD, cfg.ROW4_Y, 'left',
+      cfg.LABEL_TEXT, cfg.VALUE_RATE, '28px sans-serif', 'bold 30px sans-serif');
+    this._kv(c, (cfg.CHARGE_LABEL || '充能') + COLON, this._streakFill + '/' + this._streakNeed, W - PAD, cfg.ROW4_Y, 'right',
+      cfg.LABEL_TEXT, s.boost ? (S.BOOST_COLOR || '#ffd24a') : '#ffffff', '28px sans-serif', 'bold 30px sans-serif');
     if (s.boost) {
-      c.fillStyle = S.BOOST_COLOR || '#ffd24a';
-      c.font = 'bold 26px sans-serif';
-      c.fillText((S.BOOST_LABEL || '加速') + ' ' + (s.boostLeft || 0).toFixed(1) + 's', W - PAD, cfg.ROW5_BOOST_Y);
+      this._kv(c, (S.BOOST_LABEL || '加速') + COLON, (s.boostLeft || 0).toFixed(1) + 's', W - PAD, cfg.ROW5_BOOST_Y, 'right',
+        S.BOOST_COLOR || '#ffd24a', '#fff3c4', 'bold 26px sans-serif', 'bold 30px sans-serif');
     }
 
     // 调试：显示当前相对右手柄的本地坐标（调位时把这三个值抄进 SKILL_HINT.POSITION 即可）
@@ -233,6 +284,32 @@ export class SkillHintPanel {
     this._drawStreak(c, s);
     this.tex.needsUpdate = true;
   }
+
+  /**
+   * 画「标签：数值」双色文本（第六十一修）：
+   *   标签一律 LABEL_TEXT（灰蓝、常规字重），数值按属性给亮色 + 粗体 —— 现场要的「颜色字体区分」；
+   *   右侧那一栏（如「弹道：」）要贴右边界对齐，所以先各量一次宽，再从左往外画。
+   * @param {CanvasRenderingContext2D} c
+   * @param {'left'|'right'} align  x 是左边界还是右边界
+   */
+  _kv(c, label, value, x, y, align, labelCol, valueCol, labelFont, valueFont) {
+    const lf = labelFont || '28px sans-serif';
+    const vf = valueFont || 'bold 28px sans-serif';
+    c.font = lf;
+    const wl = c.measureText(label).width;
+    c.font = vf;
+    const wv = c.measureText(value).width;
+    const total = wl + wv;
+    const sx = (align === 'right') ? (x - total) : x;
+    c.textAlign = 'left';
+    c.fillStyle = labelCol;
+    c.font = lf;
+    c.fillText(label, sx, y);
+    c.fillStyle = valueCol;
+    c.font = vf;
+    c.fillText(value, sx + wl, y);
+  }
+
 
   //   · 杀一个亮一个（子弹击杀，见 game._bulletKill）；加速期间新攒的点改用金色；
   //   · 集齐（= 触发加速）那一瞬整圈闪一下（放大 + 变白）；
@@ -268,7 +345,7 @@ export class SkillHintPanel {
     if (s === 'buddha') return '如来神掌';
     if (s === 'lightsaber') return '激光剑';
     if (s === 'scatterburst') return '散射强化';
-    if (s === 'scatter') return '积分散射';
+    if (s === 'scatter') return '能量散射';   // 第六十一修：能量 → 能量（与商店币区分）
     return '技能';
   }
 }

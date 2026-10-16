@@ -20,7 +20,7 @@ import { portraitKey } from './enemyPortrait.js';
 //   ② 左右两列**收进飞毯**（|X| 3.0 → 1.75）并**绕场地中心 Z=0 对称铺开**（见 columnZ）；
 //   ③ 区域牌子放大（SHOP.BADGE_W/H）；④ 商店币不足只提示「商店币不足」，不再刷整串数字。
 //   买走一个道具自动补位（从其余道具里随机补一个）；刷新重抽三个（价格逐次翻倍，进店重置）。
-//   打「购物完成」或 60 秒倒计时结束 → finished = true，由 game._updateShop 收尾进下一关。
+//   打「购物完成」或倒计时（SHOP.COUNTDOWN，默认 100 秒）结束 → finished = true，由 game._updateShop 收尾进下一关。
 //
 // 与 cardDraft 的关系：共用「气球 + 卡面」视觉与 canvas 卡面绘制（makeBalloon / makeCardTexture），
 // 但**不复用 CardDraft 的结算流程** —— 商店关可连续购买、买完补位、可刷新，是另一套状态机。

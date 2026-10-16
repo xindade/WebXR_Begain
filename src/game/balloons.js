@@ -131,6 +131,10 @@ export class Balloon {
     this.selfDamage = t.selfDamage !== undefined ? t.selfDamage : BALLOON.DAMAGE;
     this.damageReduction = t.damageReduction || 0;  // 0~1 减伤比例（脸谱 Boss 95%）
     this.alive = true;
+    // 第六十二修：冻在原地不动（教学关精英「先暂停移动」用）。
+    //   只跳过位置推进 —— 朝向 / 受击 / 血条 / 名牌照常，所以看上去是「它停在那儿瞪着你」，不是卡死。
+    //   副作用是好的：冻住的怪永远走不进飞毯区，也就不会自爆。
+    this.moveFrozen = false;
     this.uid = ++_balloonUid;
     // 召唤怪专用
     this.minions = [];
@@ -447,8 +451,8 @@ export class Balloon {
   }
 
   update(dt, target, camera) {
-    // 朝玩家移动（controlled 气球由外部逐帧设位置，跳过自动移动）
-    if (!this.controlled) {
+    // 朝玩家移动（controlled 气球由外部逐帧设位置、moveFrozen 被冻住，都跳过自动移动）
+    if (!this.controlled && !this.moveFrozen) {
       _moveDir.copy(target).sub(this.mesh.position);
       _moveDir.y = 0;
       const dist = _moveDir.length();

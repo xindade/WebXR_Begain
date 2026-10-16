@@ -16,7 +16,7 @@ import { FX, DAMAGE_NUMBER, MID_WARNING, RAPID_FIRE, BUDDHA, SHOOT, SKILL_HINT }
 //   ① 曳光「后拖不能越过枪管」（贴到出生点，太短则不画）
 //   ② 枪口焰前移（不被枪管自身遮住）
 //   ③ 伤害数字纹理上传节流（削掉如来神掌那一帧的 GPU 尖峰）
-//   ④ 中场预警横幅（过半弹一次 + 2 秒淡入淡出）
+//   ④ 中场预警横幅（过半弹一次 + 淡入淡出；时长见 MID_WARNING.SECONDS，第六十三修 2 → 4 秒）
 //   ⑤ 连杀加速（10 连杀 → 射速 ×1.5 持续 3 秒）
 //   ⑥ 枪管计数面板：自动标定 + 「值没变就不重绘」
 
@@ -124,7 +124,7 @@ test('伤害数字：预算内（常规命中）完全不受节流影响 —— 
 
 test('中场预警判据：过半才弹、只弹一次、没有倒计时的关卡不弹', () => {
   assert.equal(MID_WARNING.AT, 0.5, '默认刚好过半触发');
-  assert.equal(MID_WARNING.SECONDS, 2, '横幅 2 秒');
+  assert.equal(MID_WARNING.SECONDS, 4, '第六十三修：横幅 2 → 4 秒');
   assert.ok(MID_WARNING.TEXT && MID_WARNING.TEXT.length > 0, '要有默认文案');
   assert.equal(midWarningDue(19.99, 40, false), false, '还差一点：不弹');
   assert.equal(midWarningDue(20, 40, false), true, '刚好过半：弹');
@@ -520,22 +520,28 @@ test('技能框四行版式：技能名+消耗 / 冷却条 / 攻击力·弹道 /
   });
   const row = (y) => texts.filter((x) => x.y === y).map((x) => x.t).join(' | ');
   try {
-    // ① 积分不足（未就绪）
+    // 第六十一修：标签与数值**分色分字**绘制（_kv 各画一次 fillText）→ 同一行要分两段断言
+    const kv = (y, label, value) => {
+      const s = row(y);
+      assert.ok(s.includes(label), `第 ${y} 行应有标签「${label}」，实际：${s}`);
+      assert.ok(s.includes(value), `第 ${y} 行应有数值「${value}」，实际：${s}`);
+    };
+    // ① 能量不足（未就绪）
     p.update(DT, fakeSkillGame({ player: { skillCost: 100, atk: 12, fireRate: 1.2, shotCount: 3 }, score: 0 }));
     assert.ok(row(SKILL_HINT.ROW1_Y).includes('如来神掌'), '第 1 行是技能名');
-    assert.ok(row(SKILL_HINT.ROW1_Y).includes('消耗 100'), '第 1 行带消耗（原来只写在「需 N 积分」里）');
-    assert.equal(row(SKILL_HINT.ROW2_Y), '积分不足 · 现有 0', '第 2 行是冷却条的状态文字');
-    assert.ok(row(SKILL_HINT.ROW3_Y).includes('攻击力 12'), '第 3 行：攻击力');
-    assert.ok(row(SKILL_HINT.ROW3_Y).includes('弹道 3 发/枪'), '第 3 行：弹道');
-    assert.ok(row(SKILL_HINT.ROW4_Y).includes('射速 1.2 发/秒'), '第 4 行：射速');
-    assert.ok(row(SKILL_HINT.ROW4_Y).includes('充能 0/10'), '第 4 行：击杀充能');
+    kv(SKILL_HINT.ROW1_Y, '消耗：', '100');
+    assert.equal(row(SKILL_HINT.ROW2_Y), '能量不足 · 现有 0', '第 2 行是冷却条的状态文字（原来叫「积分」，与商店币混）');
+    kv(SKILL_HINT.ROW3_Y, '攻击力：', '12');
+    kv(SKILL_HINT.ROW3_Y, '弹道：', '3 发/枪');
+    kv(SKILL_HINT.ROW4_Y, '射速：', '1.2 发/秒');
+    kv(SKILL_HINT.ROW4_Y, '充能：', '0/10');
     assert.equal(texts.filter((x) => x.t.includes('0/10')).length, 1, '计数只画一遍（不再面板两处重复）');
 
     // ② 就绪：状态文字换成释放提示；单发时写「单发」
     texts.length = 0;
     p.update(DT, fakeSkillGame({ player: { skillCost: 100, atk: 12, fireRate: 1.2, shotCount: 1 }, score: 500 }));
     assert.ok(row(SKILL_HINT.ROW2_Y).includes('技能就绪'), '就绪态在第 2 行');
-    assert.ok(row(SKILL_HINT.ROW3_Y).includes('弹道 单发'), 'shotCount = 1 → 「单发」');
+    kv(SKILL_HINT.ROW3_Y, '弹道：', '单发');
 
     // ③ 冷却中
     texts.length = 0;
@@ -548,8 +554,8 @@ test('技能框四行版式：技能名+消耗 / 冷却条 / 攻击力·弹道 /
       _rapidUntil: 12, _gameTime: 11, _bulletStreak: 3,
       player: { skillCost: 100, atk: 5, fireRate: 2, shotCount: 1 }, score: 900,
     }));
-    assert.ok(row(SKILL_HINT.ROW4_Y).includes('充能 3/10'));
-    assert.ok(row(SKILL_HINT.ROW5_BOOST_Y).includes('加速 1.0s'), '加速剩余时间挂在第 4 行下方');
+    kv(SKILL_HINT.ROW4_Y, '充能：', '3/10');
+    kv(SKILL_HINT.ROW5_BOOST_Y, '加速：', '1.0s');
   } finally {
     p.ctx = origCtx;
   }
@@ -564,4 +570,7 @@ test('技能框四行版式：行基线自上而下、互不重叠、都在画�
   assert.ok(SKILL_HINT.PAD_X > SKILL_HINT.STREAK.SIZE, '左右内边距要避开边框上的连杀方块');
   assert.equal(SKILL_HINT.CHARGE_LABEL, '充能', '第 4 行计数前缀（现场口径「击杀充能」）');
   assert.equal(SKILL_HINT.DEBUG, false, '调位完成：默认关闭调试坐标行');
+  assert.equal(SKILL_HINT.COLON, '：', '第六十一修：标签与数值之间必须有一个中文冒号（现场「直接跟数字、分不清」）');
+  assert.ok(SKILL_HINT.LABEL_TEXT && SKILL_HINT.VALUE_ATK && SKILL_HINT.VALUE_SHOT && SKILL_HINT.VALUE_RATE,
+    '第六十一修：标签/数值各自要有颜色（同色就看不出哪段是标签）');
 });

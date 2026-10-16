@@ -61,14 +61,40 @@ export function attributePreview(card, player) {
   const after = step > 0 ? Math.max(before, Math.min(limit, before + step)) : Math.min(before, Math.max(limit, before + step));
   return `${before} → ${after}`;
 }
-export function availableAttributes(player, ids = ATTR_TYPES.map(c => c.id)) {
+/**
+ * 本关可用的属性卡池（纯函数，便于单测）。
+ * 第六十修：**前两关不再出现技能相关的选项卡**（技能消耗-100 / 技能伤害+1倍）——
+ *   此时玩家还没拿到任何技能（第 3 关商店关才卖技能本体），抽到「技能消耗-100」等于空卡，
+ *   只会把三选一浪费掉。池子因此收成三张必有用卡，并置 strictPool 关掉下面的「补位」兜底
+ *   （否则玩家把这三张吃满后，补位又会把技能卡捡回来）。
+ * @param {number} n 关卡号
+ * @returns {{ pool: string[], strictPool: boolean }}
+ */
+export const EARLY_NO_SKILL_CARD_LEVELS = 2;   // 1~2 关：不出技能相关卡
+export const ATTR_POOL_BASE = ['fireRate', 'multiShot', 'atk'];
+export const ATTR_POOL_SKILL = ['skillCost', 'skillDamage'];   // 技能相关卡（前两关排除）
+export function attrPoolForLevel(n) {
+  if (Number(n) <= EARLY_NO_SKILL_CARD_LEVELS) {
+    return { pool: [...ATTR_POOL_BASE], strictPool: true };
+  }
+  return { pool: [...ATTR_POOL_BASE, ...ATTR_POOL_SKILL], strictPool: false };
+}
+
+/**
+ * 玩家当前可成长的属性卡。
+ * @param {object} player  玩家（读 fireRate/shotCount/atk/...）
+ * @param {string[]} [ids] 只允许这些 id（缺省 = 全表）
+ * @param {boolean} [strict] true = 不足 3 张也不从全表补位（前两关用，见 attrPoolForLevel）
+ */
+export function availableAttributes(player, ids = ATTR_TYPES.map(c => c.id), strict = false) {
   const useful = card => {
     const [key, step, limit, base] = ATTRIBUTE_STATS[card.id];
     return step > 0 ? (player[key] ?? base) < limit : (player[key] ?? base) > limit;
   };
   const pool = ATTR_TYPES.filter(card => ids.includes(card.id) && useful(card));
   // 主池不足时补充仍可成长的生存属性；完全满级时提供明确的补给奖励。
-  for (const card of ATTR_TYPES) if (pool.length < 3 && useful(card) && !pool.includes(card)) pool.push(card);
+  // 第六十修：strict（前两关）时不做全表补位 —— 否则满级后会把被排除的技能卡补回来
+  if (!strict) for (const card of ATTR_TYPES) if (pool.length < 3 && useful(card) && !pool.includes(card)) pool.push(card);
   if (!pool.length) pool.push(RESUPPLY_CARD);
   return pool;
 }

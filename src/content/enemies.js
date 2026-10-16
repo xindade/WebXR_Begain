@@ -123,7 +123,7 @@ export const ENEMY_TYPES = {
     behavior: 'treasure', selfDamage: 0,
     invincible: true,    // 无敌：子弹不扣血
     lifespan: 10.0,      // 存活 10s 后自动死亡结算
-    baseScore: 500,      // 自身携带积分
+    baseScore: 500,      // 自身携带能量
     perKillScore: 50,    // 出现期间每死一个气球 +50
     tint: 0xfd9644,
   },
