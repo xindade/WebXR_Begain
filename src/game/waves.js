@@ -46,6 +46,7 @@ export class WaveManager {
     this._scriptPrev = 0;            // 上一帧的脚本秒数（用于取 (prev, now] 区间到期的事件）
     this._lastEliteLayerAt = -99;    // 上次生成精英的脚本秒（层间隔节流）
     this._fuseGroups = [];           // 清场融合演出队列（见 _fuseSpawn / _updateFuseGroups）
+    this._spawnQueue = [];           // 第六十八修：融合落地后的精英逐只错帧生成（见 _updateSpawnQueue）
     this._dripStopped = false;       // 第四十七修：金点批清空后停掉本关杂鱼滴流（见 _updateEliteWatch）
     this._eliteWatch = [];           // 待观察批次（该批清空 → 金点飞选项卡，见 _updateEliteWatch）
     this._eliteBatchSeq = 0;         // 第四十九修：精英批编号（每批 +1，观察只认本批自己生成的怪）
@@ -109,7 +110,7 @@ export class WaveManager {
   }
 
   // 场上存活 + 光点飞行中的待落地怪（所有占用判定用它，防光点未落地就连续补怪）
-  get _active() { return this.balloons.count + this._pendingSpawns.length; }
+  get _active() { return this.balloons.count + this._pendingSpawns.length + (this._spawnQueue ? this._spawnQueue.length : 0); }
 
   startLevel(level) {
     if (this._winBanner) { this._winBanner.dispose(); this._winBanner = null; } // 切关清理上关的 VR 通关横幅
@@ -359,6 +360,7 @@ export class WaveManager {
       this._fuseGroups.length = 0;
     }
     if (this._eliteWatch) this._eliteWatch.length = 0;
+    if (this._spawnQueue) this._spawnQueue.length = 0;
   }
 
   // 批量取消某组光点（脸谱阶段切换/清场用）
@@ -743,7 +745,7 @@ export class WaveManager {
       //   不足的再从最近传送门补光点（见下面那段）。精英优先、离汇聚点近的先吃。
       for (const b of pickFuseAbsorb(this.balloons.list, FUSE.COUNT, { center: fusePos, climax: climax2 })) {
         origins.push(b.mesh.position.clone());
-        this.balloons.remove(b);        // 直接移除 = 不结算能量（用户确认第 3 条）
+        this.balloons.remove(b, true);  // 第六十八修：先摘掉，GPU 资源留到云雾窗分帧释放（防末尾精英出现时卡顿）
       }
     }
     // 不足 → 从最近传送门补足（用户：「如果光点小于5个，则从传送门新增光点」）
@@ -812,15 +814,39 @@ export class WaveManager {
         }
         if (g.t <= 0) {
           if (g.big) this._removeBeam(g.big);
-          let pi = 0;
+          // 第六十八修：不再在同一帧克隆整批精英。按 0.075s 间隔逐只落地，
+          //   把「GLB 克隆 + 名牌/血条贴图 + 首帧绘制」摊到几帧里，避免一帧超时导致头显黑屏。
+          if (!this._spawnQueue) this._spawnQueue = [];
+          let pi = 0, n = 0;
           const ps = g.out.positions;
           for (const c of g.out.combos) {
             for (let kk = 0; kk < c.count; kk++) {
-              this._spawnEliteNow(c.type, ps[pi++ % ps.length], g.out.combos, g.out.climax, g.out.batch);
+              this._spawnQueue.push({
+                t: n * FUSE.SPAWN_STAGGER,
+                type: c.type,
+                pos: ps[pi++ % ps.length],
+                combos: g.out.combos,
+                climax: g.out.climax,
+                batch: g.out.batch,
+              });
+              n++;
             }
           }
           this._fuseGroups.splice(i, 1);
         }
+      }
+    }
+  }
+
+  // 第六十八修：融合落地后的错帧生成队列。
+  _updateSpawnQueue(dt) {
+    if (!this._spawnQueue || !this._spawnQueue.length) return;
+    for (let i = this._spawnQueue.length - 1; i >= 0; i--) {
+      const it = this._spawnQueue[i];
+      it.t -= dt;
+      if (it.t <= 0) {
+        this._spawnEliteNow(it.type, it.pos, it.combos, it.climax, it.batch);
+        this._spawnQueue.splice(i, 1);
       }
     }
   }
@@ -844,7 +870,8 @@ export class WaveManager {
    *    两者都不会软锁：脚本时间轴有限（scriptEndTime），观察队列最迟 8s 自己丢弃（见 _updateEliteWatch）。
    */
   _canClear() {
-    return !this._climaxHeld && !this._scriptPending() && this._eliteWatch.length === 0;
+    return !this._climaxHeld && !this._scriptPending() && this._eliteWatch.length === 0
+      && (!this._spawnQueue || this._spawnQueue.length === 0);
   }
 
   // 批次观察（第四十九修改为按「批」）：本批先出现、随后清空 → 触发金点（hooks.goldToCards）
@@ -1365,6 +1392,7 @@ export class WaveManager {
     if (this._script) this._updateSpawnScript(dt);
     else if (!isBoss(this.level)) this._updateEliteWaves(dt);
     this._updateFuseGroups(dt);   // 清场融合演出（光点汇聚 → 大光点落地 → 精英出现）
+    this._updateSpawnQueue(dt);   // 第六十八修：落地精英逐只错帧生成
     this._updateEliteWatch(dt);   // 批次清空 → 金点飞向选项卡（开抽卡）
 
     // 正常测试模式：升级式同屏出怪（boss 关不会走到这里，startLevel 已分流）

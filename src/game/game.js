@@ -21,16 +21,17 @@ import { Portal } from './portal.js';
 import { ShopDraft } from './shop.js';        // 第五十五修：商店关（替代原激光机制关）
 import { portraitCanvas, portraitKey, PORTRAIT_STEP_MS } from './enemyPortrait.js'; // 第五十七修 v2：精英预告卡立绘
 import { BuddhaFx } from './buddhaFx.js';
+import { BlackHoleFx, isBlackHoleImmune, blackHoleEliteRadius, blackHolePullDuration, blackHoleSlotAngle, blackHoleDiscSlot, segmentCrossesCarpet } from './blackHole.js';
 import { LEVELS, isLaser, isBoss, isShop, levelTitleText, shouldShowLevelTitle, levelTitleDelay } from '../content/levels.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { scriptFor } from '../content/spawnDirector.js';
 import { ELITE_SCHEDULE } from '../content/eliteMonsters.js';
 import { LEVEL_PLANS, LEVEL_ENEMY } from '../content/spawnPlans.js';
-import { ATTR_TYPES, SKILL_CARDS, attrPoolForLevel } from '../content/cards.js';
+import { ATTR_TYPES, ATTRIBUTE_STATS, SKILL_CARDS, attrPoolForLevel } from '../content/cards.js';
 import { isTutorialLevel, TUTORIAL } from '../content/tutorial.js';   // 第六十修：教学关（第 1 关）脚本数据
 import { TutorialRunner } from './tutorial.js';                       // 第六十修：教学关运行态
 import { warFeedMul, lifestealChance, strongHunterMul, mibCooldown } from '../content/shopItems.js';
-import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO, HIT_FEEDBACK, FX, MID_WARNING, RAPID_FIRE, levelSecondsOf, CARD, GOLD_ORB, ELITE_FEEDBACK, HEAL_LINK, LEVEL_TITLE, HEAL_ON_DEATH, DRAGON_CHEST, SHOP, BOMB_LABEL, DANGER_ALARM } from '../core/constants.js';
+import { BALLOON, BUDDHA, SHIP, SHOOT, LASER, GRID, FLIP, MOVE, EXPLOSION, SKY_PANORAMA, DEPTH_SPRITE_STRESS, DEPTH_SPRITE_TYPES, NORMAL_TEST, DDA, FACE_BOSS, PORTAL, SPAWN_RING, GUN_MODES, SCATTER, SCATTER_BURST, BLACK_HOLE, LASER_SWORD, BOSS_BGM, CLOUD, SCORE_CAP, DRAGON, OPENING_MAGICIAN, BASIC_VOICE, MAGICIAN_BOSS, INTRO_VIDEO, HIT_FEEDBACK, FX, MID_WARNING, RAPID_FIRE, levelSecondsOf, CARD, GOLD_ORB, ELITE_FEEDBACK, HEAL_LINK, LEVEL_TITLE, HEAL_ON_DEATH, DRAGON_CHEST, MASK_CHEST, CHEST_BANNER, SHOP, BOMB_LABEL, DANGER_ALARM } from '../core/constants.js';
 import { basicVoiceNeed } from './basicVoice.js';   // 第六十四修：基础怪「成群」门槛（纯函数）
 import { DangerAlarm } from './dangerAlarm.js';   // 第六十一修：内圈报警（滴滴提醒清场）
 import { TutorialHintBoard } from './tutorialHint.js';   // 第六十二修：教学关常驻提示板（场地前上方）
@@ -45,6 +46,15 @@ import { VRPlusGame, VRPlus } from '../net/vrplus.js';   // VR+ 平台桥接：c
 const KIND_NAME = { normal: '普通关', crisis: '危机关', bonus: '奖励关', boss: 'Boss关', laser: '激光关', shop: '商店关' };
 const ORIGIN = new THREE.Vector3(0, 0, 0);
 const _WORLD_UP = new THREE.Vector3(0, 1, 0);
+// 第六十七修 · 黑洞：逐帧位置计算的复用临时量（不每帧 new）
+const _bhPos = new THREE.Vector3();
+const _bhRim = new THREE.Vector3();
+const _bhDmgPos = new THREE.Vector3();
+const _bhRightAxis = new THREE.Vector3();
+// 第六十九修：客户端真正实现过的技能 id。技能卡来自 content 包（服务器可覆盖），可能比 APK 新；
+//   不在这张表里的 id 一律不装备 / 不上架，避免「买了新技能但按了没反应」。
+const SKILL_IDS = ['scatter', 'scatterburst', 'buddha', 'lightsaber', 'blackhole'];
+const supportsSkill = (id) => SKILL_IDS.includes(id);
 
 // 线段 a-b 上离点 p 最近点的距离平方（命中判定用：子弹本帧轨迹 vs 怪物球心）
 // 退化（a≈b）时回退为点到点距离，不会误判。
@@ -197,6 +207,13 @@ export class Game {
     this.score = 0;
     this._buddhaFx = null;
     this._buddhaHit = new Set(); // 当前如来神掌已命中气球集合（防止重复结算）
+    // 第六十七修 · 黑洞（第 3 关第三张技能卡）：洞心 / 已捕获怪物 / 伤害节拍 / 视觉
+    this._bhActive = false;
+    this._bhFx = null;
+    this._bhT = 0;
+    this._bhDamageAcc = 0;
+    this._bhCenter = new THREE.Vector3();
+    this._bhTargets = null;
     this._cardState = null;
     this._levelSnapshot = null;  // 关卡开始时的玩家属性+分数快照
     this._explosions = [];       // 爆炸视觉特效列表
@@ -228,9 +245,11 @@ export class Game {
     // 第五十修 · 第12关龙族宝箱：龙 Boss 打死后先立宝箱、5 秒射击计数换攻击力（见 src/game/dragonChest.js）
     this._chest = null;           // DragonChest 实例（首次触发时懒建；表现/计数都在它自己身上）
     this._chestDone = false;      // 本关宝箱窗口是否已经开过（_clearRoundExtras 复位）
+    this._chestPending = 0;       // 宝箱出现前的 2 秒横幅倒计时（>0 时 _chestRunning 为真，挡住通关抽卡）
+    this._chestCfg = null;        // 本关宝箱配置（MASK_CHEST / DRAGON_CHEST）
     this._buddhaQueue = [];       // 如来神掌分帧结算队列（第四十二修，见 _drainBuddhaQueue）
     this.enemyFreeze = 0;        // 定身咒计时(s)：>0 时敌人暂停行动（Boss 仅前 50% 时长）
-    this.selectedSkill = 'scatter'; // 当前装备技能：前期默认「能量散射」；第三关选卡后可替换为 lightsaber/freeze/buddha，左手柄 grip 触发
+    this.selectedSkill = 'scatter'; // 当前装备技能：前期默认「能量散射」；第3关商店可换 lightsaber/buddha/blackhole，左手柄 grip 触发
     this.skillCooldown = 0;      // 技能释放冷却计时(s)：>0 时握柄无效，HUD 显示剩余
     // —— 第五十五修 · 商店关（第3/9/15关，替代原激光机制关）——
     this.shopDraft = null;       // ShopDraft 实例（每进一次商店关新建，见 _enterShop）
@@ -918,6 +937,7 @@ export class Game {
     this._buddhaQueue.length = 0;
     this.combo = 0;
     if (this._buddhaFx) { this._buddhaFx.dispose(); this._buddhaFx = null; }
+    this._endBlackHole();                       // 第六十七修：回菜单释放吸附 + 清漩涡
     this.cards.clearCards();                    // 清抽卡气球（不拆除 group，可再次 open 复用）
     this._cardState = null;
     this._levelSnapshot = null;
@@ -952,6 +972,7 @@ export class Game {
 
   _loadLevel(i) {
     this.audio?.stopAllMedia();
+    this.world.resetWarm?.();   // 第六十八修：新一关重新收集要预热的材质
     const lv = LEVELS[i];
     this.normalTest = false; // 默认非测试；仅普通关且 NORMAL_TEST.enabled 时被 startLevel 翻为 true
     // 第六十修：教学关重建流程（死亡重开也走这里 → 教学从头再来），其它关一律清空
@@ -965,6 +986,7 @@ export class Game {
     if (this.shopDraft) { this.shopDraft.dispose(); this.shopDraft = null; } // 第五十五修：清上一关商店场地
     this._disposeOpening(); // 清上一关残留的开场动画 + 作废其语音联动（防跨关泄漏）
     if (this._buddhaFx) { this._buddhaFx.dispose(); this._buddhaFx = null; } // 清上一关残留的如来神掌特效
+    this._endBlackHole(); // 第六十七修：释放上一关的吸附 + 清漩涡（防跨关残留）
     this._clearPortals(); // 清上一关残留的传送门装饰
     this.waves.clearPending();   // 清上一关残留出怪光点（防光点飞到新关卡）
     this._levelTasks = null;     // 第四十五修：丢掉上一关没跑完的分帧构建任务（本函数会重建）
@@ -1145,6 +1167,7 @@ export class Game {
       this._introActive = false;
       this.world._restoreFade();    // 无穿云：确保无残留半透明材质
       this.world.setEnvOpacity(1);  // 无穿云：场景直接满显
+      this.balloons.flushRetired?.(Infinity); // 无穿云：没有雾可藏，直接释放完
       this._startLevelAudio();      // 无穿云：直接启动本关 BGM + 开场语音
     }
     // 第四十九修：关卡标题卡 —— 有云雾就在**雾里**弹（现场反馈：原先是雾散后才弹，和出怪撞在一起），
@@ -1227,8 +1250,10 @@ export class Game {
       addType('basic');       // 蓝阶段 3×3 小怪 GLB + 立绘抓帧
       addType('eliteKnight'); // 蓝阶段中心格 = 铁甲兵（第四十六修：与 1/2/4/5 关的精英一致）
       q.push({ url: FACE_BOSS.BLACK_CLONE_MODEL, radius: ENEMY_TYPES.blackMaskClone.radius, capture: true });
+      addUrl(DRAGON_CHEST.MODEL, true);           // 第七十四修：宝箱模型在穿云窗内预载 + GPU 预热，横幅期不再露方块
     } else if (lv.boss === 'dragon') {
       addUrl(DRAGON.HEAD_MODEL, true);            // 第12关龙 Boss 龙头 GLB（未被 main 预载）+ GPU 预热
+      addUrl(DRAGON_CHEST.MODEL, true);           // 第七十四修：同上，龙族宝箱提前进入缓存
       addType('basic');  addType('ninja');       // 龙 Boss 召唤用基础怪/忍者 GLB + DepthSprite 立绘：进关预载，避免首召冷加载卡顿
     } else if (lv.boss === 'magician') {
       // 第18关魔术师 Boss：召唤池（普通怪 + 三阶段精英怪：盾兵/幽灵/章鱼）的 GLB + DepthSprite 立绘抓帧
@@ -1592,6 +1617,11 @@ export class Game {
         this.world.extendFadeRoots(this.world.scene.children.filter((o) => !this._fadeSceneBefore.has(o)), _ef);
       }
       this.world.setObjectsOpacity(_ef);  // 统一套用当前淡入进度
+      // 第六十八修：把「淡入材质恢复最终状态 + shader 重编译」摊到云雾窗内，每帧 1 份；
+      //   再预热几份还没上过屏的材质/贴图 —— 转头时不再有第一次编译的长帧。
+      this.world.restoreFadeStep?.(this.world.camera, 1, 2.5);
+      this.world.warmSceneGpu?.(this.world.camera, 2.0);
+      this.balloons.flushRetired?.(2);     // 第六十八修：上一关/融合吸收的 GPU 资源在雾里分帧释放
       this.hud.setHp(this.player.hp, this.player.maxHp);
       this._pumpIntroPreload();            // 穿云窗内每帧摊一个预载（敌人 GLB 解码 + DepthSprite 抓帧）
       if (this._introT >= CLOUD.INTRO_DELAY) {
@@ -1626,16 +1656,26 @@ export class Game {
     }
 
     // 选中技能：冷却递减；左手柄 grip(或桌面 F)请求释放 → 冷却就绪则触发
-    this.skillCooldown = Math.max(0, this.skillCooldown - dt);
+    // 第六十九修：把 NaN / undefined 自愈成 0。旧包遇到「内容包卖了新技能、客户端还没实现」时，
+    //   冷却曾经变成 undefined / NaN → `<= 0` 恒为 false ⇒ 左右手**永久**放不出技能。
+    this.skillCooldown = Number.isFinite(this.skillCooldown)
+      ? Math.max(0, this.skillCooldown - dt)
+      : 0;
     // 第四十六修：第4关开局锁技能（提示「快使用技能」结束后解锁）—— 请求照常消费，只是丢弃，防误按后延迟触发
     if (this._skillLocked && this.waves && this.waves._scriptElapsed >= this._skillUnlockAt) {
       this._skillLocked = false;
       this.log('[技能] 解锁（第4关提示结束）');
     }
-    if (this.input.consumeSkill() && !this._skillLocked && this.selectedSkill && this.skillCooldown <= 0) this._triggerSelectedSkill();
+    if (this.input.consumeSkill()) {
+      // 第六十九修：被拒时也留一行痕（头显上看不到 DOM 日志，但现场能导出留痕）
+      if (this._skillLocked) this.log('[技能] 未就绪：开场提示未结束');
+      else if (this.skillCooldown > 0) this.log('[技能] 冷却中 ' + this.skillCooldown.toFixed(1) + 's');
+      else this._triggerSelectedSkill();
+    }
     const skillLabel = this.selectedSkill === 'buddha' ? '如来神掌'
                      : this.selectedSkill === 'lightsaber' ? '激光剑'
                      : this.selectedSkill === 'scatterburst' ? '散射强化'
+                     : this.selectedSkill === 'blackhole' ? '黑洞'
                      : this.selectedSkill === 'scatter' ? '能量散射' : null;
     this.hud.setSkill(this._skillLocked ? '技能锁定（等提示结束）' : skillLabel, this.skillCooldown, this._skillCdTotal());
 
@@ -1653,12 +1693,14 @@ export class Game {
     // ====== 商店关（第五十五修）：无敌人，只有可购买的气球 ======
     if (this.shopMode) {
       this._updateShop(dt, pp);
+      this._updateBlackHole(dt);   // 第六十九修：商店里放的洞也要走时间轴（否则停在原地不消失）
       return;
     }
 
     // ====== 激光关：无普通敌人，仅激光气球 ======
     if (this.laserMode) {
       this._updateLaserLevel(dt, pp);
+      this._updateBlackHole(dt);   // 第六十九修：同上（当前机制关已改商店，保留兼容）
       return;
     }
 
@@ -1678,6 +1720,9 @@ export class Game {
     // 第六十修 · 教学关：按段落推进（出怪 / 横幅 / 单卡 / 免费技能），
     //   走完整条链后由 _finishTutorial 交回正常三选一（见 game/tutorial.js）
     this.tutorial?.update(dt);
+
+    // 第六十七修 · 黑洞：必须排在 balloons/waves 之后 —— 接管位置时新刷出的怪也会被吸
+    this._updateBlackHole(dt);
 
     // 第四十二修 · 中场预警：普通关/危机关过半时弹一次「更强的敌人来袭」（每关一次）
     //   判据 = 本关时间窗(levelSecondsOf) × MID_WARNING.AT；机制关/Boss 关没有倒计时，不弹。
@@ -1727,7 +1772,7 @@ export class Game {
     if (cleared && this._chestRunning()) return;
     if (cleared && !(this.waves && (this.waves._winBanner || this.waves.magicianCleared))) {
       // 第四十六修：金点正在飞 / 中途抽卡已开 → 先挂起，等它们收尾（_onMidCardDone / 金点落地后补）
-      if (this._chestDue()) this._startDragonChest();
+      if (this._chestDue()) this._startBossChest();
       else if (this._goldOrbs.length || this._midDraftPending) this._levelClearHeld = true;
       else if (this._draftsThisLevel > 0) {
         // 第四十七修：本关已经抽过卡（精英清场那次）→ 不再弹第二次，但关卡照常推进
@@ -1871,7 +1916,7 @@ export class Game {
         this.audio?.stopLaserHum('level');
         this.laser.dispose();
         this.laser = null;
-        this._enterCard(); // 第三关固定三张红色技能卡（如来神掌/激光剑/散射强化）
+        this._enterCard(); // 第三关固定三张红色技能卡（如来神掌/激光剑/黑洞）
       }
       return;
     }
@@ -2304,47 +2349,86 @@ export class Game {
 
   // ====== 第三关三技能 ======
   // 选卡：仅「装备」技能（激光剑→左手柄出现），不立即释放（释放由左手柄 grip 触发 _triggerSelectedSkill）
+  /** 第六十九修：客户端真正实现过的技能 id（商店据此过滤内容包里的新卡）。 */
+  _supportsSkill(id) { return supportsSkill(id); }
+
   _applySkillCard(id) {
-    this.selectedSkill = id;
+    // 第六十九修：技能卡来自 content 包，可能比客户端代码新。未知 id 若直接写进 selectedSkill，
+    //   会变成「装备成功但按了没反应」。这里统一收口：未知 id 不落库，保留当前可用技能；
+    //   当前技能也无效则回落到默认能量散射。
+    let use = id;
+    if (!supportsSkill(use)) {
+      const keep = supportsSkill(this.selectedSkill) ? this.selectedSkill : 'scatter';
+      this.log(`[技能] 未知技能 id=${id}（客户端未实现，需更新 APK）：保留 ${keep}`);
+      use = keep;
+    }
+    this.selectedSkill = use;
     this.skillCooldown = 0;                 // 装备即就绪，可立即按手柄释放
-    if (id === 'buddha') this.player.buddhaUnlocked = true;
-    this.leftSword?.setEquipped(id === 'lightsaber'); // 选到激光剑→左手出现；选别的→隐藏
-    const label = id === 'buddha' ? '如来神掌' : id === 'lightsaber' ? '激光剑' : id === 'scatterburst' ? '散射强化' : id;
+    if (use === 'buddha') this.player.buddhaUnlocked = true;
+    this.leftSword?.setEquipped(use === 'lightsaber'); // 选到激光剑→左手出现；选别的→隐藏
+    const label = use === 'buddha' ? '如来神掌' : use === 'lightsaber' ? '激光剑' : use === 'scatterburst' ? '散射强化' : use === 'blackhole' ? '黑洞' : use;
     this.log(`已装备：${label}（按左手柄 grip 释放）`);
   }
 
   // 左手柄 grip/桌面 F 触发：按当前装备技能分发释放，统一冷却由 this.skillCooldown 负责
   _triggerSelectedSkill() {
+    let cast = false;
     switch (this.selectedSkill) {
       case 'buddha':
-        if (!this.player.buddhaUnlocked) { this.log('如来神掌尚未解锁'); return; } // 还原原语义：未解锁不放（return 不进入冷却）
-        if (!this._doBuddha()) return; // 能量不足 → 不进入冷却，可立即重试
+        if (!this.player.buddhaUnlocked) { this.log('如来神掌尚未解锁'); return false; } // 还原原语义：未解锁不放（return 不进入冷却）
+        if (!this._doBuddha()) return false; // 能量不足 → 不进入冷却，可立即重试
+        cast = true;
         break;
       case 'lightsaber':
-        if (!this._castLaserSword()) return; // 能量不足 → 不进入冷却，可立即重试
+        if (!this._castLaserSword()) return false; // 能量不足 → 不进入冷却，可立即重试
+        cast = true;
         break;
       case 'scatterburst':
-        if (!this._castScatterBurst()) return; // 能量不足 → 不进入冷却，可立即重试
+        if (!this._castScatterBurst()) return false; // 能量不足 → 不进入冷却，可立即重试
+        cast = true;
+        break;
+      case 'blackhole':
+        if (!this._castBlackHole()) return false; // 能量不足 → 不进入冷却，可立即重试
+        cast = true;
         break;
       case 'scatter':
-        if (!this._castScatter()) return; // 能量不足 → 不进入冷却，可立即重试
+        if (!this._castScatter()) return false; // 能量不足 → 不进入冷却，可立即重试
+        cast = true;
+        break;
+      default:
+        // 第六十九修：不认识的技能（内容包比 APK 新）→ 回落默认能量散射。
+        //   绝不能「什么都不放却进冷却」。
+        this.log(`[技能] 未知技能 id=${this.selectedSkill}：回落能量散射`);
+        this.selectedSkill = 'scatter';
+        if (!this._castScatter()) return false;
+        cast = true;
         break;
     }
+    if (!cast) return false;
     // 第六十二修：记「本关放了几次技能」。走到这里 = 释放成功（失败的在上面就 return 了）。
     //   教学关精英用它判断「玩家已经读懂提示 → 可以放它走了」（见 content/tutorial.js 的 eliteHoldOver）。
     this._skillCasts = (this._skillCasts || 0) + 1;
-    this.skillCooldown = this._skillCdTotal();
+    this.skillCooldown = (typeof this._skillCdTotal === 'function')
+      ? this._skillCdTotal()
+      : Math.max(SHOP.CD_FLOOR, SCATTER.COOLDOWN);
+    return true;
   }
   _skillCdTotal() {
     // 第六十修：教学关精英段 —— 散射技能无消耗、无冷却（见 content/tutorial.js 的 ELITE 段）
     if (this._tutorialFreeSkill) return 0;
+    if (!this.selectedSkill) return 0;   // 没装备技能 → 无冷却（历史口径）
     // 第五十五修：商店关「技能冷却-」叠加生效（只影响总冷却口径；下限 SHOP.CD_FLOOR 防 0 冷却）
-    const _down = this.player.skillCdDown || 0;
-    if (this.selectedSkill === 'buddha') return Math.max(SHOP.CD_FLOOR, BUDDHA.COOLDOWN - _down);
-    if (this.selectedSkill === 'lightsaber') return Math.max(SHOP.CD_FLOOR, LASER_SWORD.COOLDOWN - _down);
-    if (this.selectedSkill === 'scatterburst') return Math.max(SHOP.CD_FLOOR, SCATTER_BURST.COOLDOWN - _down);
-    if (this.selectedSkill === 'scatter') return Math.max(SHOP.CD_FLOOR, SCATTER.COOLDOWN - _down);
-    return 0;
+    // 第六十九修：无论 id 认不认识、常量是否缺失，都返回有限正数 —— 冷却绝不允许是 undefined / NaN。
+    const _down = Number.isFinite(this.player.skillCdDown) ? this.player.skillCdDown : 0;
+    const cd = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.max(SHOP.CD_FLOOR, n - _down) : SHOP.CD_FLOOR;
+    };
+    if (this.selectedSkill === 'buddha') return cd(BUDDHA.COOLDOWN);
+    if (this.selectedSkill === 'lightsaber') return cd(LASER_SWORD.COOLDOWN);
+    if (this.selectedSkill === 'scatterburst') return cd(SCATTER_BURST.COOLDOWN);
+    if (this.selectedSkill === 'blackhole') return cd(BLACK_HOLE.COOLDOWN);
+    return cd(SCATTER.COOLDOWN);
   }
 
   // 能量散射（默认技能）：消耗 player.skillCost 能量，从枪口喷出 COUNT 弹头，轴向 DIST 米铺成半径 RADIUS 圆盘
@@ -2361,7 +2445,9 @@ export class Game {
     // 以瞄准方向 dir 为轴建正交基：right ⊥ dir（水平），up = right × dir
     const right = new THREE.Vector3().crossVectors(dir, _WORLD_UP).normalize();
     const up = new THREE.Vector3().crossVectors(right, dir).normalize();
-    const dmg = (SCATTER.DAMAGE > 0 ? SCATTER.DAMAGE : this.player.atk) * this.player.skillDamageMul;
+    // 现场：默认一发散射打不死精英 → 基础伤害 ×3（SCATTER.DAMAGE_MUL，可调）
+    const dmg = (SCATTER.DAMAGE > 0 ? SCATTER.DAMAGE : this.player.atk)
+      * (SCATTER.DAMAGE_MUL || 1) * this.player.skillDamageMul;
     for (let i = 0; i < SCATTER.COUNT; i++) {
       const theta = Math.random() * Math.PI * 2;
       const r = SCATTER.SPREAD_DISC ? Math.sqrt(Math.random()) * SCATTER.RADIUS : SCATTER.RADIUS; // 实心=面积均匀，环=等半径
@@ -2376,7 +2462,7 @@ export class Game {
     return true;
   }
 
-  // 散射强化（第3关技能卡，一次性）：消耗 player.skillCost 能量，喷出 SCATTER_BURST.COUNT 发、每发 SCATTER_BURST.DAMAGE（×倍率）
+  // 散射强化（旧第3关技能卡）：第六十七修起卡已换成黑洞 → 本方法不再可达；保留常量/实现供子弹池测试与历史口径引用
   _castScatterBurst() {
     if (this.score < this.player.skillCost) { this.log(`能量不足（需${this.player.skillCost}）`); return false; }
     this.score -= this.player.skillCost;
@@ -2400,6 +2486,203 @@ export class Game {
     this.log(`散射强化！消耗${this.player.skillCost}能量，喷出${n}弹头`);
     this.selectedSkill = 'scatter'; // 一次性技能：用后回落到默认能量散射（避免空技能）
     return true;
+  }
+
+  // ====== 第六十七修 · 黑洞（第 3 关第三张技能卡）======
+  // 释放：消耗 skillCost 能量，在「头部朝向」正前方 15m 生成漩涡；洞心位置/朝向在释放瞬间锁定。
+  _castBlackHole() {
+    if (this.score < this.player.skillCost) { this.log(`能量不足（需${this.player.skillCost}）`); return false; }
+    this.score -= this.player.skillCost;
+    this.hud.setScore(this.score);
+    this._startBlackHole();
+    this.audio?.playBlackHole?.();
+    this.log(`黑洞！消耗${this.player.skillCost}能量，吸附 ${BLACK_HOLE.DURATION} 秒（每秒 ${BLACK_HOLE.DPS} 伤害）`);
+    return true;
+  }
+
+  _startBlackHole() {
+    this._endBlackHole();
+    const cam = this.world.camera;
+    const head = cam.getWorldPosition(new THREE.Vector3());
+    const dir = cam.getWorldDirection(new THREE.Vector3());
+    dir.y = 0;
+    if (dir.lengthSq() < 1e-6) {
+      // 极端情况：玩家正抬头/低头看 → 水平前向退化。用相机「上方向」的水平投影取偏航，避免固定回 -Z。
+      const q = cam.getWorldQuaternion(new THREE.Quaternion());
+      dir.set(0, 1, 0).applyQuaternion(q);
+      dir.y = 0;
+      if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+    }
+    dir.normalize();
+    this._bhCenter.set(
+      head.x + dir.x * BLACK_HOLE.DIST,
+      BLACK_HOLE.CENTER_Y,
+      head.z + dir.z * BLACK_HOLE.DIST,
+    );
+    // 吸附环整体往玩家方向前移一点点，贴在漩涡正面：
+    //   环本身与黑洞同向、竖直立在与地面垂直的平面上，所有怪围成黑洞外圈；
+    //   0.55m 的前移只用于避开黑色盘面的深度遮挡，不再把整圈推到远处。
+    this._bhFrontDir = new THREE.Vector3(head.x - this._bhCenter.x, 0, head.z - this._bhCenter.z);
+    if (this._bhFrontDir.lengthSq() < 1e-6) this._bhFrontDir.set(0, 0, 1);
+    this._bhFrontDir.normalize();
+    this._bhRight = _bhRightAxis.crossVectors(_WORLD_UP, this._bhFrontDir).normalize().clone();
+    this._bhAbsorbCenter = this._bhCenter.clone().addScaledVector(this._bhFrontDir, BLACK_HOLE.RING_FRONT || 0);
+    this._bhActive = true;
+    this._bhT = 0;
+    this._bhDamageAcc = 0;
+    this._bhTargets = new Set();
+    this._bhSlotSeq = 0;
+    this._bhSlotBase = null;   // 第六十八修：第一只被吸的怪决定环的起始方位
+    this._bhFx = new BlackHoleFx(this.world.scene, this._bhCenter, head);
+  }
+
+  /** 每帧：捕获新怪 → 接管位置 → 伤害节拍 → 驱动视觉。必须在 balloons/waves 之后调用。 */
+  _updateBlackHole(dt) {
+    if (!this._bhActive) return;
+    this._bhT += dt;
+    if (this._bhT >= BLACK_HOLE.DURATION) { this._endBlackHole(); return; }
+
+    const list = this.balloons ? this.balloons.list : null;
+    if (list) {
+      // 先完成本帧捕获，再统一排布：新怪加入后，圆饼会以当前存活数量重新紧凑铺开。
+      for (let i = list.length - 1; i >= 0; i--) {
+        const b = list[i];
+        if (!b || !b.alive || b._bhCaptured || isBlackHoleImmune(b)) continue;
+        this._bhCapture(b);
+      }
+
+      // 只有小怪参与圆饼填充；精英仍走外圈振荡（向前挪一点又被拉回去）。
+      const basics = [];
+      for (const b of this._bhTargets) {
+        if (b && b.alive && b._bhCaptured && !b._bhElite) basics.push(b);
+      }
+      let basicSlot = 0;
+      for (const b of this._bhTargets) {
+        if (!b || !b.alive || !b._bhCaptured) continue;
+        this._bhMoveTo(b, dt, b._bhElite ? -1 : basicSlot++, basics.length);
+      }
+    }
+
+    this._bhDamageAcc += dt;
+    while (this._bhDamageAcc >= BLACK_HOLE.TICK) {
+      this._bhDamageAcc -= BLACK_HOLE.TICK;
+      this._bhDamageTick();
+    }
+    this._bhFx?.update(dt);
+  }
+
+  _bhCapture(b) {
+    const p = b.mesh.position;
+    b._bhCaptured = true;
+    b._bhPrevFrozen = !!b.moveFrozen;
+    b.moveFrozen = true;
+    b._bhElapsed = 0;
+    b._bhDur = blackHolePullDuration(b);
+    b._bhElite = !!(b.isElite || b.isClimax);
+    // 第六十八修：所有怪不再沿「各自的来向」排队 —— 那会挤成一条线。
+    //   以第一只的来向为基准，之后按黄金角错开，整体围成小圈。
+    if (!Number.isFinite(this._bhSlotBase)) {
+      this._bhSlotBase = Math.atan2(p.z - this._bhCenter.z, p.x - this._bhCenter.x);
+    }
+    if (!Number.isFinite(this._bhSlotSeq)) this._bhSlotSeq = 0;
+    b._bhAngle = blackHoleSlotAngle(this._bhSlotSeq++, this._bhSlotBase);
+    b._bhFrom = p.clone();
+    b._bhArc = segmentCrossesCarpet(p, this._bhCenter, b.effectiveRadius || 0);
+    b._bhCtrl = b._bhArc
+      ? new THREE.Vector3(
+        (p.x + this._bhCenter.x) * 0.5,
+        Math.max(p.y, this._bhCenter.y) + BLACK_HOLE.ARC_HEIGHT,
+        (p.z + this._bhCenter.z) * 0.5,
+      )
+      : null;
+    b._showChargeOrb?.(false);   // 忍者蓄力球：被吸时收起，避免光球跟着飞
+    this._bhTargets.add(b);
+  }
+
+  _bhMoveTo(b, dt, slotIndex = -1, slotCount = 1) {
+    b._bhElapsed = (b._bhElapsed || 0) + dt;
+    const dur = Math.max(0.01, b._bhDur || BLACK_HOLE.PULL_BASIC);
+    const u = Math.min(1, b._bhElapsed / dur);
+    const s = u * u * (3 - 2 * u);           // smoothstep：起步慢、末端快（吸力感）
+    const hold = Math.max(0, b._bhElapsed - dur);
+    const ring = this._bhAbsorbCenter || this._bhCenter;
+    // 第六十九修 · 现场口径：吸附圈要和黑洞一样竖直，怪物围着黑洞的圆排布。
+    //   旧实现用 (cos, 0, sin) 铺在水平面上，远看像一圈怪躺在地上；现在改用
+    //   黑洞平面的 right / world-up 两个轴，圆环严格竖直、正对释放瞬间的玩家。
+    const right = (this._bhRight && this._bhRight.lengthSq() > 1e-8)
+      ? this._bhRight
+      : _bhRightAxis.crossVectors(_WORLD_UP, this._bhFrontDir || _WORLD_UP).normalize();
+    if (b._bhElite) {
+      const rimR = blackHoleEliteRadius(hold);
+      const ang = b._bhAngle + 0.35 * hold;
+      _bhRim.copy(ring)
+        .addScaledVector(right, Math.cos(ang) * rimR)
+        .addScaledVector(_WORLD_UP, Math.sin(ang) * rimR);
+    } else {
+      // 第七十四修：小怪不再固定在洞缘，而是按向日葵排布填满整个竖直圆面（圆饼）。
+      const slot = blackHoleDiscSlot(slotIndex, slotCount);
+      _bhRim.copy(ring)
+        .addScaledVector(right, slot.x)
+        .addScaledVector(_WORLD_UP, slot.y);
+    }
+    if (b._bhCtrl) {
+      const iu = 1 - s;
+      _bhPos.set(0, 0, 0)
+        .addScaledVector(b._bhFrom, iu * iu)
+        .addScaledVector(b._bhCtrl, 2 * iu * s)
+        .addScaledVector(_bhRim, s * s);
+    } else {
+      _bhPos.lerpVectors(b._bhFrom, _bhRim, s);
+    }
+    b.mesh.position.copy(_bhPos);
+  }
+
+  /** 伤害节拍：只有距洞心 DAMAGE_RADIUS 内的怪受伤（Boss/无敌/受控 Boss 实体免疫）。 */
+  _bhDamageTick() {
+    if (!this.balloons) return;
+    const dmg = BLACK_HOLE.DPS * BLACK_HOLE.TICK * (this.player.skillDamageMul || 1);
+    const r2 = BLACK_HOLE.DAMAGE_RADIUS * BLACK_HOLE.DAMAGE_RADIUS;
+    const damageCenter = this._bhAbsorbCenter || this._bhCenter;
+    const list = this.balloons.list.slice();
+    for (let i = list.length - 1; i >= 0; i--) {
+      const b = list[i];
+      if (!b || !b.alive || !this.balloons.list.includes(b)) continue;
+      if (isBlackHoleImmune(b)) continue;
+      if (b.mesh.position.distanceToSquared(damageCenter) > r2) continue;
+      const killed = b.takeDamage(dmg, true);
+      if (this.damageNumbers) {
+        _bhDmgPos.copy(b.mesh.position);
+        _bhDmgPos.y += (b.effectiveRadius || 0.5) + 0.35;
+        this.damageNumbers.spawn(_bhDmgPos, b._lastDamage != null ? b._lastDamage : dmg, {
+          key: b, kill: killed, elite: !!b.isElite,
+        });
+      }
+      if (killed) this._onKilled(b);
+    }
+  }
+
+  /** 结束/切关/重开：清标 → 恢复原 moveFrozen → 原地放回 → 销毁视觉。 */
+  _endBlackHole() {
+    if (this._bhTargets) {
+      for (const b of this._bhTargets) {
+        if (!b) continue;
+        b._bhCaptured = false;
+        b.moveFrozen = !!b._bhPrevFrozen;
+        b._bhFrom = null;
+        b._bhCtrl = null;
+        b._bhElapsed = 0;
+        b._bhArc = false;
+      }
+      this._bhTargets.clear();
+      this._bhTargets = null;
+    }
+    this._bhActive = false;
+    this._bhT = 0;
+    this._bhDamageAcc = 0;
+    this._bhSlotSeq = 0;
+    this._bhSlotBase = null;
+    this._bhFx?.dispose();
+    this._bhFx = null;
   }
 
   // 激光剑：消耗 player.skillCost 能量，激活左手柄「5秒伤害状态」。期间左手自由挥动，剑刃线段扫过怪物即扣血，
@@ -2478,6 +2761,7 @@ export class Game {
     for (let i = this.balloons.list.length - 1; i >= 0; i--) {
       const balloon = this.balloons.list[i];
       if (balloon.controlled) continue; // 龙 Boss 气球：纯靶子，不进入4×8自爆、不伤飞船
+      if (balloon._bhCaptured) continue; // 第六十七修：被黑洞吸着的怪不结算自爆（过顶弧线会掠过飞毯）
       const pos = balloon.mesh.position;
       // 红阶段旗子"砸落"途中：仍高于 RED_FLAG_HIT_Y 时不结算命中。
       // 原判定只看 |x|/|z|（忽略高度），旗子在 23m 高空进入区域就爆 → 看不到"砸落"过程。
@@ -2727,25 +3011,64 @@ export class Game {
     this.log('[提示] ' + text);
   }
 
-  // ====== 第五十修 · 第12关·龙族宝箱 ======
+  // ====== 第五十修 / 第七十修 · Boss 宝箱（第 6 关脸谱箱 + 第 12 关龙族箱）======
 
-  /** 现在该不该开宝箱：第12关（龙 Boss）已清 && 本关还没开过（口径见 constants.DRAGON_CHEST） */
-  _chestDue() {
-    if (!DRAGON_CHEST.ENABLED || this._chestDone) return false;
-    if (!this.dragon) return false;                       // 只有龙 Boss 关才结算宝箱
+  /** 本关该用哪份宝箱配置；非 Boss 关 / 第 18 关（直接结束本局）返回 null。 */
+  _chestConfigForLevel() {
     const lv = LEVELS[this.levelIndex];
-    return !!lv && lv.n === DRAGON_CHEST.LEVEL;
+    if (!lv || !isBoss(lv)) return null;
+    if (lv.n === MASK_CHEST.LEVEL && MASK_CHEST.ENABLED) return MASK_CHEST;
+    if (lv.n === DRAGON_CHEST.LEVEL && DRAGON_CHEST.ENABLED) return DRAGON_CHEST;
+    return null;
   }
 
-  /** 宝箱窗口（计数/飞行）是否正在跑 —— 跑着时别去开抽卡 */
-  _chestRunning() { return !!(this._chest && this._chest.running); }
+  /** 现在该不该开宝箱：本关是配了宝箱的 Boss 关 && 本关还没开过 */
+  _chestDue() {
+    return !!this._chestConfigForLevel() && !this._chestDone;
+  }
 
-  /** 打开宝箱窗口（实例懒建；名字「龙族宝箱」在箱下、加成数值在箱上，见 dragonChest.js） */
-  _startDragonChest() {
-    if (!this._chest) this._chest = new DragonChest(this.world.scene);
+  /** 宝箱流程（2 秒横幅 + 计数 + 飞行）是否正在跑 —— 跑着时别去开抽卡 */
+  _chestRunning() { return this._chestPending > 0 || !!(this._chest && this._chest.running); }
+
+  /** 先弹 2 秒「宝箱出现，快攻击」，横幅收掉后再真正开计数窗口 */
+  _startBossChest() {
+    const cfg = this._chestConfigForLevel();
+    if (!cfg) return;
+    this._chestCfg = cfg;
     this._chestDone = true;                               // 先置位：本关只开一次
+    this._ensureChest(cfg);                                // 第七十四修：横幅期间就建好并开始加载，保持隐身
+    if (CHEST_BANNER.ENABLED && CHEST_BANNER.SECONDS > 0) {
+      this._chestPending = CHEST_BANNER.SECONDS;
+      this.midWarning?.show(CHEST_BANNER.TEXT, 'chest');
+      this.log('宝箱预告：' + CHEST_BANNER.TEXT + '（' + CHEST_BANNER.SECONDS + 's 后开箱）');
+    } else {
+      this._chestPending = 0;
+      this._beginChestWindow();
+    }
+  }
+
+  /** 按配置复用/创建宝箱实例；创建即开始异步加载，但 group 始终隐身，等横幅结束再 start。 */
+  _ensureChest(cfg) {
+    if (!cfg) return null;
+    if (this._chest && this._chest.cfg !== cfg) {
+      this._chest.dispose();
+      this._chest = null;
+    }
+    if (!this._chest) this._chest = new DragonChest(this.world.scene, cfg);
+    return this._chest;
+  }
+
+  /** 横幅结束 → 立箱并开始计数（不同 Boss 复用同一个实例，换配置时销毁重建） */
+  _beginChestWindow() {
+    const cfg = this._chestCfg || this._chestConfigForLevel();
+    if (!cfg) return;
+    this._ensureChest(cfg);
     this._chest.start();
-    this.log('龙族宝箱出现：' + DRAGON_CHEST.WINDOW + ' 秒内越会打，攻击力加成越高');
+    if (cfg.KIND === 'bullets') {
+      this.log(cfg.NAME + '出现：' + cfg.WINDOW + ' 秒内用子弹打箱子，命中越多额外弹道越多');
+    } else {
+      this.log(cfg.NAME + '出现：' + cfg.WINDOW + ' 秒内越会打，攻击力加成越高');
+    }
   }
 
   /**
@@ -2757,31 +3080,54 @@ export class Game {
   _chestHitTest() {
     const c = this._chest;
     if (!c || !c.counting) return;
-    const r = DRAGON_CHEST.HIT_R;
+    const cfg = c.cfg || DRAGON_CHEST;
+    const r = cfg.HIT_R;
     const center = c.group.position;
     const list = this.bullets.active;
     for (let i = list.length - 1; i >= 0; i--) {
       const b = list[i];
       if (_pointSegDistSq(center, b.prevPos, b.pos) >= r * r) continue;
       this.bullets.release(b);
+      c.addHit?.();
       c.punch();
-      this.fx?.spark(b.pos, DRAGON_CHEST.HIT_SPARK);
+      this.fx?.spark(b.pos, cfg.HIT_SPARK || DRAGON_CHEST.HIT_SPARK);
       this.audio?.playHit();
       this._pulseHaptic('HIT');
     }
   }
 
-  /** 每帧推进宝箱；光点落地（'done'）→ 兑现攻击力加成 → 下一帧自然放行通关抽卡 */
+  /** 每帧推进宝箱；光点落地（'done'）→ 兑现奖励 → 下一帧自然放行通关抽卡 */
   _updateDragonChest(dt) {
+    // 先走「宝箱出现」的 2 秒横幅；横幅没走完不计时、也不刷箱子
+    if (this._chestPending > 0) {
+      this._chestPending -= dt;
+      if (this._chestPending > 0) return;
+      this._chestPending = 0;
+      this._beginChestWindow();
+      return;
+    }
     if (!this._chest || !this._chest.running) return;
     this._chestHitTest();
     if (this._chest.update(dt, this.world.camera) !== 'done') return;
+    const cfg = this._chest.cfg || DRAGON_CHEST;
     const bonus = this._chest.bonus || 0;
-    if (bonus > 0) {
+    if (cfg.KIND === 'bullets') {
+      if (bonus > 0) {
+        const limit = ATTRIBUTE_STATS.multiShot[2] || 12;
+        const before = this.player.shotCount || 1;
+        this.player.shotCount = Math.min(limit, before + bonus);
+        const gained = this.player.shotCount - before;
+        this.log(cfg.NAME + '：额外弹道 +' + gained + '（命中 ' + this._chest.hits
+          + ' 发 → 数值 ' + (this._chest.value || 0).toFixed(1) + '，现 ' + this.player.shotCount + ' 条）');
+      } else {
+        this.log(cfg.NAME + '：命中 ' + this._chest.hits + ' 发 → 数值 '
+          + (this._chest.value || 0).toFixed(1) + '，不足 0.5 → 无额外弹道');
+      }
+    } else if (bonus > 0) {
       this.player.atk += bonus;
-      this.log('龙族宝箱：攻击力 +' + bonus + '（窗口内 ' + this._chest.bullets + ' 发 → ' + this.player.atk + '）');
+      this.log(cfg.NAME + '：攻击力 +' + bonus + '（窗口内 ' + this._chest.bullets + ' 发 → ' + this.player.atk + '）');
     } else {
-      this.log('龙族宝箱：窗口内 0 发 → 无加成');
+      this.log(cfg.NAME + '：窗口内 0 发 → 无加成');
     }
     this._chest.hide();
   }
@@ -2833,6 +3179,8 @@ export class Game {
     // 第五十修：龙族宝箱（切关/重开/回菜单都要收起，否则宝箱会跨关留着）
     this._chest?.hide();
     this._chestDone = false;
+    this._chestPending = 0;
+    this._chestCfg = null;
   }
 
   /** 精英批次清空 → 金点从准星前方飞向选项卡位置（CARD 的固定世界坐标）→ 消失并弹出三张选项卡 */
@@ -3007,6 +3355,7 @@ export class Game {
 
   _enterCard(mid = false) {
     if (this.shopMode) { this.log('商店关不发选项卡，直接进入下一关'); this._exitShop(); return; } // 第五十五修
+    this._endBlackHole(); // 第六十七修：进抽卡先收黑洞（释放被吸附的怪，避免卡在身后）
     this._draftsThisLevel = (this._draftsThisLevel || 0) + 1;  // 第四十七修：一关一次（通关分支据此跳过第二次）
     this._clearExplosions();
     this.state = 'card';
@@ -3031,8 +3380,8 @@ export class Game {
     }
     let plan;
     if (lv.kind === 'laser' && lv.n === 3) {
-      // 第三关：固定三张技能卡（如来神掌/激光剑/散射强化）
-      plan = { fixedSkills: ['buddha', 'lightsaber', 'scatterburst'] };
+      // 第三关：固定三张技能卡（如来神掌/激光剑/黑洞）—— 商店关已接管第 3 关，此处保留旧分支口径
+      plan = { fixedSkills: ['buddha', 'lightsaber', 'blackhole'] };
     } else if (lv.n === 18) {
       // 第18关（最终 Boss）通关：展示本局获得的所有选项卡，随后进入通关结算
       this._showRunSummary();
@@ -3170,6 +3519,10 @@ export class Game {
 
   /** 建商店场地（由 _loadLevel 的分帧任务调用，位置与 LaserLevel 相同） */
   _enterShop() {
+    // 第七十八修：进店前先清掉可能残留的上一份商店（重复跑任务 / 重进关时）。
+    //   旧实现直接 new ShopDraft，一旦 _enterShop 被跑两次，场景里会叠两套卡 ——
+    //   现场「两张一模一样的道具卡」就是这种叠层的典型症状。
+    if (this.shopDraft) { this.shopDraft.dispose(); this.shopDraft = null; }
     this.shopDraft = new ShopDraft(this.world.scene);
     this.shopDraft.open(this._playerPos(), {
       getShopCoin: () => this.shopCoin,
@@ -3179,17 +3532,31 @@ export class Game {
       // 第五十六修：第 3 关商店价格减半（技能本体/强化/道具；刷新价不变）
       priceMul: () => (LEVELS[this.levelIndex] && LEVELS[this.levelIndex].n === 3) ? SHOP.LEVEL3_PRICE_MUL : 1,
       onBuySkill: (id) => this._applySkillCard(id),
+      // 第六十九修：内容包可能比 APK 新。客户端没实现的技能卡不摆上架（避免买到「按了没反应」）。
+      supportsSkill: (id) => this._supportsSkill(id),
       onBuyUpgrade: (id) => this._applySkillUpgrade(id),
       onBuyItem: (id) => this._buyShopItem(id),
       // 第五十七修：右手边「精英预告」卡要知道本店是第几关（决定预告窗口）
       shopLevel: LEVELS[this.levelIndex].n,
       onDenied: (msg) => this.midWarning?.show(msg),
+      // 第七十七修：成功/提示走独立通道 —— 不再复用 onDenied（那条是「买不起」的红色提示）
+      onNotice: (msg) => this.midWarning?.show(msg),
     });
     this.hud.setShopCoin(this.shopCoin);
     this.hud.showShopCoin(true);
     this._warmShopPortraits();   // 第五十七修 v2：预告卡立绘（异步逐张换图，不挡进店）
-    this.hud.message('商店关 · 魔术空间', `射击气球购买 · 打「购物完成」可提前离开（${SHOP.COUNTDOWN}s）`, '#ffd43b');
-    this.log(`第 ${LEVELS[this.levelIndex].n} 关 · 商店关：正前方技能区 / 左手边道具区（商店币 ${this.shopCoin}）`);
+    this.hud.message('商店关 · 魔术空间',
+      `首件道具免费（任选一件）· 打「购物完成」提前离开（${SHOP.COUNTDOWN}s）`, '#ffd43b');
+    const preview = this.shopDraft.preview.map((p) => p.card.label).join(' / ') || '（空）';
+    // 第七十七修：把这局**实际建出来的**商店内容写进留痕 —— 下次现场说「不对」时，
+    //   这一行就能区分「数据/版本旧」还是「看漏了」：道具 id、首件免费、预告名单、两侧位置一次对齐。
+    const items = this.shopDraft.entries.filter((e) => e.kind === 'item');
+    const itemIds = items.map((e) => `s${e.slot}:${e.def.id}`).join(',');
+    const dupIds = items.length !== new Set(items.map((e) => e.def.id)).size;
+    this.log(`第 ${LEVELS[this.levelIndex].n} 关 · 商店关：正前方技能区 / 左手边道具区（商店币 ${this.shopCoin}）；`
+      + `道具=[${itemIds}] 重复=${dupIds ? '是' : '否'} 首件免费=${this.shopDraft._freeItem ? 1 : 0}；`
+      + `右手边精英预告 ${this.shopDraft.preview.length} 张：${preview}；`
+      + `布局 X=${SHOP.ITEM_X}/${SHOP.PREVIEW_X} DZ=${SHOP.ITEM_DZ}/${SHOP.PREVIEW_DZ} 倒计时=${SHOP.COUNTDOWN}s`);
   }
 
   /**

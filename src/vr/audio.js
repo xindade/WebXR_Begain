@@ -810,6 +810,40 @@ export class AudioManager {
     o.start(t); o.stop(t + cfg.d + 0.08);
   }
 
+  // 第六十七修 · 黑洞释放：低频下坠 + 反向扫频噪声（吸力感），一次约 1.8s。
+  playBlackHole() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(240, t);
+    o.frequency.exponentialRampToValueAtTime(36, t + 1.7);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(1600, t);
+    lp.frequency.exponentialRampToValueAtTime(140, t + 1.7);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.26, t + 0.12);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 1.8);
+    o.connect(lp).connect(g).connect(this.sfxBus);
+    o.start(t); o.stop(t + 1.82);
+
+    const n = this.ctx.createBufferSource();
+    n.buffer = this._noiseBuffer(1.2);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 0.8;
+    bp.frequency.setValueAtTime(2400, t);
+    bp.frequency.exponentialRampToValueAtTime(220, t + 1.2);
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.linearRampToValueAtTime(0.10, t + 0.10);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 1.25);
+    n.connect(bp).connect(ng).connect(this.sfxBus);
+    n.start(t); n.stop(t + 1.26);
+  }
+
   // 第四十六修 · 精英批次清空 → 金点引导前的上扬提示音（C5→G5→C6）
   playEliteWipe() {
     if (!this.ctx) return;

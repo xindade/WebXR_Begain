@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>精英预告立绘生成</title>
+<style>
+  html, body { margin: 0; background: #111; color: #ddd; font: 14px/1.6 Consolas, monospace; }
+  #log { padding: 16px; white-space: pre-wrap; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "/vendor/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="log">starting...</div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from '/vendor/GLTFLoader.js';
+import { DRACOLoader } from '/vendor/DRACOLoader.js';
+
+const logEl = document.getElementById('log');
+const log = (m) => { logEl.textContent += '\n' + m; console.log(m); };
+const SIZE = 512;
+const RADIUS = 1.1;             // 与 enemyPortrait.PORTRAIT_RADIUS 同口径
+const MAIN_FRAC = 0.72;         // 盾甲兵：骑士占画布比例
+const SIDE_FRAC = 0.46;         // 盾甲兵：盾牌占画布比例
+
+const MODELS = {
+  knight:  'Model/骑士.glb',
+  shield:  'Model/盾牌.glb',
+  healer:  'Model/心形怪.glb',
+  ninja:   'Model/忍者.glb',
+  ghost:   'Model/幽灵.glb',
+  octopus: 'Model/章鱼.glb',
+};
+
+const draco = new DRACOLoader();
+draco.setDecoderPath('/vendor/draco/');
+const loader = new GLTFLoader();
+loader.setDRACOLoader(draco);
+
+const renderer = new THREE.WebGLRenderer({
+  antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: 'high-performance',
+});
+renderer.setPixelRatio(1);
+renderer.setSize(SIZE, SIZE, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.setClearColor(0x000000, 0);
+renderer.domElement.style.display = 'none';
+document.body.appendChild(renderer.domElement);
+
+const cam = new THREE.PerspectiveCamera(45, 1, 0.05, 100);
+const dist = (0.8 / Math.tan(THREE.MathUtils.degToRad(45 / 2))) * 1.5;
+cam.position.set(0, 0, dist);
+cam.lookAt(0, 0, 0);
+cam.updateMatrixWorld(true);
+
+function buildScene(obj) {
+  const scene = new THREE.Scene();
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 1.0));
+  const key = new THREE.DirectionalLight(0xffffff, 1.2);
+  key.position.set(2, 3, 4);
+  scene.add(key);
+  // 补一盏冷色侧逆光：卡片背景很暗，纯正面光会让深色模型糊成一团。
+  const rim = new THREE.DirectionalLight(0x9fc6ff, 0.55);
+  rim.position.set(-3, 1.5, 2.5);
+  scene.add(rim);
+  scene.add(obj);
+  return scene;
+}
+
+function normalize(obj) {
+  let box = new THREE.Box3().setFromObject(obj);
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  obj.scale.multiplyScalar((RADIUS * 2) / maxDim);
+  obj.updateMatrixWorld(true);
+  box = new THREE.Box3().setFromObject(obj);
+  const center = box.getCenter(new THREE.Vector3());
+  obj.position.sub(center);
+  obj.updateMatrixWorld(true);
+}
+
+function copyTo2D() {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = SIZE;
+  cv.getContext('2d').drawImage(renderer.domElement, 0, 0, SIZE, SIZE);
+  return cv;
+}
+
+async function renderModel(name) {
+  const url = MODELS[name];
+  log('loading ' + name + ' <- ' + url);
+  const gltf = await loader.loadAsync(url);
+  const obj = gltf.scene.clone(true);
+  normalize(obj);
+  const scene = buildScene(obj);
+  renderer.setClearColor(0x000000, 0);
+  renderer.render(scene, cam);
+  const cv = copyTo2D();
+  scene.remove(obj);
+  log('rendered ' + name);
+  return cv;
+}
+
+async function save(name, canvas) {
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('toBlob failed: ' + name);
+  const res = await fetch('/save?name=' + encodeURIComponent(name), { method: 'POST', body: blob });
+  if (!res.ok) throw new Error('save failed: ' + name + ' ' + res.status);
+  log('saved ' + name + '.png (' + blob.size + ' bytes)');
+}
+
+try {
+  const rendered = {};
+  for (const name of Object.keys(MODELS)) {
+    rendered[name] = await renderModel(name);
+  }
+
+  await save('knight', rendered.knight);
+  await save('healer', rendered.healer);
+  await save('ninja', rendered.ninja);
+  await save('ghost', rendered.ghost);
+  await save('octopus', rendered.octopus);
+
+  // 盾甲兵：骑士右上 + 盾牌左下，和旧版 composePortrait 同一构图，但离线烧成一张 PNG。
+  const shieldCard = document.createElement('canvas');
+  shieldCard.width = shieldCard.height = SIZE;
+  const g = shieldCard.getContext('2d');
+  const ms = SIZE * MAIN_FRAC;
+  g.drawImage(rendered.knight, SIZE - ms, 0, ms, ms);
+  const ss = SIZE * SIDE_FRAC;
+  g.drawImage(rendered.shield, 0, SIZE - ss, ss, ss);
+  await save('shield', shieldCard);
+
+  await fetch('/done', { method: 'POST' });
+  log('ALL DONE');
+} catch (err) {
+  log('FAILED: ' + (err && err.stack || err));
+  await fetch('/fail', { method: 'POST', body: String(err && err.message || err) }).catch(() => {});
+}
+</script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 // 抽卡卡牌配置（对齐 iMA 笔记「选项卡调整」）
 // 属性类（加法叠加 + 封顶）：射速 / 子弹 / 攻击 / 技能消耗 / 技能伤害 / 自我修复
-// 技能类（红色）：如来神掌 / 激光剑 / 散射强化（仅第3关机制关固定三张）
+// 技能类（红色）：如来神掌 / 激光剑 / 黑洞（第3关商店关出售；第六十七修把散射强化换成了黑洞）
 //
 // 卡面统一用 canvas 程序化「简笔画」图标（见 cardDraft.drawSketchIcon）+ 文字，不再依赖 PNG。
 
@@ -105,7 +105,7 @@ export const RESUPPLY_CARD = {
   apply: p => { p.hp = p.maxHp; p.shieldTime = Math.max(p.shieldTime || 0, 3); },
 };
 
-// 技能卡（红色）：第3关固定三张（buddha/lightsaber/scatterburst）
+// 技能卡（红色）：第3关商店出售的三张（buddha/lightsaber/blackhole）
 export const SKILL_CARDS = [
   {
     id: 'buddha', label: '如来神掌', rarity: 'gold', color: '#ff3b3b', icon: 'buddha',
@@ -118,8 +118,8 @@ export const SKILL_CARDS = [
     apply: () => { /* 伤害由 game._castLaserSword 执行（需场景上下文）*/ },
   },
   {
-    id: 'scatterburst', label: '散射强化', rarity: 'gold', color: '#ff3b3b', icon: 'scatterburst',
-    desc: '一次性100发×100伤害（×倍率）',
-    apply: () => { /* 伤害由 game._castScatterBurst 执行 */ },
+    id: 'blackhole', label: '黑洞', rarity: 'gold', color: '#ff3b3b', icon: 'blackhole',
+    desc: '面前15米生成漩涡，吸附全部非Boss敌人6秒，每秒20伤害',
+    apply: () => { /* 吸附/伤害由 game._castBlackHole 执行（需场景上下文） */ },
   },
 ];

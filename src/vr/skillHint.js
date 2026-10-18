@@ -345,6 +345,7 @@ export class SkillHintPanel {
     if (s === 'buddha') return '如来神掌';
     if (s === 'lightsaber') return '激光剑';
     if (s === 'scatterburst') return '散射强化';
+    if (s === 'blackhole') return '黑洞';
     if (s === 'scatter') return '能量散射';   // 第六十一修：能量 → 能量（与商店币区分）
     return '技能';
   }

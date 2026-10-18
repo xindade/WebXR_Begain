@@ -227,7 +227,7 @@ public class GameServer extends NanoHTTPD {
             try {
                 String ext = rel.contains(".") ? rel.substring(rel.lastIndexOf('.')) : "";
                 String mime = MIME.getOrDefault(ext, "text/plain; charset=utf-8");
-                return newChunkedResponse(Response.Status.OK, mime, new java.io.FileInputStream(ov));
+                return noStore(newChunkedResponse(Response.Status.OK, mime, new java.io.FileInputStream(ov)));
             } catch (Exception e) {
                 Log.w(TAG, "覆盖层文件读取失败：" + rel + " " + e.getMessage());
                 return newFixedLengthResponse(Response.Status.NOT_FOUND,
@@ -248,7 +248,13 @@ public class GameServer extends NanoHTTPD {
             InputStream is = assets.open(assetPath);
             String ext = assetPath.contains(".") ? assetPath.substring(assetPath.lastIndexOf('.')) : "";
             String mime = MIME.getOrDefault(ext, "application/octet-stream");
-            return newChunkedResponse(Response.Status.OK, mime, is);
+            Response r = noStore(newChunkedResponse(Response.Status.OK, mime, is));
+            // ★ 第七十六修：清掉**旧响应留下的** HTTP 缓存。
+            //   no-store 只能约束本次及以后；升级前已经缓存的 ES Module 仍可能被直接复用。
+            //   PICO / Quest 的外部浏览器没有应用内 clearCache() 可用，故在顶层文档上发
+            //   Clear-Site-Data: "cache"（localhost 是安全上下文，Chromium 支持）。
+            if (rel.equals("index.html")) r.addHeader("Clear-Site-Data", "\"cache\"");
+            return r;
         } catch (IOException e) {
             if (pcBase != null) {
                 Log.w(TAG, "包内缺少 " + rel + " → 回退 PC 代理兜底");
@@ -257,6 +263,21 @@ public class GameServer extends NanoHTTPD {
             return newFixedLengthResponse(
                     Response.Status.NOT_FOUND, "text/plain; charset=utf-8", "404 " + rel);
         }
+    }
+
+    /**
+     * 本地静态资源 / 配置覆盖层一律禁止 WebView 缓存。
+     *
+     * <p>现场反馈「第 3 关商店少了治疗术士、出现两张 Boss 卡」时，服务端与实际渲染
+     * 都已经是正确名单；剩下的高风险点是同名 ES Module 被 WebView 磁盘缓存复用：
+     * 文件明明已换成新版 `eliteBrief.js`，页面却仍执行上一局缓存下来的旧模块。
+     * 这些资源都在 localhost，响应很小，重取成本可以忽略，因此统一 no-store。
+     */
+    private static Response noStore(Response r) {
+        r.addHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        r.addHeader("Pragma", "no-cache");
+        r.addHeader("Expires", "0");
+        return r;
     }
 
     // ───────────────── ★ 第十五修：启动授权查询（/api/guard） ─────────────────

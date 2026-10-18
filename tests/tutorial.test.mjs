@@ -91,7 +91,8 @@ test('连杀种到 8：再杀 2 只（= RAPID_FIRE.KILLS）就会触发一次射
 test('精英血量口径：普通射击打不完、一次能量散射能秒（教学才立得住）', () => {
   const dps = 100 * 2;                            // 基线：100 攻 × 2 发/秒
   assert.ok(TUTORIAL.ELITE.HP / dps >= 15, '普通射击至少要 15s 打不完');
-  assert.ok(SCATTER.COUNT * 100 >= TUTORIAL.ELITE.HP, '一次能量散射要能直接秒掉');
+  assert.ok(SCATTER.COUNT * 100 * (SCATTER.DAMAGE_MUL || 1) >= TUTORIAL.ELITE.HP,
+    '一次能量散射要能直接秒掉（含基础伤害倍率）');
   assert.ok(tutorialEnemyTypes().includes('eliteKnight'), '预载口径要含铁甲兵');
   assert.deepEqual(tutorialEnemyTypes().sort(), ['basic', 'eliteKnight']);
 });

@@ -3,7 +3,7 @@ import { pointSegmentDistanceSq } from '../core/collision.js';
 import { CARD, SHOP } from '../core/constants.js';
 import { SKILL_CARDS } from '../content/cards.js';
 import { SHOP_ITEMS, SKILL_UPGRADES, pickShopItems, pickShopItemExcluding, shopItemPrice } from '../content/shopItems.js';
-import { makeBalloon, makeCardTexture, makeBadge } from './cardDraft.js';
+import { makeBalloon, makeCardTexture, repaintCardTexture, makeBadge } from './cardDraft.js';
 import { previewCards } from '../content/eliteBrief.js';
 import { portraitKey } from './enemyPortrait.js';
 
@@ -55,7 +55,7 @@ export class ShopDraft {
     this.badgeGroup = new THREE.Group();
     this.group.add(this.badgeGroup);
     this.coinFront = null;   // 技能区商店币牌子
-    this.coinItem = null;    // 道具区商店币牌子
+    this.coinItem = null;    // 道具区商店币牌子（免费名额也并进这块牌子，见 _updateBadges）
     this.active = false;
     this.finished = false;    // game 轮询它收尾（不在本类里直接调 game，避免重入）
     this.t = 0;
@@ -90,27 +90,96 @@ export class ShopDraft {
     this._upgradesBought = new Set();
     this._itemDisplay = pickShopItems(3);
     this._resolve = null;
+    this._forceItemRebuild = false;   // 第八十修：刷新时整排重建（旧卡飞走 / 新卡升起）
     this._clearLightFx();
     this._build();
     this._buildPreview();   // 精英预告卡：进店建一次（购买补位只重建可买的那些）
     this._buildBadges();    // 第五十八修：商店币 / 倒计时牌子
+    this._debugDumpCards(); // 第八十修：把卡面坐标 / 贴图 UUID 写进留痕，定位设备端串图
+  }
+
+  /**
+   * 第八十修 · 现场自检：进店时把每张卡的「区 / 文案 / X / Z / 贴图 UUID」发一条留痕。
+   * 用途：下一次现场再出现「精英和道具混着」时，先看这条：
+   *   · rows 里 X 全部正确（道具 -1.9 / 预告 +1.9）且 dup 为空 → JS 数据没问题，是设备端 GPU 串图；
+   *   · dup 非空 → 同一张贴图被多张卡共用，属于代码层复用错误。
+   * 只在进店发一次，不影响帧率；失败静默。
+   */
+  _debugDumpCards() {
+    try {
+      const rows = [
+        ...this.entries.map((e) => [e.section, e.kind, e.label,
+          +e.holder.position.x.toFixed(2), +e.holder.position.z.toFixed(2),
+          e.card.material.map.uuid.slice(0, 8)]),
+        ...this.preview.map((p) => ['preview', 'preview', p.card.label,
+          +p.holder.position.x.toFixed(2), +p.holder.position.z.toFixed(2),
+          p.mesh.material.map.uuid.slice(0, 8)]),
+      ];
+      const uuids = rows.map((r) => r[5]);
+      const dup = uuids.filter((u, i) => uuids.indexOf(u) !== i);
+      const body = JSON.stringify({
+        ev: 'shop-cards', lv: (this._state && this._state.shopLevel) || 0,
+        itemX: SHOP.ITEM_X, previewX: SHOP.PREVIEW_X, dup, rows,
+      });
+      fetch('/api/page/event', { method: 'POST', body, keepalive: true }).catch(() => {});
+    } catch { /* 留痕永远不能影响游戏 */ }
   }
 
   // ====== 场地 ======
 
   _build() {
-    this._clear();
     const front = this._frontEntries();
     const items = this._itemEntries();
-    const x0 = -((front.length - 1) * SHOP.FRONT_SPACING) / 2;
-    // 第五十九修：正前方「技能本体 / 技能强化」放大 CARD_SCALE_FRONT，「购物完成」保持原样（逐张取缩放）
-    front.forEach((e, i) => this._addEntry(e, new THREE.Vector3(x0 + i * SHOP.FRONT_SPACING, SHOP.FRONT_Y, SHOP.FRONT_Z), {
-      scale: e.kind === 'done' ? SHOP.CARD_SCALE_DONE : SHOP.CARD_SCALE_FRONT, faceX: 0,
-    }));
-    // 第五十九修：道具列绕场地中心 Z=0 **对称**铺开（旧版单向往后排 → 甩到飞毯外）
-    items.forEach((e, i) => this._addEntry(e, new THREE.Vector3(SHOP.ITEM_X, SHOP.ITEM_Y, columnZ(SHOP.ITEM_ZC, SHOP.ITEM_DZ, i, items.length)), {
-      scale: SHOP.CARD_SCALE_ITEM, faceX: SHOP.SIDE_CARDS_PARALLEL_Z ? 1 : 0,
-    }));
+    // 第七十三修：购买后不再 `_clear()` 整店重建。按「区 + 稳定身份」复用已有
+    // geometry / material / CanvasTexture，只原位重绘真正变化的那几张卡 —— 现场
+    // 「商店选择后会卡一下」的根因就是一次购买销毁并重传了整店 8 张贴图、重编译材质。
+    this._syncSection('front', front);
+    this._syncSection('item', items);
+    this._riseOnBuild = false;   // 第八十修：本次重建的「升起」只吃一次
+  }
+
+  /** 卡的稳定身份：道具按槽位复用（买走补位只换该槽），技能/强化按 id 复用（买掉只移除那一张）。 */
+  _entryKey(section, e) {
+    if (section === 'front') return e.kind === 'done' ? 'front:done' : `front:${e.kind}:${e.def && e.def.id}`;
+    return e.kind === 'refresh' ? 'item:refresh' : `item:slot:${e.slot}`;
+  }
+
+  _syncSection(section, defs) {
+    let old = this.entries.filter((e) => e.section === section);
+    // 第八十修（现场口径）：刷新道具是「整排换新」—— 旧卡飞走、新卡从下方升起，
+    //   不再按槽位原地重绘。原地重绘既容易被设备端贴图复用波及，观感也像「数字跳了一下」。
+    if (section === 'item' && this._forceItemRebuild) {
+      for (const e of old) this._removeEntry(e);
+      this._forceItemRebuild = false;
+      old = [];
+    }
+    const byKey = new Map(old.map((e) => [e.key, e]));
+    const keep = new Set();
+    const next = [];
+    defs.forEach((def, i) => {
+      const key = this._entryKey(section, def);
+      let e = byKey.get(key);
+      let isNew = false;
+      // 第七十八修：道具槽复用只对「同一个 def」成立。买走补位后槽位里的道具已经换了，
+      //   继续复用会留下旧卡面/旧气球颜色（现场照片：槽 1 的球是蓝色「多才是王道」，卡面却还是
+      //   上一张黄色「以战养战」）。这里改成：def 变了就销毁重建这一张，只重传这一张的贴图，
+      //   仍然不会像旧版那样重建整店 8 张。
+      if (e && section === 'item' && e.kind === 'item' && def.kind === 'item'
+        && (e.def && e.def.id) !== (def.def && def.def.id)) {
+        const oi = old.indexOf(e);
+        if (oi >= 0) old.splice(oi, 1);
+        byKey.delete(key);
+        this._removeEntry(e);
+        e = null;
+      }
+      if (!e) { e = this._createEntry(section, key, def); isNew = true; }
+      if (isNew && this._riseOnBuild) e._riseK = 0;   // 第八十修：只有刷新/补位的新卡才升起
+      this._placeEntry(section, e, def, i, defs.length);
+      keep.add(e);
+      next.push(e);
+    });
+    for (const e of old) if (!keep.has(e)) this._removeEntry(e);
+    this.entries = this.entries.filter((e) => e.section !== section).concat(next);
   }
 
   // 正前方一排：技能本体 / 技能强化 + 购物完成
@@ -122,6 +191,9 @@ export class ShopDraft {
     const out = [];
     if (!this._state.hasSkill()) {
       for (const s of SKILL_CARDS) {
+        // 第六十九修：内容包可能比 APK 新 —— 客户端没实现的技能不摆上架，
+        //   否则玩家买到一张「装备成功但按了没反应」的卡（现场「选完黑洞后左右手都没用」）。
+        if (this._state.supportsSkill && !this._state.supportsSkill(s.id)) continue;
         out.push({
           kind: 'skill', def: s, label: s.label, color: s.color, icon: s.icon, price: this._skillPrice(),
           sub: '装备后按左手柄释放',
@@ -146,16 +218,18 @@ export class ShopDraft {
   _itemEntries() {
     const lv = (this._state.getItemLevels && this._state.getItemLevels()) || {};
     const out = [];
-    this._itemDisplay.forEach((id, slot) => {
+    this._sanitizeItemDisplay().forEach((id, slot) => {
       const it = SHOP_ITEMS.find((x) => x.id === id);
       if (!it) return;
       const cur = lv[id] || 0;
-      // 第五十七修：买掉第一个道具之前，三个道具都显示「首次免费」（技能 / 强化 / 刷新不参与）
       const free = !!this._freeItem;
       const price = free ? 0 : Math.round(shopItemPrice(id, lv) * this._priceMul);   // 第五十六修：第 3 关减半
       out.push({
         kind: 'item', def: it, slot, label: it.label, color: it.color, icon: it.icon, price, free,
         sub: `${it.desc}｜Lv.${cur}→${cur + 1}`,
+        // 第七十七修：三张都写「免费」本身是**准确**的（任选一件都免），
+        //   歧义（「三个都免费？」）由道具列上方「任选一件免费」牌子消除；
+        //   买掉第一件后三张自动恢复原价。
         priceText: free ? '免费' : String(price),
         priceColor: free ? SHOP.PRICE_FREE_COLOR : SHOP.PRICE_COLOR,
       });
@@ -168,6 +242,31 @@ export class ShopDraft {
     return out;
   }
 
+  /**
+   * 第七十八修：道具展示位永远是「3 个不同的 id」。
+   *   - 数据层（pickShopItems / pickShopItemExcluding）本来就保证不重复，但现场照片证明
+   *     运行时会看到两张一模一样的道具卡：内容包/旧缓存/重复 open 都可能把 `_itemDisplay`
+   *     污染成 ['warFeed','warFeed',...]。与其猜是哪一条路径，不如在这里做最后一道硬约束：
+   *     重复 / 未知 id 直接丢掉，再从其余道具里补齐到 3 个。
+   *   - 这个函数会**就地改写** `_itemDisplay`，所以补位、刷新、日志拿到的都是同一份干净数据。
+   */
+  _sanitizeItemDisplay() {
+    const seen = new Set();
+    const clean = [];
+    for (const id of this._itemDisplay || []) {
+      if (!SHOP_ITEMS.some((x) => x.id === id) || seen.has(id)) continue;
+      seen.add(id);
+      clean.push(id);
+    }
+    while (clean.length < 3) {
+      const next = pickShopItemExcluding(clean);
+      if (!next) break;
+      clean.push(next);
+    }
+    this._itemDisplay = clean.slice(0, 3);
+    return this._itemDisplay;
+  }
+
   // 右手边：精英预告（只读卡 —— 不绑气球、不进 entries，所以打不到也买不了）
   /** 立绘要抓哪些模型（game._warmShopPortraits 用）：只含精英卡，且本店预览里去重 */
   previewPortraits() {
@@ -177,7 +276,7 @@ export class ShopDraft {
       const spec = c.portrait;
       if (!spec) continue;                                    // Boss 卡：不给图
       const k = portraitKey(spec);
-      if (!out.includes(k)) out.push(spec);
+      if (!out.some((s) => portraitKey(s) === k)) out.push(spec);
     }
     return out;
   }
@@ -186,7 +285,15 @@ export class ShopDraft {
   setPortrait(key, canvas) {
     if (!key || !canvas || this._portraits[key]) return;
     this._portraits[key] = canvas;
-    if (this.active) this._buildPreview();
+    if (!this.active) return;
+    // 只重绘这一张预告卡；旧实现每来一张图就 `_buildPreview()` 重建整列，
+    // 四张图连着到齐时会连续重传 20 张贴图，进店/首次点击都容易顿一下。
+    for (const p of this.preview) {
+      if (portraitKey(p.card.portrait) !== key) continue;
+      repaintCardTexture(p.mesh.material.map, p.card.label, p.card.sub, p.card.color, p.card.icon, {
+        portrait: true, image: canvas, placeholder: p.card.portrait ? null : '?',
+      });
+    }
   }
 
   _buildPreview() {
@@ -215,22 +322,13 @@ export class ShopDraft {
       // 第五十八修：与地面的 Z 线平行（法线指向场地中线）；关掉开关退回「各自朝原点」
       if (SHOP.SIDE_CARDS_PARALLEL_Z) mesh.rotation.y = -Math.PI / 2;
       else mesh.lookAt(0, holder.position.y, 0);
-      this.preview.push({ holder, mesh });
+      this.preview.push({ holder, mesh, card: c });
     });
   }
 
-  /**
-   * 挂一张可买的卡（卡面 + 气球 + 细绳）。
-   * @param {{scale?:number, faceX?:number}} o
-   *   scale = 整组缩放（卡面与气球一起缩放，细绳才不会跟气球脱节）；
-   *   faceX ≠ 0 → 卡面**平行于地面的 Z 线**（法线指向 ±X，正面朝场地中线）；0 = 朝场地原点（旧行为）。
-   */
-  _addEntry(e, pos, o = {}) {
-    const scale = o.scale || 1;
-    const faceX = o.faceX || 0;
+  /** 新建一张可买的卡（只在新卡位上调用；后续购买复用同一对象）。 */
+  _createEntry(section, key, e) {
     const holder = new THREE.Group();
-    holder.position.copy(pos);
-    holder.scale.setScalar(scale);
     this.group.add(holder);
 
     const card = new THREE.Mesh(
@@ -241,9 +339,6 @@ export class ShopDraft {
       })
     );
     holder.add(card);
-    // 先挂进 holder 再定向（世界坐标才正确）：正前方一排朝场地原点；两列平行于地面的 Z 线
-    if (faceX) card.rotation.y = faceX * Math.PI / 2;
-    else card.lookAt(0, pos.y, 0);
 
     const balloon = makeBalloon(e.color);
     balloon.position.set(0, CARD.BALLOON_HEIGHT, 0);
@@ -257,15 +352,76 @@ export class ShopDraft {
       holder.add(badge.mesh);
     }
 
-    this.entries.push({
-      holder, card, balloon, badge, baseY: pos.y, scale,
-      balloonY: CARD.BALLOON_HEIGHT * scale,          // 气球在 holder 本地的高度（随整组缩放）
-      balloonHit: (CARD.BALLOON_R + 0.12) * scale,    // 命中半径同步缩放：看着多大就能打中多大
-      bob: CARD.BALLOON_BOB * scale,                  // 上下浮动幅度同步缩放
-      kind: e.kind, def: e.def || null, price: e.price || 0, free: !!e.free, slot: e.slot == null ? -1 : e.slot,
-      priceText: e.priceText || null, priceColor: e.priceColor || null,   // 第五十八修：卡面底部大字（无 = 不画）
-      exploded: false, _explodeT: 0, _denyT: 0,
+    const entry = {
+      section, key, holder, card, balloon, badge, faceSig: '',
+      baseY: 0, scale: 1, balloonY: 0, balloonHit: 0, bob: 0, _riseK: 1,
+      kind: e.kind, def: e.def || null, price: 0, free: false, slot: -1,
+      priceText: null, priceColor: null, exploded: false, _explodeT: 0, _denyT: 0,
+    };
+    this.entries.push(entry);
+    return entry;
+  }
+
+  /** 把一张卡摆到目标位置，并在内容变化时原位重绘（不改纹理对象）。 */
+  _placeEntry(section, entry, e, i, n) {
+    const isFront = section === 'front';
+    const scale = isFront
+      ? (e.kind === 'done' ? SHOP.CARD_SCALE_DONE : SHOP.CARD_SCALE_FRONT)
+      : SHOP.CARD_SCALE_ITEM;
+    const faceX = isFront ? 0 : (SHOP.SIDE_CARDS_PARALLEL_Z ? 1 : 0);
+    const pos = isFront
+      ? new THREE.Vector3(-((n - 1) * SHOP.FRONT_SPACING) / 2 + i * SHOP.FRONT_SPACING, SHOP.FRONT_Y, SHOP.FRONT_Z)
+      : new THREE.Vector3(SHOP.ITEM_X, SHOP.ITEM_Y, columnZ(SHOP.ITEM_ZC, SHOP.ITEM_DZ, i, n));
+
+    entry.holder.position.copy(pos);
+    entry.holder.scale.setScalar(scale);
+    entry.holder.visible = true;
+    if (faceX) entry.card.rotation.set(0, faceX * Math.PI / 2, 0);
+    else { entry.card.rotation.set(0, 0, 0); entry.card.lookAt(0, pos.y, 0); }
+
+    entry.baseY = pos.y;
+    // 第八十修：第一帧就落在「升起起点」，而不是等 update 才跳下去（否则命中/相机首帧会对不上）
+    const rise0 = 1 - Math.pow(1 - entry._riseK, 3);
+    entry.holder.position.y = pos.y - (1 - rise0) * SHOP.CARD_RISE_H;
+    entry.scale = scale;
+    entry.balloonY = CARD.BALLOON_HEIGHT * scale;
+    entry.balloonHit = (CARD.BALLOON_R + 0.12) * scale;
+    entry.bob = CARD.BALLOON_BOB * scale;
+    entry.kind = e.kind;
+    entry.def = e.def || null;
+    // 第七十八修：把展示字段也写回 entry。旧版只更新 def，`entry.label/color/icon` 一直是
+    //   创建时的旧值 —— 光点颜色 / 后续按 entry 取文案的地方会拿到上一张卡的字段。
+    entry.label = e.label;
+    entry.sub = e.sub;
+    entry.color = e.color;
+    entry.icon = e.icon;
+    entry.price = e.price || 0;
+    entry.free = !!e.free;
+    entry.slot = e.slot == null ? -1 : e.slot;
+    entry.priceText = e.priceText || null;
+    entry.priceColor = e.priceColor || null;
+
+    const sig = [e.label, e.sub, e.color, e.icon, e.priceText, e.priceColor].join('|');
+    if (sig !== entry.faceSig) {
+      repaintCardTexture(entry.card.material.map, e.label, e.sub, e.color, e.icon,
+        { price: e.priceText, priceColor: e.priceColor });
+      entry.faceSig = sig;
+    }
+    const color = new THREE.Color(e.color || '#ffffff');
+    entry.balloon.traverse((o) => {
+      if (!o.isMesh) return;
+      o.material.color.copy(color);
+      if (o.material.emissive) o.material.emissive.copy(color);
     });
+
+    // 复用被买走的那张卡时，把购买动画留下的透明 / 爆炸状态复位。
+    entry.exploded = false;
+    entry._explodeT = 0;
+    entry._denyT = 0;
+    entry.balloon.visible = true;
+    entry.balloon.scale.setScalar(1);
+    entry.card.material.opacity = 1;
+    this._setBalloonOpacity(entry, 1);
   }
 
   // ====== 区域牌子（第五十八修 · 现场「气球上方显示商店币」）======
@@ -298,7 +454,10 @@ export class ShopDraft {
     // 短到「商店币 3250」就能吃满 84px 大字；「这块属于哪个区」由牌子挂的位置表达，不必写在字上。
     const coin = Math.floor(this._state?.getShopCoin?.() || 0);
     this.coinFront?.set(`商店币 ${coin}`);
-    this.coinItem?.set(`商店币 ${coin}`);
+    // 第七十八修：免费资格不再用第二块大绿牌（现场照片里它挡住了整列，而且贴脸显得巨大）。
+    //   并进道具列的商店币牌子：字仍然只有一行，位置不变；买掉第一件后自动恢复金色。
+    this.coinItem?.set(this._freeItem ? `商店币 ${coin} · 首件免费` : `商店币 ${coin}`,
+      this._freeItem ? SHOP.PRICE_FREE_COLOR : SHOP.PRICE_COLOR);
     const done = this.entries.find((e) => e.kind === 'done' && e.badge);
     if (done) done.badge.set(`剩余 ${Math.ceil(Math.max(0, this.timer))}s`);
   }
@@ -331,7 +490,11 @@ export class ShopDraft {
 
     for (let i = 0; i < this.entries.length; i++) {
       const e = this.entries[i];
-      e.holder.position.y = e.baseY + e.bob * Math.sin(this.t * CARD.BALLOON_BOB_FREQ + i);
+      // 第八十修：新卡从下方升起（0.38s），不再直接出现在原位
+      if (e._riseK < 1) e._riseK = Math.min(1, e._riseK + dt / SHOP.CARD_RISE_T);
+      const rise = 1 - Math.pow(1 - e._riseK, 3);
+      e.holder.position.y = e.baseY - (1 - rise) * SHOP.CARD_RISE_H
+        + e.bob * Math.sin(this.t * CARD.BALLOON_BOB_FREQ + i);
       if (e._denyT > 0) {                        // 买不起：气球弹一下再复原
         e._denyT -= dt;
         if (e._denyT <= 0) e.balloon.scale.setScalar(1);
@@ -373,7 +536,21 @@ export class ShopDraft {
         break;
       case 'refresh':
         this.refreshCost *= 2;                   // 逐次翻倍（进店重置）
-        this._resolve = { t: 0, after: () => { this._itemDisplay = pickShopItems(3); this._build(); } };
+        // 第八十修：整排一起爆掉（气球飞走），结算后重建，新卡从下方升起
+        for (const x of this.entries) {
+          if (x.section !== 'item' || x.exploded) continue;   // 只让左手道具列飞走，技能区不动
+          x.exploded = true;
+          x._explodeT = 0;
+        }
+        this._resolve = {
+          t: 0,
+          after: () => {
+            this._itemDisplay = pickShopItems(3);
+            this._forceItemRebuild = true;
+            this._riseOnBuild = true;
+            this._build();
+          },
+        };
         break;
       case 'skill':
         this._state.onBuySkill(e.def.id);
@@ -389,7 +566,10 @@ export class ShopDraft {
         this._state.onBuyItem(id);
         if (e.free) {
           this._freeItem = false;   // 名额用掉 → 重绘后其余道具恢复原价
-          if (this._state.onDenied) this._state.onDenied('本店首个道具免费！');   // 复用横幅通道给个反馈
+          // 第七十七修：成功消息不再走 onDenied（那条通道本来是「买不起」的红色提示，
+          //   现场会把「免费已生效」看成报错）。有 onNotice 就走 onNotice。
+          if (this._state.onNotice) this._state.onNotice('本店首件道具免费');
+          else if (this._state.onDenied) this._state.onDenied('本店首件道具免费');
         }
         const slot = e.slot;
         this._resolve = {
@@ -397,6 +577,7 @@ export class ShopDraft {
           after: () => {                          // 补位：从其余道具里随机补一个，不重抽全排
             const next = pickShopItemExcluding(this._itemDisplay);
             if (next && slot >= 0 && slot < this._itemDisplay.length) this._itemDisplay[slot] = next;
+            this._riseOnBuild = true;             // 第八十修：补位的新道具从下方升起
             this._build();
           },
         };
@@ -520,16 +701,24 @@ export class ShopDraft {
 
 
   _clear() {
-    for (const e of this.entries) {
-      this.group.remove(e.holder);
-      if (e.badge) { e.badge.dispose(); e.badge = null; }
-      e.card.geometry.dispose();
-      e.card.material.map?.dispose();
-      e.card.material.dispose();
-      e.balloon.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
-      e.holder.clear?.();
-    }
+    for (const e of this.entries) this._disposeEntry(e);
     this.entries = [];
+  }
+
+  _removeEntry(e) {
+    const i = this.entries.indexOf(e);
+    if (i >= 0) this.entries.splice(i, 1);
+    this._disposeEntry(e);
+  }
+
+  _disposeEntry(e) {
+    this.group.remove(e.holder);
+    if (e.badge) { e.badge.dispose(); e.badge = null; }
+    e.card.geometry.dispose();
+    e.card.material.map?.dispose();
+    e.card.material.dispose();
+    e.balloon.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+    e.holder.clear?.();
   }
 
   /** 中途清场（不拆 group，可再次 open 复用）：供 Game.toMenu 清残留商店气球 */

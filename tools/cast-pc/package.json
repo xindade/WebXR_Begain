@@ -25,6 +25,12 @@
       "allowToChangeInstallationDirectory": true
     },
     "asar": true,
+    "files": [
+      "**/*",
+      "!dist/**",
+      "!dist-79/**",
+      "!**/*.log"
+    ],
     "extraResources": [
       { "from": "../../src/content", "to": "game-cfg/src/content" },
       { "from": "../../src/core/userConfig.js", "to": "game-cfg/src/core/userConfig.js" },

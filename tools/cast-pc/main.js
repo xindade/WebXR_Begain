@@ -216,9 +216,14 @@ function autoDetectGameRoot() {
     argValue('game-root', null),
     process.cwd(),
     path.join(__dirname, '..', '..'),
-    // ★ 主工程：合并后的「新玩法基线 + 推流/平台」目录（平台里登记的那个游戏目录也应是它）。
-    'E:/AI_Work/WebXR_Begain_Platform',
+    // ★ 主工程：当前正在用的「新玩法基线 + 推流/平台」工作副本。
+    //   必须排在历史目录 `WebXR_Begain_Platform` 之前 —— 两个目录同时存在时，
+    //   旧目录里也有一棵 src/content，排在前面就会被误认成主工程（现场 /api/info
+    //   的 gameRoot 指到旧目录，头显/配置页就会拿旧内容）。
+    'E:/AI_Work/WebXR_Begain_Platform_try',
     'G:/01_Work/AI_Codex/WebXR_Begain',
+    // 历史目录：仅当上面的工作副本不存在时兜底。
+    'E:/AI_Work/WebXR_Begain_Platform',
     // 历史位置：保留为兜底 —— 老现场机器上可能只有这几个目录，删掉会让自动探测失效。
     'E:/AI_Work/WebXR_Begain',
     'D:/AI_Work/WebXR_Begain',
@@ -959,8 +964,14 @@ const MANIFEST_DIR = path.join(app.getPath('userData'), 'manifest');
 const MANIFEST_META = path.join(MANIFEST_DIR, 'meta.json');
 const MANIFEST_TIMEOUT_MS = 8000;                   // 单次请求超时
 const MANIFEST_RETRY_MS = [0, 2000, 5000, 10000];   // 启动时的重试节奏（现场刚开机 / 网络慢）
+// ★ 第七十七修：清单**保鲜期**。旧实现 `if (MANIFEST.ok) return true` 会在启动拉到一份后
+//   整场不再刷新 —— 服务器上新传了 eliteBrief.js / userConfig.js，头显这一局仍然拿旧覆盖层，
+//   现场表现就是「源码/服务器都改了，商店还是少卡、位置还是旧」。超过这个时长就重拉；
+//   重拉失败**沿用旧缓存**（宁可旧一分钟，也不让头显开局直接失败）。
+const MANIFEST_TTL_MS = 60 * 1000;
 const MANIFEST_MAX_BYTES = 4 * 1024 * 1024;         // 清单响应体上限（防呆：服务器发疯时别把内存吃光）
 const MANIFEST_TMP = MANIFEST_DIR + '.tmp';         // 拉取中转目录（落完再原子替换，见 manifestFetch）
+const MANIFEST_BAK = MANIFEST_DIR + '.bak';         // 替换前留底（rename 失败可回滚，见 manifestFetch）
 /**
  * 清单模式开关。
  *   <p>正式包（打包后）默认**开** —— 这就是产品形态：每次启动从服务器拉配置；
@@ -1478,7 +1489,7 @@ function handleMasterAllow(req, res) {
 function manifestClear(reason) {
   const why = String(reason || '');
   let had = false;
-  for (const dir of [MANIFEST_DIR, MANIFEST_TMP]) {
+  for (const dir of [MANIFEST_DIR, MANIFEST_TMP, MANIFEST_BAK]) {
     try {
       if (fs.existsSync(dir)) { fs.rmSync(dir, { recursive: true, force: true }); had = true; }
     } catch (e) {
@@ -1580,8 +1591,20 @@ async function manifestFetch() {
     count: files.length, bytes, fp, base, server: String(body.server || ''),
   }, null, 2));
 
-  fs.rmSync(MANIFEST_DIR, { recursive: true, force: true });
-  fs.renameSync(MANIFEST_TMP, MANIFEST_DIR);   // 原子替换：要么整份新的，要么还是空的
+  // 第七十七修：替换前先把旧目录改名留底。原来「先 rm 旧目录、再 rename」一旦 rename 失败
+  // （占用 / 权限 / 杀软），旧缓存已经没了，偏偏这时又处于「刷新失败」状态 —— 现场直接起不来。
+  fs.rmSync(MANIFEST_BAK, { recursive: true, force: true });
+  const hadOld = fs.existsSync(MANIFEST_DIR);
+  if (hadOld) fs.renameSync(MANIFEST_DIR, MANIFEST_BAK);
+  try {
+    fs.renameSync(MANIFEST_TMP, MANIFEST_DIR);   // 原子替换：要么整份新的，要么还是旧的那份
+    fs.rmSync(MANIFEST_BAK, { recursive: true, force: true });
+  } catch (e) {
+    try {
+      if (!fs.existsSync(MANIFEST_DIR) && fs.existsSync(MANIFEST_BAK)) fs.renameSync(MANIFEST_BAK, MANIFEST_DIR);
+    } catch (e2) { console.warn('[cast-pc] 清单回滚失败：', e2.message); }
+    throw e;
+  }
 
   const prevFp = MANIFEST.sessionFp;
   MANIFEST.ok = true;
@@ -1611,10 +1634,14 @@ async function manifestFetch() {
  * @param {string} reason 进日志
  * @return {Promise<boolean>} 是否就绪
  */
-async function manifestEnsure(reason) {
+async function manifestEnsure(reason, opts = {}) {
   if (!MANIFEST_ON) return false;
-  if (MANIFEST.ok) return true;
+  const force = !!opts.force;
+  const age = MANIFEST.fetchedAt ? (Date.now() - MANIFEST.fetchedAt) : Infinity;
+  // 新鲜且在保鲜期内 → 直接用；过期 / 强制 → 重拉（第七十七修）
+  if (MANIFEST.ok && !force && age < MANIFEST_TTL_MS) return true;
   if (manifestInflight) return manifestInflight;
+  const hadCache = MANIFEST.ok;
   manifestInflight = (async () => {
     let lastErr = '';
     for (let i = 0; i < MANIFEST_RETRY_MS.length; i += 1) {
@@ -1628,6 +1655,17 @@ async function manifestEnsure(reason) {
         MANIFEST.why = `拉取中（第 ${i + 1}/${MANIFEST_RETRY_MS.length} 次失败：${lastErr}）`;
         console.warn(`[cast-pc] 清单拉取第 ${i + 1}/${MANIFEST_RETRY_MS.length} 次失败（${reason}）：${lastErr}`);
       }
+    }
+    // 第七十七修：**刷新失败不砸掉可用缓存**。旧版在这里无条件 ok=false，
+    //   一次网络抖动就会让「本来能跑」的头显拿不到配置。保鲜期内的重试节奏由 fetchedAt 控制。
+    if (hadCache) {
+      MANIFEST.ok = true;
+      MANIFEST.lastErr = lastErr;
+      MANIFEST.fetchedAt = Date.now();
+      MANIFEST.why = `沿用缓存（刷新失败：${lastErr}）`;
+      console.warn(`[cast-pc] ⚠ 清单刷新失败（${reason}）：${lastErr}；继续使用上一份缓存 fp=${MANIFEST.fp}`);
+      pushStatus();
+      return true;
     }
     MANIFEST.ok = false;
     MANIFEST.lastErr = lastErr;
@@ -1804,10 +1842,16 @@ async function handleConfigDump(req, res) {
   const bytes = files.reduce((a, f) => a + f.size, 0);
   entry.why += '（配置下发）';
   guardPush(entry);
-  console.log(`[cast-pc] 配置下发 ALLOW dev=${entry.dev} 局号=${SESSION_ID} 文件=${files.length} 共 ${bytes}B`);
+  console.log(`[cast-pc] 配置下发 ALLOW dev=${entry.dev} 局号=${SESSION_ID} 文件=${files.length} 共 ${bytes}B fp=${MANIFEST.fp}`);
   // 一律回全量内容：清单只有 ~20KB（重资源不在此列），省一次「先清单后内容」的往返，
   // 少一个失败模式比省几十毫秒重要。
-  json({ allow: true, session: SESSION_ID, count: files.length, bytes, files });
+  // ★ 第七十九修：把清单指纹一起回给头显。现场「商店还是不对」时，
+  //   先看这一行就能区分「代码没换」还是「头显吃到了上一版内容」。
+  //   当前内容以 /api/info 的 manifest.bytes / manifest.fp 为准（随服务器内容变化）。
+  json({
+    allow: true, session: SESSION_ID, count: files.length, bytes, files,
+    ver: MANIFEST.ver, builtAt: MANIFEST.builtAt, fp: MANIFEST.fp,
+  });
 }
 
 /** 客户端 IP（去掉 IPv6 映射前缀） */

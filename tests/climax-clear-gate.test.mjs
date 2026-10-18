@@ -109,6 +109,7 @@ test('★回归：关卡时长到了、场上也空了，但脚本还没走完 �
   // ③ 融合落地 → 末尾精英真出现在场上
   w._updateFuseGroups(FUSE.IN_DUR + 0.01);
   w._updateFuseGroups(FUSE.OUT_DUR + 0.01);
+  w._updateSpawnQueue(FUSE.SPAWN_STAGGER * 3 + 0.01);   // 第六十八修：融合落地后逐只错帧生成
   assert.ok(balloons.count > 0, '末尾精英已落地');
   w._updateDpsSpawn(1 / 60);
   assert.equal(w.cleared, false, '末尾精英还活着 → 不许收尾');

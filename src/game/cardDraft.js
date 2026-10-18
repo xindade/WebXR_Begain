@@ -150,6 +150,24 @@ export function drawSketchIcon(ctx, key, cx, cy, s, color) {
       ctx.stroke();
       ctx.beginPath(); ctx.moveTo(cx - L * 0.8, cy); ctx.lineTo(cx - L * 0.95, cy + L * 0.35); ctx.stroke();
       break;
+    case 'blackhole': { // 螺旋漩涡（三道旋臂 + 中心核）
+      ctx.save();
+      ctx.translate(cx, cy);
+      for (let arm = 0; arm < 3; arm++) {
+        ctx.beginPath();
+        for (let i = 0; i < 34; i++) {
+          const t = i / 33;
+          const a = arm * (Math.PI * 2 / 3) + t * Math.PI * 2.2;
+          const r = L * (0.12 + 0.86 * t);
+          const x = Math.cos(a) * r, y = Math.sin(a) * r;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      ctx.beginPath(); ctx.arc(0, 0, L * 0.14, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      break;
+    }
     case 'scatterburst': { // 扇面放射线
       const n = 7;
       for (let i = 0; i < n; i++) {
@@ -463,7 +481,11 @@ export function makeBadge(text, color, size = null) {
   const W = 512, H = 160;
   const cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
-  const x = cv.getContext('2d');
+  // 第八十修：强制 CPU 后备画布。Pico/Chromium 默认把 2D canvas 放 GPU，
+  //   `texImage2D` 取快照时可能拿到同一块共享表面 → 多张卡面整张（含文字）互相串。
+  //   willReadFrequently = 让浏览器保留软件位图，上传纹理时逐张同步取像素。
+  //   卡面只有 256×456，CPU 绘制的开销可以忽略；可靠性优先。
+  const x = cv.getContext('2d', { willReadFrequently: true });
   let cur = null, curColor = null;
   // 自适应字号（见上）：量宽用当前字号，故先在循环里设 font 再量，退出时 font 恰等于返回的字号。
   const FONT_MAX = 84, FONT_MIN = 28, PAD = 22;
@@ -504,6 +526,8 @@ export function makeBadge(text, color, size = null) {
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   // 第六十四修：物理尺寸可覆盖（枪上的「商店币」小框比商店区域牌子小一号）；
+  tex.generateMipmaps = false;                 // 第八十修：同上，UI 牌子不做 mipmap
+  tex.minFilter = THREE.LinearFilter;
   //   画布仍是 512×160（宽高比 3.2）⇒ 传进来的 w/h 也要保持 3.2 才不会被拉伸。
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry((size && size.w) || SHOP.BADGE_W, (size && size.h) || SHOP.BADGE_H),
@@ -547,12 +571,12 @@ export function titleFont(x, title) {
   return size;
 }
 
-export function makeCardTexture(title, sub, color, iconKey, opts = {}) {
+/** 把一张卡面画到现有 canvas（重绘也走这里，纹理对象不换、shader 不重编译）。 */
+function paintCardFace(cv, title, sub, color, iconKey, opts = {}) {
   // 竖版画布（aspect 256/456≈0.561 ≈ CARD.WIDTH/HEIGHT 0.4/0.71≈0.563，文字不会被拉伸）
   const W = 256, H = 456;
-  const cv = document.createElement('canvas');
-  cv.width = W; cv.height = H;
-  const x = cv.getContext('2d');
+  const x = cv.getContext('2d', { willReadFrequently: true });   // 第八十修：同 makeBadge，防串图
+  x.clearRect(0, 0, W, H);
   x.fillStyle = '#1b1b2f'; x.fillRect(0, 0, W, H);
   x.strokeStyle = color; x.lineWidth = 8; x.strokeRect(6, 6, W - 12, H - 12);
   // 第五十八修：带价位（商店卡）→ 版式整体上移一档，把底部让给放大一倍的价位大字
@@ -584,8 +608,29 @@ export function makeCardTexture(title, sub, color, iconKey, opts = {}) {
     wrapText(x, sub, W / 2, subY, W - 50, priced ? 28 : 30, 3, '#fff');
   }
   if (priced) drawPriceText(x, W, opts.price, opts.priceColor || color);
+}
+
+export function makeCardTexture(title, sub, color, iconKey, opts = {}) {
+  const cv = document.createElement('canvas');
+  cv.width = 256; cv.height = 456;
+  paintCardFace(cv, title, sub, color, iconKey, opts);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
+  // 第八十修：卡面是屏幕空间 UI 纹理，不需要 mipmap。Pico 上生成 mip 链时曾出现
+  //   多张卡共用同一表面的现象；关掉后每张只上传 base level，取像素路径更确定。
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+
+/**
+ * 原位重绘卡面（商店购买后只换一张 / 一列，不再销毁整排 geometry/material/texture）。
+ * 同一个 CanvasTexture + 同一个 MeshBasicMaterial ⇒ 不触发 shader 重编译，头显上不会卡一下。
+ */
+export function repaintCardTexture(tex, title, sub, color, iconKey, opts = {}) {
+  if (!tex || !tex.image || typeof tex.image.getContext !== 'function') return tex;
+  paintCardFace(tex.image, title, sub, color, iconKey, opts);
+  tex.needsUpdate = true;
   return tex;
 }
 
@@ -597,6 +642,7 @@ export function makeBalloon(colorHex) {
   const sphereGeo = new THREE.SphereGeometry(CARD.BALLOON_R, 16, 12);
   const sphereMat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.9, roughness: 0.4, metalness: 0.0 });
   const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+  sphere.userData.cardPart = 'sphere';
   g.add(sphere);
 
   // 细绳：从气球中心向下延伸（线长 = CARD.BALLOON_STRING_LEN，颜色随该卡选项卡变化），下端接卡牌
@@ -605,6 +651,7 @@ export function makeBalloon(colorHex) {
   const stringMat = new THREE.MeshStandardMaterial({ color: color, roughness: 0.9, emissive: color, emissiveIntensity: 0.3 });
   const string = new THREE.Mesh(stringGeo, stringMat);
   string.position.y = -stringLen / 2;
+  string.userData.cardPart = 'string';
   g.add(string);
 
   return g;

@@ -354,7 +354,11 @@ export class World {
         for (const mat of (Array.isArray(m) ? m : [m])) {
           if (!mat || this._fadeSeen.has(mat)) continue;  // GLB clone 共享材质：去重，避免重复改写同一材质
           this._fadeSeen.add(mat);
-          this._fadeMats.push({ mat, baseOpacity: mat.opacity ?? 1, baseTransparent: !!mat.transparent });
+          this._markWarmSeen(mat);
+          this._fadeMats.push({
+            mat, geo: o.geometry || null, kind: this._probeKind(o),
+            baseOpacity: mat.opacity ?? 1, baseTransparent: !!mat.transparent,
+          });
         }
       });
     }
@@ -376,7 +380,11 @@ export class World {
         for (const mat of (Array.isArray(m) ? m : [m])) {
           if (!mat || this._fadeSeen.has(mat)) continue;  // 已登记过的直接跳过，零重复开销
           this._fadeSeen.add(mat);
-          const e = { mat, baseOpacity: mat.opacity ?? 1, baseTransparent: !!mat.transparent };
+          this._markWarmSeen(mat);
+          const e = {
+            mat, geo: obj.geometry || null, kind: this._probeKind(obj),
+            baseOpacity: mat.opacity ?? 1, baseTransparent: !!mat.transparent,
+          };
           this._fadeMats.push(e);
           mat.transparent = true;
           mat.opacity = e.baseOpacity * o;  // 与当前云雾进度对齐
@@ -400,6 +408,123 @@ export class World {
     this._fadeMats = null;
     this._fadeSeen = null;
     this._fadeOn = false;
+  }
+
+  // ====== 第六十八修 · 切关/末尾精英卡顿：GPU 预热与淡入材质分帧恢复 ======
+  // 现场：「进入下一关 / 末尾精英生成时，转头会黑屏卡一下」。
+  // 根因有两类：
+  //   ① 云雾结束时把本关所有淡入材质一次性 transparent=false —— 每份材质都要重新编译 shader；
+  //   ② 转向后第一次看见的物体，纹理上传 + 着色器编译都压在那一眼。
+  // 现在在云雾窗内每帧恢复 1 份材质并顺手编译，剩余材质用 warmSceneGpu 分摊预热。
+  _nowMs() {
+    return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  }
+
+  _probeKind(o) {
+    if (!o) return 'mesh';
+    if (o.isSprite) return 'sprite';
+    if (o.isPoints) return 'points';
+    if (o.isLine) return 'line';
+    if (o.isInstancedMesh) return 'instanced';
+    return 'mesh';
+  }
+
+  _markWarmSeen(mat) {
+    if (!mat) return;
+    if (!this._warmSeen) this._warmSeen = new WeakSet();
+    this._warmSeen.add(mat);
+  }
+
+  resetWarm() {
+    this._warmSeen = new WeakSet();
+    this._warmQueue = [];
+  }
+
+  _initMaterialTextures(mat) {
+    if (!mat || !this.renderer || typeof this.renderer.initTexture !== 'function') return;
+    try {
+      for (const k of Object.keys(mat)) {
+        const v = mat[k];
+        if (v && v.isTexture) this.renderer.initTexture(v);
+      }
+      if (mat.uniforms) {
+        for (const k of Object.keys(mat.uniforms)) {
+          const v = mat.uniforms[k] && mat.uniforms[k].value;
+          if (v && v.isTexture) this.renderer.initTexture(v);
+        }
+      }
+    } catch (e) { /* 预热失败不影响正常渲染 */ }
+  }
+
+  _compileMaterialWith(geo, mat, camera, kind = 'mesh') {
+    if (!geo || !mat || !this.renderer || typeof this.renderer.compile !== 'function') return;
+    try {
+      if (!this._warmScene) this._warmScene = new THREE.Scene();
+      let probe;
+      if (kind === 'sprite') probe = new THREE.Sprite(mat);
+      else if (kind === 'points') probe = new THREE.Points(geo, mat);
+      else if (kind === 'line') probe = new THREE.Line(geo, mat);
+      else if (kind === 'instanced') probe = new THREE.InstancedMesh(geo, mat, 1);
+      else probe = new THREE.Mesh(geo, mat);
+      this._warmScene.add(probe);
+      try { this.renderer.compile(this._warmScene, camera || this.camera, this.scene); }
+      finally { this._warmScene.remove(probe); }
+    } catch (e) { /* 单份失败不影响其余 */ }
+  }
+
+  /**
+   * 把淡入材质逐份恢复为最终状态，并立即编译最终 shader。
+   * 每帧最多 maxCount 份 / budgetMs 毫秒，全程在云雾遮挡下完成。
+   */
+  restoreFadeStep(camera = null, maxCount = 1, budgetMs = 2.5) {
+    if (!this._fadeMats || !this._fadeMats.length) return 0;
+    const t0 = this._nowMs();
+    let n = 0;
+    do {
+      const e = this._fadeMats.pop();
+      if (!e) break;
+      e.mat.opacity = e.baseOpacity;
+      e.mat.transparent = e.baseTransparent;
+      this._initMaterialTextures(e.mat);
+      this._compileMaterialWith(e.geo, e.mat, camera, e.kind);
+      n++;
+    } while (this._fadeMats.length && n < maxCount && this._nowMs() - t0 < budgetMs);
+    if (!this._fadeMats.length) {
+      this._fadeMats = null;
+      this._fadeSeen = null;
+      this._fadeOn = false;
+    }
+    return n;
+  }
+
+  /**
+   * 全场景材质预热：每帧只收集「还没见过」的材质，按预算逐个 initTexture + compile。
+   * 覆盖「玩家转头才第一次看见」的物体，避免那一眼同步编译导致掉帧/黑边。
+   */
+  warmSceneGpu(camera = null, budgetMs = 2.0) {
+    if (!this._warmSeen || !this._warmQueue) this.resetWarm();
+    const q = this._warmQueue;
+    this.scene.traverse((o) => {
+      const m = o && o.material;
+      if (!m) return;
+      const mats = Array.isArray(m) ? m : [m];
+      for (const mat of mats) {
+        if (!mat || this._warmSeen.has(mat)) continue;
+        this._warmSeen.add(mat);
+        q.push({ mat, geo: o.geometry || null, kind: this._probeKind(o) });
+      }
+    });
+    if (!q.length) return 0;
+    const t0 = this._nowMs();
+    let n = 0;
+    do {
+      const e = q.pop();
+      if (!e) break;
+      this._initMaterialTextures(e.mat);
+      this._compileMaterialWith(e.geo, e.mat, camera, e.kind);
+      n++;
+    } while (q.length && this._nowMs() - t0 < budgetMs);
+    return n;
   }
 
   _buildStars() {

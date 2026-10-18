@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MID_WARNING, LEVEL_TITLE, HEAL_BANNER } from '../core/constants.js';
+import { MID_WARNING, LEVEL_TITLE, HEAL_BANNER, CHEST_BANNER } from '../core/constants.js';
 
 // ============================================================
 // 准星正前方的 3D 卡片（第四十二修做中场预警；第四十九修扩成「警告 / 关卡标题」两种样式）
@@ -37,6 +37,7 @@ function _roundRect(ctx, x, y, w, h, r) {
 export function styleConfig(style) {
   if (style === 'title') return LEVEL_TITLE;
   if (style === 'heal') return HEAL_BANNER;   // 第五十修：回血提示（绿色）
+  if (style === 'chest') return CHEST_BANNER; // 宝箱出现（金色，2 秒）
   return MID_WARNING;
 }
 
@@ -203,6 +204,7 @@ export class WarningBanner3D {
     c.clearRect(0, 0, CANVAS_W, CANVAS_H);
     if (style === 'title') this._drawTitle(c, text);
     else if (style === 'heal') this._drawHeal(c, text);
+    else if (style === 'chest') this._drawChest(c, text);
     else this._drawWarn(c, text);
     this.tex.needsUpdate = true;
   }
@@ -265,6 +267,35 @@ export class WarningBanner3D {
     c.textAlign = 'center';
     c.textBaseline = 'middle';
     this._fillLines(c, lines, CANVAS_W / 2 + 40, CANVAS_H / 2 + 4, size);
+  }
+
+  // —— 宝箱出现（金色 + 左侧礼物盒）：与回血卡同构，避免再建一块 Sprite ——
+  _drawChest(c, text) {
+    c.fillStyle = CHEST_BANNER.BG;
+    _roundRect(c, 0, 0, CANVAS_W, CANVAS_H, 30); c.fill();
+    c.strokeStyle = CHEST_BANNER.COLOR; c.lineWidth = 10;
+    _roundRect(c, 10, 10, CANVAS_W - 20, CANVAS_H - 20, 24); c.stroke();
+
+    // 礼物盒：盒身 + 盖 + 丝带（纯画布，不依赖素材）
+    const cx = 108, cy = CANVAS_H / 2;
+    c.fillStyle = CHEST_BANNER.COLOR;
+    c.fillRect(cx - 46, cy - 26, 92, 58);
+    c.fillRect(cx - 54, cy - 38, 108, 18);
+    c.fillStyle = CHEST_BANNER.BG;
+    c.fillRect(cx - 8, cy - 38, 16, 70);
+    c.fillRect(cx - 54, cy - 21, 108, 10);
+    c.fillStyle = CHEST_BANNER.COLOR;
+    c.beginPath();
+    c.ellipse(cx - 18, cy - 44, 18, 10, -0.35, 0, Math.PI * 2);
+    c.ellipse(cx + 18, cy - 44, 18, 10, 0.35, 0, Math.PI * 2);
+    c.fill();
+
+    const { lines, size } = wrapBannerText(c, text, { maxW: CANVAS_W - 260, size: 88, minSize: 46 });
+    c.fillStyle = CHEST_BANNER.TEXT_COLOR;
+    c.font = 'bold ' + size + 'px sans-serif';
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    this._fillLines(c, lines, CANVAS_W / 2 + 52, CANVAS_H / 2 + 4, size);
   }
 
   // —— 关卡标题卡（第四十九修）——

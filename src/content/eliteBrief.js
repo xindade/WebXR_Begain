@@ -2,11 +2,11 @@
 //
 // 位置：商店关**右手边**一列只读卡（不绑气球、不可射击），与左手道具列（SHOP.ITEM_X = -3.0）镜像。
 // 内容：每个商店只预告「本店 → 下一个商店之前」**新登场**的精英，以及该段里的那个 Boss。
-//   · 第 3 关（窗口 4-8）   ：铁甲兵 / 盾甲兵 / 治疗术士 / 忍者队长 + 脸谱 Boss
-//   · 第 9 关（窗口 10-14） ：幽灵法师 / 章鱼将军 + 龙 Boss（前面介绍过的省略）
+//   · 第 3 关（窗口 4-8）   ：铁甲兵 / 盾甲兵 / 治疗术士 + 脸谱 Boss
+//     （忍者虽然在第 8 关末尾客串，但正式作为常规精英登场是 10 关以后，现场要求放到第 9 关预告）
+//   · 第 9 关（窗口 10-14） ：忍者队长 / 幽灵法师 / 章鱼将军 + 龙 Boss
 //   · 第 15 关（窗口 16-18）：六种精英都介绍过了 → 只留「未知 Boss」（每种形态一张卡）
-//   ★ 去重基线是**上一个商店的窗口**，不是 1~n 关：第 1/2 关虽然已经出过铁甲兵/盾甲兵，
-//     但它们从没有过预告卡，所以第 3 关仍然要介绍它们。
+//   ★ 精英卡的归属按**现场认知的首次正式登场**手工定版，避免第 8 关末尾忍者客串把第 3 关卡列撑成 5 张。
 //
 // 数据全部取自既有单一口径（防手抄漂移）：
 //   · 精英种类 = content/spawnDirector.js 的 SPAWN_SCRIPT（关卡脚本里 do==='elite' 的 combos）
@@ -18,7 +18,6 @@
 
 import { LEVELS } from './levels.js';
 import { SPAWN_SCRIPT, LAYER } from './spawnDirector.js';
-import { ENEMY_TYPES } from './enemies.js';
 
 // —— 精英介绍（名字 / 图标 key / 一句话要点）——
 // 图标 key 由 game/cardDraft.js 的 drawSketchIcon 绘制（新增 9 个，见该文件「精英预告」段）
@@ -32,17 +31,26 @@ export const ELITE_BRIEF = {
 };
 
 /**
- * 精英卡的**立绘来源**（第五十七修 v2）：直接取 enemies.js 的模型字段 —— 与局内用的是同一份 GLB，
- * 不手抄路径。返回 null 表示该种类没有模型（则卡面退回简笔画图标）。
- * 盾甲兵是两个模型（骑士 + 旋转盾牌），由 enemyPortrait 组装后再抓图。
- * @returns {{url:string, shieldModel:string|null}|null}
+ * 精英卡的**本地立绘**（第六十九修）：由 tools/gen-portraits.mjs 在开发机离屏渲染一次，
+ * 随包放进 src/assets/portraits/。头显进店只读 PNG，不再每次抓 GLB，避免卡顿、全透明和串图。
+ *
+ * 模型改动后重新执行：node tools/gen-portraits.mjs
+ */
+export const ELITE_PORTRAIT_URL = {
+  eliteKnight: 'src/assets/portraits/knight.png',
+  shield:      'src/assets/portraits/shield.png',
+  heart:       'src/assets/portraits/healer.png',
+  ninja:       'src/assets/portraits/ninja.png',
+  ghost:       'src/assets/portraits/ghost.png',
+  octopus:     'src/assets/portraits/octopus.png',
+};
+
+/**
+ * @returns {{url:string, baked:true}|null} null = 该种类没有本地立绘（卡面退回简笔画图标）
  */
 export function elitePortrait(type) {
-  const t = ENEMY_TYPES[type];
-  if (!t || !t.model) return null;
-  // sideIcon（第六十三修）：盾牌抓帧失败时合成图左下角画的简笔画 key（见 enemyPortrait.composePortrait）
-  const b = ELITE_BRIEF[type];
-  return { url: t.model, shieldModel: t.shieldModel || null, sideIcon: (b && b.icon) || null };
+  const url = ELITE_PORTRAIT_URL[type];
+  return url ? { url, baked: true } : null;
 }
 
 // —— Boss 介绍 ——
@@ -69,6 +77,14 @@ export const BOSS_BRIEF = {
 };
 
 const PHASE_NAME = ['阶段一', '阶段二', '阶段三', '阶段四', '阶段五'];
+
+// 各商店关要展示的「新精英」白名单（Boss 卡由下方按关卡自动追加）。
+// 这里不直接扫脚本区间：第 8 关末尾忍者属于客串，现场要求把它归到第 9 关预告。
+const PREVIEW_ELITE_BY_SHOP = {
+  3: ['eliteKnight', 'shield', 'heart'],
+  9: ['ninja', 'ghost', 'octopus'],
+  15: [],
+};
 
 /** 商店关列表（升序），供 shopWindow 定位「下一个商店」 */
 function shopLevels() {
@@ -124,9 +140,10 @@ export function previewCards(shopLevel) {
   const { levels, prevShop } = shopWindow(shopLevel);
   if (!levels.length) return [];
 
-  // 去重基线 = 上一个商店的窗口（没有上一个商店 → 空）
+  // 现场口径白名单优先；未来若新增商店而未配白名单，再退回按区间自动收集。
+  const configured = PREVIEW_ELITE_BY_SHOP[shopLevel];
   const introduced = new Set(prevShop != null ? eliteTypesBetween(prevShop + 1, shopLevel - 1) : []);
-  const fresh = eliteTypesBetween(levels[0], levels[levels.length - 1]).filter((t) => !introduced.has(t));
+  const fresh = configured || eliteTypesBetween(levels[0], levels[levels.length - 1]).filter((t) => !introduced.has(t));
 
   const cards = [];
   for (const t of fresh) {

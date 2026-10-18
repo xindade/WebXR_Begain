@@ -93,6 +93,7 @@ test('融合批：演出结束落地的那批怪也带着本批 batchId 与 clim
   assert.equal(spawned.length, 0, '融合期间不生成，先演 in → out');
   w._updateFuseGroups(FUSE.IN_DUR + 0.01);   // 汇聚
   w._updateFuseGroups(FUSE.OUT_DUR + 0.01);  // 大光点落地
+  w._updateSpawnQueue(FUSE.SPAWN_STAGGER * 2 + 0.01);   // 第六十八修：逐只错帧生成
   assert.equal(spawned.length, 2, '落地生成整批');
   for (const b of spawned) {
     assert.equal(b.opts.batchId, 7);

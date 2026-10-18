@@ -5,13 +5,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { previewCards, shopWindow, ELITE_BRIEF, BOSS_BRIEF } from '../src/content/eliteBrief.js';
+import { previewCards, shopWindow, ELITE_BRIEF, BOSS_BRIEF, ELITE_PORTRAIT_URL } from '../src/content/eliteBrief.js';
 import { LEVELS } from '../src/content/levels.js';
 import * as THREE from 'three';
 import { SHOP, CARD } from '../src/core/constants.js';
 import { ShopDraft } from '../src/game/shop.js';
 import { elitePortrait } from '../src/content/eliteBrief.js';
-import { ENEMY_TYPES } from '../src/content/enemies.js';
 import { portraitKey, portraitCanvas, composePortrait, opaquePixels, PORTRAIT_MAIN_FRAC, PORTRAIT_SHIELD_FRAC, PORTRAIT_FALLBACK_COLOR } from '../src/game/enemyPortrait.js';
 import { makeCardTexture, makeBadge, titleFont, TITLE_MAX_W, TITLE_FONT_MAX, TITLE_FONT_MIN } from '../src/game/cardDraft.js';
 
@@ -29,13 +28,13 @@ test('预告窗口 = 本店之后 → 下一个商店之前（3→4-8 / 9→10-1
   assert.equal(shopWindow(15).prevShop, 9);
 });
 
-test('第 3 关：4-8 关新登场的四种精英 + 脸谱 Boss（共 5 张）', () => {
-  assert.deepEqual(labels(3), ['铁甲兵', '盾甲兵', '治疗术士', '忍者队长', '脸谱 Boss']);
+test('第 3 关：本段正式登场的三种精英 + 脸谱 Boss（共 4 张）', () => {
+  assert.deepEqual(labels(3), ['铁甲兵', '盾甲兵', '治疗术士', '脸谱 Boss']);
 });
 
-test('第 9 关：前面介绍过的省略，只留幽灵法师 / 章鱼将军 / 龙 Boss', () => {
-  assert.deepEqual(labels(9), ['幽灵法师', '章鱼将军', '龙 Boss']);
-  for (const done of ['铁甲兵', '盾甲兵', '治疗术士', '忍者队长']) {
+test('第 9 关：忍者正式归入本段预告，加上幽灵法师 / 章鱼将军 / 龙 Boss', () => {
+  assert.deepEqual(labels(9), ['忍者队长', '幽灵法师', '章鱼将军', '龙 Boss']);
+  for (const done of ['铁甲兵', '盾甲兵', '治疗术士']) {
     assert.ok(!labels(9).includes(done), `${done} 已在第 3 关介绍过，不该重复`);
   }
 });
@@ -112,7 +111,7 @@ test('进店即建预告卡、买道具不重建、清场时拆掉', () => {
   const ORIGIN = new THREE.Vector3(0, 1.6, 0);
   shop.open(ORIGIN, makeShopState(3));
 
-  assert.equal(shop.preview.length, 5, '第 3 关进店就该有 5 张预告卡');
+  assert.equal(shop.preview.length, 4, '第 3 关进店就该有 4 张预告卡');
   assert.ok(shop.preview.every((p) => p.holder.parent === shop.previewGroup), '挂在独立子组（_clear 不碰）');
   const previewHolders = shop.preview.map((p) => p.holder);
   assert.ok(!shop.entries.some((e) => previewHolders.includes(e.holder)), '预告卡不进 entries ⇒ 打不中');
@@ -120,8 +119,13 @@ test('进店即建预告卡、买道具不重建、清场时拆掉', () => {
   assert.ok(Math.abs(shop.preview[0].holder.position.x - -SHOP.ITEM_X) < 1e-9, 'X 是道具列的镜像');
   assert.ok(Math.abs(shop.preview[0].holder.position.y - SHOP.ITEM_Y) < 1e-9, '与道具列同高');
 
-  // 打一发买掉第一个道具 → 场地重建（entries 换新），但预告卡原样保留
+  // 打一发买掉第一个道具 → 只有该槽重建（第七十八修：换道具必须换贴图，防止旧卡面残留），
+  // 其余槽位与预告卡仍然全部复用。
   const target = shop.entries.find((e) => e.kind === 'item');
+  const slot = target.slot;
+  const entriesBefore = shop.entries.slice();
+  const otherBefore = entriesBefore.filter((e) => e !== target);
+  const mapsBefore = new Map(otherBefore.map((e) => [e.key, e.card.material.map]));
   const p = target.holder.position.clone();
   p.y += target.balloonY;   // 第五十八修：气球高度已含整组缩放
   const bullets = { active: [{ pos: p, prevPos: p.clone(), dmg: 10 }], release() { this.active.length = 0; }, sync() {} };
@@ -130,6 +134,14 @@ test('进店即建预告卡、买道具不重建、清场时拆掉', () => {
 
   assert.deepEqual(shop.preview.map((x) => x.holder), previewHolders, '购买只重建可买的卡，预告卡不重建');
   assert.ok(shop.entries.length > 0 && !shop.entries.some((e) => previewHolders.includes(e.holder)));
+  const afterTarget = shop.entries.find((e) => e.kind === 'item' && e.slot === slot);
+  assert.ok(afterTarget, '买走后该槽补位');
+  assert.notEqual(afterTarget.holder, target.holder, '第七十八修：换道具的槽位重建（卡面/球色必须同源）');
+  for (const e of shop.entries.filter((x) => x !== afterTarget)) {
+    assert.equal(e.card.material.map, mapsBefore.get(e.key), `${e.key} 的 CanvasTexture 必须原位复用`);
+  }
+  assert.equal(afterTarget.exploded, false, '新卡不继承购买爆炸状态');
+  assert.equal(afterTarget.balloon.visible, true, '新卡的气球要显示');
 
   shop.clearCards();
   assert.equal(shop.preview.length, 0, '清场要把预告卡一起拆掉');
@@ -137,28 +149,31 @@ test('进店即建预告卡、买道具不重建、清场时拆掉', () => {
 
 // ================= 立绘（第五十七修 v2 · 现场口径：精英露模型、Boss 只显示未知） =================
 
-test('每张精英卡都挂真实模型立绘（与 enemies.js 同源），Boss 卡一律无图', () => {
+test('每张精英卡都挂本地预烧立绘，Boss 卡一律无图', () => {
   const all = [3, 9, 15].flatMap((s) => previewCards(s));
   assert.ok(all.length > 0);
   for (const c of all) {
     if (c.key in ELITE_BRIEF) {
       assert.ok(c.portrait && c.portrait.url, `${c.label} 缺少立绘来源`);
-      assert.equal(c.portrait.url, ENEMY_TYPES[c.key].model, `${c.label} 的立绘必须就是局内那份 GLB`);
+      assert.equal(c.portrait.url, ELITE_PORTRAIT_URL[c.key], `${c.label} 必须指向自己的本地 PNG`);
+      assert.equal(c.portrait.baked, true, `${c.label} 必须是预烧图片，不再运行时抓帧`);
+      assert.ok(fs.existsSync(path.join(HERE, '..', c.portrait.url)), `${c.label} 的本地 PNG 不存在：${c.portrait.url}`);
     } else {
       assert.equal(c.portrait, null, `${c.label} 是 Boss 卡：不给图，卡面只显示「?」`);
     }
   }
-  // 有图的张数：第 3 关 4/5、第 9 关 2/3、第 15 关 0/3（三张都是 Boss 形态卡）
-  assert.deepEqual([3, 9, 15].map((s) => previewCards(s).filter((c) => c.portrait).length), [4, 2, 0]);
+  // 有图的张数：第 3 关 3/4、第 9 关 3/4、第 15 关 0/3（三张都是 Boss 形态卡）
+  assert.deepEqual([3, 9, 15].map((s) => previewCards(s).filter((c) => c.portrait).length), [3, 3, 0]);
 });
 
-test('盾甲兵立绘 = 骑士 + 盾牌两个模型（否则和铁甲兵长得一模一样）', () => {
+test('盾甲兵立绘 = 独立的骑士+盾牌合成 PNG（不再和铁甲兵共用骑士图）', () => {
   const shield = previewCards(3).find((c) => c.key === 'shield');
-  assert.equal(shield.portrait.url, ENEMY_TYPES.shield.model);
-  assert.equal(shield.portrait.shieldModel, ENEMY_TYPES.shield.shieldModel);
+  assert.equal(shield.portrait.url, ELITE_PORTRAIT_URL.shield);
+  assert.equal(shield.portrait.shieldModel, undefined);
+  assert.ok(shield.portrait.url.endsWith('/shield.png'));
   const knight = previewCards(3).find((c) => c.key === 'eliteKnight');
   assert.notEqual(portraitKey(shield.portrait), portraitKey(knight.portrait), '两张卡的立绘不能共用同一份缓存');
-  assert.equal(portraitKey(knight.portrait), ENEMY_TYPES.eliteKnight.model);
+  assert.equal(portraitKey(knight.portrait), ELITE_PORTRAIT_URL.eliteKnight);
 });
 
 test('抓不到立绘也不能崩：无 renderer / 空 spec 一律 resolve(null) 走回退', async () => {
@@ -166,6 +181,23 @@ test('抓不到立绘也不能崩：无 renderer / 空 spec 一律 resolve(null)
   assert.equal(await portraitCanvas({}, null), null);
   assert.equal(portraitKey(null), '');
   assert.equal(portraitKey({}), '');
+});
+
+test('第七十三修 · 旧服务器仍下发 GLB spec 时，客户端也强制改用本地 PNG', async () => {
+  const OrigImage = globalThis.Image;
+  try {
+    globalThis.Image = class FakeImage {
+      constructor() { this.width = 256; this.height = 256; this.decoding = ''; }
+      set src(v) { this._src = v; queueMicrotask(() => this.onload && this.onload()); }
+      get src() { return this._src; }
+    };
+    const ghost = await portraitCanvas(null, { url: 'Model/幽灵.glb' });
+    assert.equal(ghost && ghost.src, ELITE_PORTRAIT_URL.ghost, '旧式幽灵 spec 必须加载本地幽灵 PNG');
+    const shield = await portraitCanvas(null, { url: 'Model/骑士.glb', shieldModel: 'Model/盾牌.glb' });
+    assert.equal(shield && shield.src, ELITE_PORTRAIT_URL.shield, '旧式盾甲兵 spec 必须加载独立的盾甲兵 PNG');
+  } finally {
+    globalThis.Image = OrigImage;
+  }
 });
 
 test('卡面立绘版式：有图画图、没图画「?」，非立绘卡仍走简笔画', () => {
@@ -242,21 +274,25 @@ test('第五十八修 · 商店卡面价位：底部粗体大字、金色 / 免�
   }
 });
 
-test('商店把立绘喂进卡面：previewPortraits 只报精英、按模型去重；setPortrait 换图并重建这一列', () => {
+test('商店把立绘喂进卡面：previewPortraits 只报精英、按模型去重；setPortrait 原位换图不重建', () => {
   const shop = new ShopDraft(new THREE.Scene());
   const ORIGIN = new THREE.Vector3(0, 1.6, 0);
   shop.open(ORIGIN, makeShopState(3));
 
   const specs = shop.previewPortraits();
-  // 第 3 关：铁甲兵 / 盾甲兵（骑士+盾）/ 治疗术士 / 忍者队长 → 4 份模型（Boss 卡不抓）
-  assert.equal(specs.length, 4);
+  // 第 3 关：铁甲兵 / 盾甲兵（骑士+盾）/ 治疗术士 → 3 份模型（Boss 卡不抓；忍者归第 9 关预告）
+  assert.equal(specs.length, 3);
   assert.ok(specs.every((s) => s && s.url), '报出来的必须都是可抓的 spec');
   assert.equal(new Set(specs.map(portraitKey)).size, specs.length, '同一个模型不能抓两次');
 
   const holdersBefore = shop.preview.map((p) => p.holder);
+  const mapsBefore = shop.preview.map((p) => p.mesh.material.map);
   shop.setPortrait(portraitKey(specs[0]), { width: 8, height: 8 });
-  assert.equal(shop.preview.length, 5, '换图不改变卡片数量');
-  assert.notEqual(shop.preview[0].holder, holdersBefore[0], 'setPortrait 要重建这一列（贴图换成新的）');
+  assert.equal(shop.preview.length, 4, '换图不改变卡片数量');
+  assert.deepEqual(shop.preview.map((p) => p.holder), holdersBefore,
+    'setPortrait 原位重绘：整列 holder 不重建');
+  assert.deepEqual(shop.preview.map((p) => p.mesh.material.map), mapsBefore,
+    'setPortrait 原位重绘：CanvasTexture 不重建，避免连续上传 20 张贴图');
   assert.ok(shop.preview.every((p) => p.holder.parent === shop.previewGroup));
 
   const holders2 = shop.preview.map((p) => p.holder);
@@ -265,9 +301,9 @@ test('商店把立绘喂进卡面：previewPortraits 只报精英、按模型去
   shop.setPortrait('whatever', null);                                // 空图
   assert.deepEqual(shop.preview.map((p) => p.holder), holders2, '重复/空输入不得反复重建');
 
-  // 换店（第 9 关）：只抓幽灵 / 章鱼两份模型
+  // 换店（第 9 关）：抓忍者 / 幽灵 / 章鱼三份模型
   shop.open(ORIGIN, makeShopState(9));
-  assert.deepEqual(shop.previewPortraits().map(portraitKey), [ENEMY_TYPES.ghost.model, ENEMY_TYPES.octopus.model]);
+  assert.deepEqual(shop.previewPortraits().map(portraitKey), [ELITE_PORTRAIT_URL.ninja, ELITE_PORTRAIT_URL.ghost, ELITE_PORTRAIT_URL.octopus]);
 
   shop.dispose();
 });
@@ -415,14 +451,16 @@ test('第六十三修 · 盾牌没抓到：左下角补「盾」简笔画（不�
   }
 });
 
-test('第六十三修 · 盾甲兵的 spec 带 sideIcon（兜底画哪枚简笔画），且不污染 portraitKey', () => {
+test('第六十九修 · 盾甲兵改用离线合成 PNG：不再需要 sideIcon / shieldModel 兜底', () => {
   const shield = elitePortrait('shield');
-  assert.equal(shield.sideIcon, 'eShield', '盾甲兵的兜底图标 = 「盾」简笔画');
-  assert.ok(CARD_DRAFT.includes("case 'eShield'"), 'drawSketchIcon 必须真有这个 case（否则兜底只会画个圆点）');
+  assert.equal(shield.baked, true, '盾甲兵本地立绘已预烧');
+  assert.equal(shield.sideIcon, undefined);
+  assert.equal(shield.shieldModel, undefined);
   const knight = elitePortrait('eliteKnight');
-  assert.equal(knight.sideIcon, 'eKnight');
-  assert.equal(knight.shieldModel, null);
-  assert.equal(portraitKey(shield), 'Model/骑士.glb|Model/盾牌.glb', '缓存键口径不变（仍是 url|shieldModel）');
+  assert.equal(knight.baked, true);
+  assert.equal(knight.shieldModel, undefined);
+  assert.notEqual(portraitKey(shield), portraitKey(knight), '盾甲兵与铁甲兵必须各用各的 PNG');
+  assert.ok(CARD_DRAFT.includes("case 'eShield'"), '简笔画兜底仍保留（图片加载失败时还能认出盾）');
 });
 
 test('第六十三修 · 抓帧失败不再拖垮整卡：两个模型各自独立兜底 + 诊断出口', () => {

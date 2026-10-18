@@ -13,8 +13,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import * as THREE from 'three';
-import { chestBonus, chestValueText, DragonChest } from '../src/game/dragonChest.js';
-import { DRAGON_CHEST, HEAL_BANNER, HEAL_ON_DEATH, CARD } from '../src/core/constants.js';
+import {
+  chestBonus, chestValueText, bulletChestValue, bulletChestBonus, bulletChestValueText, DragonChest,
+} from '../src/game/dragonChest.js';
+import { DRAGON_CHEST, MASK_CHEST, CHEST_BANNER, HEAL_BANNER, HEAL_ON_DEATH, CARD } from '../src/core/constants.js';
 import { ENEMY_TYPES } from '../src/content/enemies.js';
 import { styleConfig } from '../src/game/warningBanner.js';
 
@@ -72,23 +74,75 @@ test('第五十修 · 宝箱摆在**选项卡原本的位置**，不另起一套
 
 // ---------- ② 顺序：宝箱窗口必须挡住通关抽卡 ----------
 
-test('第五十修 · 开箱判据：只认「第12关 + 龙 Boss 清完 + 本关没开过」', async () => {
+test('第七十修 · 开箱判据：第 6/12 关各一种宝箱，第 18 关直接结束本局不开', async () => {
   const { Game } = await import('../src/game/game.js');
   const g = Object.create(Game.prototype);
   g.dragon = {}; g._chestDone = false; g.levelIndex = 11;    // LEVELS[11] = 第12关
-  assert.equal(g._chestDue(), true);
+  assert.equal(g._chestDue(), true, '第12关龙族宝箱');
+  assert.equal(g._chestConfigForLevel(), DRAGON_CHEST);
   g.levelIndex = 0;
   assert.equal(g._chestDue(), false, '第1关不能开宝箱');
-  g.levelIndex = 11; g.dragon = null;
-  assert.equal(g._chestDue(), false, '没有龙 Boss 就不开（第18关魔术师关不能顺带开）');
-  g.dragon = {}; g._chestDone = true;
+  g.levelIndex = 5; g.dragon = null;                          // LEVELS[5] = 第6关脸谱 Boss
+  assert.equal(g._chestDue(), true, '第6关脸谱宝箱（不依赖龙的实例）');
+  assert.equal(g._chestConfigForLevel(), MASK_CHEST);
+  g.levelIndex = 17;                                         // LEVELS[17] = 第18关
+  assert.equal(g._chestDue(), false, '第18关打完直接收尾，不插宝箱');
+  g.levelIndex = 11; g._chestDone = true;
   assert.equal(g._chestDue(), false, '本关已开过 → 不再开第二次');
+});
+
+test('第七十修 · 脸谱箱：命中数 → 0.1~2.0，结算 <0.5→0 / 0.5~<2→1 / 满2→2', () => {
+  assert.equal(bulletChestValue(0, MASK_CHEST), 0.1);
+  assert.equal(bulletChestValue(4, MASK_CHEST), 0.5);
+  assert.equal(bulletChestValue(10, MASK_CHEST), 1.1);
+  assert.equal(bulletChestValue(19, MASK_CHEST), 2.0);
+  assert.equal(bulletChestValue(99, MASK_CHEST), 2.0, '封顶 2.0');
+  assert.equal(bulletChestBonus(0.4, MASK_CHEST), 0);
+  assert.equal(bulletChestBonus(0.5, MASK_CHEST), 1);
+  assert.equal(bulletChestBonus(1.9, MASK_CHEST), 1);
+  assert.equal(bulletChestBonus(2.0, MASK_CHEST), 2);
+  assert.equal(bulletChestValueText(0.7), '+0.7 子弹');
+});
+
+test('第七十修 · 宝箱横幅：2 秒、复用同一块 Sprite 的 chest 样式', () => {
+  assert.equal(CHEST_BANNER.ENABLED, true);
+  assert.equal(CHEST_BANNER.SECONDS, 2);
+  assert.equal(CHEST_BANNER.TEXT, '宝箱出现，快攻击');
+  assert.equal(styleConfig('chest'), CHEST_BANNER);
+  assert.ok(CHEST_BANNER.FADE_IN + CHEST_BANNER.FADE_OUT <= CHEST_BANNER.SECONDS);
+});
+
+test('第七十修 · 先弹 2 秒横幅，横幅走完才开计数窗口', async () => {
+  const { Game } = await import('../src/game/game.js');
+  const g = Object.create(Game.prototype);
+  g._chestConfigForLevel = () => MASK_CHEST;
+  g.midWarning = { shown: [], show(text, style) { this.shown.push({ text, style }); } };
+  g.log = () => {};
+  let began = 0;
+  let prepared = 0;
+  g._ensureChest = () => { prepared++; };
+  g._beginChestWindow = () => { began++; };
+
+  g._startBossChest();
+  assert.equal(g._chestPending, 2);
+  assert.equal(prepared, 1, '横幅一开始就预建宝箱，给模型留出 2 秒加载时间');
+  assert.deepEqual(g.midWarning.shown, [{ text: '宝箱出现，快攻击', style: 'chest' }]);
+  g._updateDragonChest(1.0);
+  assert.equal(began, 0, '第 1 秒还在横幅上');
+  g._updateDragonChest(0.9);
+  assert.equal(began, 0, '1.9 秒仍不开箱');
+  g._updateDragonChest(0.2);
+  assert.equal(began, 1, '2 秒到点 → 开计数窗口');
+  assert.equal(g._chestPending, 0);
 });
 
 test('第五十修 · 窗口期内 _chestRunning 为真（调用方据此 return，不去开抽卡）', async () => {
   const { Game } = await import('../src/game/game.js');
   const g = Object.create(Game.prototype);
   assert.equal(g._chestRunning(), false, '还没有实例 → 不挡');
+  g._chestPending = 2;
+  assert.equal(g._chestRunning(), true, '宝箱预告的 2 秒横幅也要挡住抽卡');
+  g._chestPending = 0;
   g._chest = { running: false };
   assert.equal(g._chestRunning(), false);
   g._chest = { running: true };
@@ -212,10 +266,26 @@ test('第五十一修 · 宝箱受击：参数与 getter 齐备（counting 只�
   assert.equal(typeof DragonChest.prototype.punch, 'function');
   const chest = new DragonChest(new THREE.Scene());
   assert.equal(chest.counting, false, 'idle 时不受击');
+  chest._ready = true;   // 单测不等异步 GLB；生产由进关预载保证
   chest.start();
   assert.equal(chest.counting, true);
   chest.punch();
   assert.equal(chest._punch, 1, 'punch() 把受击强度拉满，交给 update 回弹');
   chest.hide();
+  chest.dispose();
+});
+
+test('第七十四修 · 模型未就位时宝箱保持隐身，不把占位方块露给玩家', () => {
+  const chest = new DragonChest(new THREE.Scene());
+  chest._ready = false;
+  chest.start();
+  assert.equal(chest.phase, 'loading', '加载期间进入 loading，不计时也不受击');
+  assert.equal(chest.group.visible, false, '占位盒所在 group 必须隐身');
+  assert.equal(chest.running, true, 'loading 也要挡住通关抽卡，避免流程提前跑掉');
+
+  chest._ready = true;
+  chest._startIfWaiting();
+  assert.equal(chest.phase, 'counting');
+  assert.equal(chest.group.visible, true, '模型就位后才显示并开始计时');
   chest.dispose();
 });

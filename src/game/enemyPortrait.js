@@ -1,8 +1,8 @@
-// enemyPortrait.js —— 商店「精英预告」卡的**模型立绘**（第五十七修 v2）。
+// enemyPortrait.js —— 商店「精英预告」卡的**立绘**（第六十九修起优先读本地预烧 PNG）。
 //
 // 现场口径：精英怪卡面要放它**真实模型**的正视图，图下面是文字介绍；Boss 卡不给图（只留「?」）。
-// 做法：复用 DepthSprite 的离屏抓帧管线（glbCapture.captureGLB）—— 和局内气球用的是同一份 GLB，
-//   所以卡面长相 = 玩家马上要遇到的样子，不存在「画的跟实物不一样」。
+// 做法：开发机用 tools/gen-portraits.mjs 把 GLB 离屏渲成 PNG，随包发布；头显进店只解码图片。
+//   GLB 抓帧管线保留作兜底（没有本地 PNG 的旧调用仍可走），但商店卡不再每次运行时抓帧。
 //
 // 为什么单独一个模块：抓帧要 renderer、要异步、要按模型 url 缓存，
 //   而 content/eliteBrief.js 是纯数据（要在 node 单测里跑，不能碰 WebGL）。
@@ -42,10 +42,42 @@ export const PORTRAIT_FALLBACK_COLOR = '#d7e2ee';
 
 const _cache = new Map();                 // url|shieldModel -> Promise<HTMLCanvasElement|null>
 
+// 旧服务器内容包里的 eliteBrief.js 仍会下发 GLB 路径（没有 baked 标记）。APK 本地
+// 永远优先用预烧 PNG，避免旧内容包把「所有立绘都抓成同一只怪」的老毛病带回来。
+const BAKED_BY_MODEL = {
+  '骑士.glb':  { main: 'src/assets/portraits/knight.png', shield: 'src/assets/portraits/shield.png' },
+  '心形怪.glb': 'src/assets/portraits/healer.png',
+  '忍者.glb':   'src/assets/portraits/ninja.png',
+  '幽灵.glb':   'src/assets/portraits/ghost.png',
+  '章鱼.glb':   'src/assets/portraits/octopus.png',
+};
+
+function bakedUrlForSpec(spec) {
+  if (!spec) return null;
+  if (spec.baked && spec.url) return spec.url;
+  const base = String(spec.url || '').replace(/\\/g, '/').split('/').pop();
+  const hit = BAKED_BY_MODEL[base];
+  if (!hit) return null;
+  if (typeof hit === 'string') return hit;
+  return spec.shieldModel ? hit.shield : hit.main;
+}
+
 /** 立绘缓存键（同一份模型在不同卡片间共享一次抓帧） */
 export function portraitKey(spec) {
   if (!spec || !spec.url) return '';
   return spec.shieldModel ? `${spec.url}|${spec.shieldModel}` : spec.url;
+}
+
+/** 本地预烧 PNG：进店只解码一张 512×512 图，无 GLB、无 WebGL 回读。 */
+function loadBakedPortrait(url) {
+  return new Promise((resolve, reject) => {
+    if (typeof Image === 'undefined') { reject(new Error('当前环境没有 Image')); return; }
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('立绘图片加载失败: ' + url));
+    img.src = url;
+  });
 }
 
 /**
@@ -100,7 +132,7 @@ function captureModel(renderer, url, say) {
 export function opaquePixels(cv) {
   try {
     if (!cv || !cv.width || !cv.height || !cv.getContext) return -1;
-    const g = cv.getContext('2d');
+    const g = cv.getContext('2d', { willReadFrequently: true });
     const d = g.getImageData(0, 0, cv.width, cv.height).data;
     let n = 0;
     for (let i = 3; i < d.length; i += 4) if (d[i] > 10) n++;
@@ -116,7 +148,7 @@ export function opaquePixels(cv) {
 export function composePortrait(main, side, size = PORTRAIT_CAP, mainFrac = PORTRAIT_MAIN_FRAC, sideFrac = PORTRAIT_SHIELD_FRAC, sideIcon = null) {
   const cv = document.createElement('canvas');
   cv.width = size; cv.height = size;
-  const g = cv.getContext('2d');
+  const g = cv.getContext('2d', { willReadFrequently: true });
   if (main) { const s = size * mainFrac; g.drawImage(main, size - s, 0, s, s); }        // 右上
   const s = size * sideFrac;
   if (side) { g.drawImage(side, 0, size - s, s, s); }                                   // 左下
@@ -129,17 +161,33 @@ export function composePortrait(main, side, size = PORTRAIT_CAP, mainFrac = PORT
 /**
  * 取某个精英模型的正视立绘（带缓存）。
  * @param {THREE.WebGLRenderer} renderer
- * @param {{url:string, shieldModel?:string|null}} spec 见 content/eliteBrief.js 的 elitePortrait()
- * @returns {Promise<HTMLCanvasElement|null>} null = 没图（调用方退回简笔画图标）
+ * @param {{url:string, baked?:boolean, shieldModel?:string|null}} spec 见 content/eliteBrief.js 的 elitePortrait()
+ * @returns {Promise<HTMLImageElement|HTMLCanvasElement|null>} null = 没图（调用方退回简笔画图标）
  */
 export function portraitCanvas(renderer, spec, log = null) {
   const key = portraitKey(spec);
   if (!key) return Promise.resolve(null);
   if (_cache.has(key)) return _cache.get(key);
-  if (!renderer) return Promise.resolve(null);
   // 诊断日志：头显上没法看 DevTools，所以把「抓到几个像素 / 哪一步失败」交给 game 的留痕通道（第六十三修）
   const say = (m) => { try { if (log) log(m); } catch (e) { /* 日志失败绝不连累立绘 */ } };
 
+  // 第六十九修：本地 PNG 优先。它不依赖 renderer，进店只做一次图片解码。
+  // 第七十三修：即使服务器下发的是旧式 GLB spec，也按模型名映射到同一套本地 PNG。
+  const bakedUrl = bakedUrlForSpec(spec);
+  if (bakedUrl) {
+    const task = loadBakedPortrait(bakedUrl)
+      .then((img) => { say('本地立绘已加载：' + bakedUrl); return img; })
+      .catch((err) => {
+        _cache.delete(key);
+        console.warn('[enemyPortrait] 本地立绘加载失败，该卡回退简笔画:', bakedUrl, err?.message || err);
+        say('本地立绘失败：' + (err?.message || err));
+        return null;
+      });
+    _cache.set(key, task);
+    return task;
+  }
+
+  if (!renderer) return Promise.resolve(null);
   const task = (async () => {
     // 单模型（铁甲兵 / 治疗术士 / 忍者 / 幽灵 / 章鱼）：一张抓帧就够
     if (!spec.shieldModel) return captureModel(renderer, spec.url, say);

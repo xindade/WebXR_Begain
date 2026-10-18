@@ -107,7 +107,7 @@ test('道具数值换算：以战养战 +10%/级、吸血 10%/级、专打强者
 // ---------- ③ ShopDraft 状态机 ----------
 
 function makeShop(coin = 0, hasSkill = false, itemLv = {}, priceMul = 1) {
-  const calls = { skill: [], upgrade: [], item: [], denied: [] };
+  const calls = { skill: [], upgrade: [], item: [], denied: [], notice: [] };
   // 生产同口径：game._applySkillCard 会把 selectedSkill 写成刚买的技能，于是 hasSkill() 变 true
   const flags = { skill: hasSkill };
   const state = {
@@ -121,6 +121,7 @@ function makeShop(coin = 0, hasSkill = false, itemLv = {}, priceMul = 1) {
     onBuyUpgrade: (id) => calls.upgrade.push(id),
     onBuyItem: (id) => { calls.item.push(id); itemLv[id] = (itemLv[id] || 0) + 1; },
     onDenied: (m) => calls.denied.push(m),
+    onNotice: (m) => calls.notice.push(m),
     shopLevel: 3,   // 第五十八修：预告卡要看「本店是第几关」（第 3 关 = 4-8 关的预告）
   };
   const shop = new ShopDraft(new THREE.Scene());
@@ -148,6 +149,24 @@ function resolve(shop, steps = 60) {
   for (let i = 0; i < steps && shop._resolve; i++) shop.update(0.1, null, ORIGIN());
   assert.equal(shop._resolve, null, '结算动画应已走完');
 }
+
+test('第 3 关整店口径：左手 3 道具 + 刷新，右手固定 4 张精英预告，左右列互不串位', () => {
+  const { shop } = makeShop(0);
+  // 右手边只读预告必须与现场口径逐字一致；少治疗术士 / 多一张 Boss 都会被这条锁住。
+  assert.deepEqual(shop.preview.map((p) => p.card.label),
+    ['铁甲兵', '盾甲兵', '治疗术士', '脸谱 Boss']);
+  assert.ok(shop.preview.every((p) => p.holder.position.x === SHOP.PREVIEW_X), '预告全部在右手列');
+  // 左手边始终是三个道具槽 + 刷新气球；刷新不能被预告卡材料或旧缓存顶掉。
+  assert.deepEqual(shop.entries.filter((e) => e.kind === 'item').map((e) => e.slot), [0, 1, 2]);
+  assert.equal(shop.entries.filter((e) => e.kind === 'refresh').length, 1);
+  assert.ok(shop.entries.filter((e) => e.kind === 'item' || e.kind === 'refresh')
+    .every((e) => e.holder.position.x === SHOP.ITEM_X), '道具与刷新全部在左手列');
+  // 两列都围绕 Z=0 对称铺开，不能一眼可见的只有一张、其余跑到毯外。
+  const zs = shop.preview.map((p) => p.holder.position.z);
+  assert.ok(Math.abs(zs.reduce((a, b) => a + b, 0)) < 1e-9, '预告列 Z 对称');
+  assert.equal(new Set(zs.map((z) => z.toFixed(3))).size, zs.length, '同列卡片 Z 不重叠');
+  shop.dispose();
+});
 
 test('商店关 · 无技能时正前方是三个技能本体 + 购物完成；打中技能 → 装备并扣 1000，随后换成强化', () => {
   const { shop, state, calls } = makeShop(3000);
@@ -182,10 +201,13 @@ test('第五十六修 · 第 3 关价格减半：技能 500 / 强化 750 / 道�
   assert.equal(state.coin, 2500, '只扣减半后的 500');
   resolve(shop);
   assert.equal(shop.entries.find((e) => e.kind === 'upgrade').price, 750, '技能强化 1500 → 750');
-  // 第五十七修：本店第一个道具免费 —— 三个道具都先显示「首次免费」
+  // 第五十七修 + 第七十七修：三个道具都享有「首件免费」资格（实扣 0），卡面都写「免费」；
+  //   「任选一件」由道具列上方的牌子说明，买掉第一件后三张恢复原价。
   for (const it of shop.entries.filter((e) => e.kind === 'item')) {
-    assert.equal(it.free, true, '免费名额还在时三个道具都应标免费');
-    assert.equal(it.price, 0);
+    assert.equal(it.free, true, '免费名额还在时三个道具都有免费资格');
+    assert.equal(it.price, 0, '命中任一都是实扣 0');
+    assert.equal(it.priceText, '免费');
+    assert.equal(it.priceColor, SHOP.PRICE_FREE_COLOR);
   }
   hitEntry(shop, (x) => x.kind === 'item');
   assert.equal(state.coin, 2500, '免费的那个道具不扣钱');
@@ -443,6 +465,51 @@ test('第五十七修 · 本店第一个道具免费：只免一次、重进店�
   assert.ok(shop.entries.filter((e) => e.kind === 'item').every((e) => e.free === true));
 });
 
+test('第七十八修 · 「首件免费」并进道具列商店币牌：不再有第二块大绿牌，买掉后立刻复原', () => {
+  const { shop, calls } = makeShop(10000);
+  assert.equal(shop.freeBadge, undefined, '不再单独建免费大牌子（现场照片里它挡住了整列）');
+  assert.ok(shop.coinItem, '道具列的商店币牌子仍在');
+  assert.match(shop.coinItem.text, /首件免费/);
+  assert.ok(shop.entries.filter((e) => e.kind === 'item').every((e) => e.priceText === '免费'),
+    '三张卡都写「免费」是准确的（任选一件）');
+  hitEntry(shop, (e) => e.kind === 'item');
+  resolve(shop);
+  assert.doesNotMatch(shop.coinItem.text, /首件免费/, '买掉第一件后牌子立刻复原');
+  assert.match(shop.coinItem.text, /^商店币 /);
+  assert.deepEqual(calls.notice, ['本店首件道具免费'], '成功提示走 onNotice');
+  assert.deepEqual(calls.denied, [], '成功提示不该走「买不起」通道');
+});
+
+test('第七十八修 · 道具展示位强制去重：_itemDisplay 被污染也不会出现两张同款', () => {
+  const { shop } = makeShop(10000);
+  shop._itemDisplay = ['warFeed', 'warFeed', 'lifesteal'];
+  shop._build();
+  const items = shop.entries.filter((e) => e.kind === 'item');
+  assert.equal(items.length, 3);
+  assert.equal(new Set(items.map((e) => e.def.id)).size, 3, '三张卡必须是三个不同道具');
+  assert.equal(new Set(shop._itemDisplay).size, 3, '展示数组也被就地修正');
+});
+
+test('第七十八修 · 买走补位后重建该槽：卡面文案 / 气球颜色必须与当前 def 同源', () => {
+  const { shop } = makeShop(10000);
+  const bought = hitEntry(shop, (e) => e.kind === 'item');
+  const slot = bought.slot;
+  const oldId = bought.def.id;
+  const oldTex = bought.card.material.map.uuid;
+  resolve(shop);
+  const after = shop.entries.find((e) => e.kind === 'item' && e.slot === slot);
+  assert.ok(after, '槽位补位后应仍有卡');
+  assert.notEqual(after.def.id, oldId, '补位不会补回刚买走的那个');
+  assert.equal(after.label, after.def.label, 'entry.label 必须跟着 def 走');
+  assert.equal(after.color, after.def.color, 'entry.color 必须跟着 def 走');
+  assert.equal(after.icon, after.def.icon, 'entry.icon 必须跟着 def 走');
+  assert.notEqual(after.card.material.map.uuid, oldTex, '换道具就换一张贴图，避免旧卡面残留');
+  for (const e of shop.entries.filter((x) => x.kind === 'item')) {
+    assert.equal(e.label, e.def.label);
+    assert.equal(e.color, e.def.color);
+  }
+});
+
 // ================= 第五十八修（现场一轮反馈）=================
 //  ① 两列卡（道具 / 精英预告）放大 2 倍 + 平行于地面的 Z 线；选项卡 1.5 倍；
 //  ② 价位「换个容易区分的颜色 + 放大一倍」⇒ 从说明文字里搬出来，画成卡面底部大字；
@@ -484,6 +551,7 @@ test('第五十八修 · 价位搬出说明文字：卡面底部大字（金色 
   assert.ok(!skill.sub.includes(String(SHOP.SKILL_PRICE)), `说明文字里不该再夹价格：${skill.sub}`);
   const items = shop._itemEntries();
   const free = items.find((e) => e.kind === 'item');
+  assert.equal(free.free, true, '首件免费资格还在');
   assert.equal(free.priceText, '免费');
   assert.equal(free.priceColor, SHOP.PRICE_FREE_COLOR);
   assert.ok(!free.sub.includes('免费'), `说明文字里不该再夹「免费」：${free.sub}`);
@@ -503,7 +571,7 @@ test('第五十八修 · 区域牌子：技能区 / 道具区各一块商店币 
   assert.ok(shop.coinFront && shop.coinFront.mesh.parent === shop.badgeGroup, '技能区牌子挂 badgeGroup');
   assert.ok(shop.coinItem && shop.coinItem.mesh.parent === shop.badgeGroup, '道具区牌子挂 badgeGroup');
   assert.equal(shop.coinFront.text, '商店币 1375');
-  assert.equal(shop.coinItem.text, '商店币 1375');
+  assert.equal(shop.coinItem.text, '商店币 1375 · 首件免费', '道具列牌子同时承担首件免费提示');
   assert.ok(shop.coinFront.mesh.position.y > SHOP.FRONT_Y + CARD.BALLOON_HEIGHT, '挂在气球上方');
   assert.ok(shop.coinItem.mesh.position.y > SHOP.ITEM_Y + CARD.BALLOON_HEIGHT * SHOP.CARD_SCALE_ITEM,
     '道具列挂在（放大后的）气球上方');
@@ -549,7 +617,7 @@ test('第五十九修 · 两列卡全部收进飞毯（旧版 |X| = 3.0 / 6 张�
   // 正前方那一排本来就贴着前缘（FRONT_Z 一直略在毯外，现场口径不变）→ 只查左右两列
   const sideEntries = shop.entries.filter((e) => e.kind === 'item' || e.kind === 'refresh');
   const pts = [...sideEntries.map((e) => e.holder.position), ...shop.preview.map((p) => p.holder.position)];
-  assert.equal(pts.length, 9, '道具 4（3 道具 + 刷新）+ 预告 5');
+  assert.equal(pts.length, 8, '道具 4（3 道具 + 刷新）+ 预告 4');
   for (const p of pts) {
     assert.ok(Math.abs(p.x) < MOVE.BOUND_X, `|X| 必须在飞毯半宽(${MOVE.BOUND_X}m)内：${p.x}`);
     assert.ok(Math.abs(p.z) < MOVE.BOUND_Z, `|Z| 必须在飞毯半深(${MOVE.BOUND_Z}m)内：${p.z}`);
@@ -561,7 +629,7 @@ test('第五十九修 · 两列卡全部收进飞毯（旧版 |X| = 3.0 / 6 张�
   assert.ok(Math.abs(items.reduce((a, b) => a + b, 0)) < 1e-9, '道具列对称');
   for (let i = 1; i < items.length; i++) assert.ok(Math.abs((items[i] - items[i - 1]) - SHOP.ITEM_DZ) < 1e-9);
   const pv = col(shop.preview);
-  assert.equal(pv.length, 5, '第 3 关 5 张预告卡');
+  assert.equal(pv.length, 4, '第 3 关 4 张预告卡');
   assert.ok(Math.abs(pv.reduce((a, b) => a + b, 0)) < 1e-9, '预告列对称');
   for (let i = 1; i < pv.length; i++) assert.ok(Math.abs((pv[i] - pv[i - 1]) - SHOP.PREVIEW_DZ) < 1e-9);
   assert.ok(Math.abs(shop.preview[0].holder.position.x - -SHOP.ITEM_X) < 1e-9, '与道具列镜像（左右对称）');
@@ -607,4 +675,21 @@ test('第五十九修 · 商店币不足只提示「商店币不足」（长文�
   assert.deepEqual(calls.denied, ['商店币不足']);
   assert.equal(state.coin, 900, '买不起就不该扣');
   assert.ok(calls.denied[0].length <= 8, '够短才不会被遮');
+});
+
+test('第七十六修 · 4 张侧列在 75° 转头内全部进入视野，且卡与卡不重叠', () => {
+  const n = 4;
+  const zs = Array.from({ length: n }, (_, i) => columnZ(SHOP.PREVIEW_ZC, SHOP.PREVIEW_DZ, i, n));
+  const look = 75 * Math.PI / 180;
+  for (const z of zs) {
+    const center = Math.atan2(SHOP.PREVIEW_X, -z);       // 卡中心相对场地正前方的方位角
+    assert.ok(Math.abs(center - look) <= 55 * Math.PI / 180,
+      `4 张预告都应落在向右 75° 视线的 ±55° 内：z=${z}, 偏角=${(center * 180 / Math.PI).toFixed(1)}°`);
+  }
+  const cardW = CARD.WIDTH * SHOP.CARD_SCALE_PREVIEW;
+  assert.ok(SHOP.PREVIEW_DZ - cardW >= 0.08, '预告卡之间至少留 8cm，不能贴成一张');
+  const itemW = CARD.WIDTH * SHOP.CARD_SCALE_ITEM;
+  assert.ok(SHOP.ITEM_DZ - itemW >= 0.08, '道具卡之间至少留 8cm，不能贴成一张');
+  assert.ok(MOVE.BOUND_X - Math.abs(SHOP.PREVIEW_X) >= 0.08, '侧列离飞毯边缘至少留 8cm');
+  assert.ok(MOVE.BOUND_X - Math.abs(SHOP.ITEM_X) >= 0.08, '侧列离飞毯边缘至少留 8cm');
 });

@@ -73,6 +73,15 @@ public class MainActivity extends AppCompatActivity {
     private static final String LOCAL_GAME_URL = "http://localhost:" + LOCAL_PORT + "/";
 
     /**
+     * 本次进程的启动令牌（第七十九修）：URL 追加 `&boot=<毫秒>`。
+     * 现场证据：覆盖层文件已经换成新版，但 PICO 浏览器把同一 URL 的旧标签页直接顶到前台，
+     * 页面不重新加载 ⇒ 仍在执行上一局的 ES Module（商店出现旧精英名单 / 旧列位）。
+     * 清浏览器缓存、重装覆盖层都救不了已在内存里的模块，只有换 URL 才会强制新开页面。
+     * 同一进程内保持不变，避免重试时开出多个重复标签页。
+     */
+    private static final long BOOT_TOKEN = System.currentTimeMillis();
+
+    /**
      * 平台经 am start -d <IP> 直推的地址，是否同时用作「直播推流目标」(&pc=)。
      * false（默认）：头显直接本地启动游戏，不连直播 PC。原因——平台下发 IP 多为
      * 「平台/主机地址」(本例 192.168.31.228 跑的是平台侧 DeepmindHacker.exe，并非我们的
@@ -3427,9 +3436,10 @@ public class MainActivity extends AppCompatActivity {
                    + "&voucher=" + android.net.Uri.encode(sGuardVoucher))
                 : "";
         if (castPc != null && !castPc.isEmpty())
-            return GAME_URL + "&pc=" + castPc + "&mode=webrtc" + plat + vrBtn + gate;
+            return GAME_URL + "&pc=" + castPc + "&mode=webrtc" + plat + vrBtn + gate
+                    + "&boot=" + BOOT_TOKEN;
         // 平台启动：纯本地直接进游戏，不连直播 PC（注意 LOCAL_GAME_URL 自带收尾 /，首个参数用 ?）
-        return LOCAL_GAME_URL + "?" + plat.substring(1) + vrBtn + gate;
+        return LOCAL_GAME_URL + "?" + plat.substring(1) + vrBtn + gate + "&boot=" + BOOT_TOKEN;
     }
 
     /**

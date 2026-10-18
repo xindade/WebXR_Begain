@@ -55,6 +55,15 @@ test('第四十九修 · 不改动既有的 Boss 关预载（第 6 关三张脸�
   assert.ok(queueOf(6).filter((e) => e.warm).length >= 3, '三张脸都应 warm');
 });
 
+test('第七十四修 · 第 6/12 关在穿云窗内预载宝箱，横幅结束不再露占位方块', () => {
+  for (const n of [6, 12]) {
+    const chest = queueOf(n).find((e) => e.url === 'Model/宝箱.glb');
+    assert.ok(chest, `第 ${n} 关预载队列必须含宝箱模型`);
+    assert.equal(chest.warm, true, `第 ${n} 关宝箱要预热 GPU，横幅结束即可见`);
+    assert.equal(chest.capture, false);
+  }
+});
+
 test('第四十九修 · 不走立绘的怪也预热 GPU（原先只有 Boss 模型 warm）', () => {
   // 盾甲兵走立绘（DEPTH_SPRITE_TYPES 白名单），它的附属「盾牌」不走 ⇒ 盾牌应 warm
   assert.equal(DEPTH_SPRITE_TYPES.includes('shield'), true);

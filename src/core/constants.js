@@ -162,6 +162,7 @@ export const SCATTER = {
   RADIUS: 3,          // 圆盘半径（米）：9 米轴向处铺成此半径圆盘
   COOLDOWN: 0.5,      // 释放后冷却（秒）
   DAMAGE: 0,          // 每发伤害（0=复用 player.atk）
+  DAMAGE_MUL: 3,      // 基础伤害倍率（现场：默认一发散射打不死精英 → ×3）
   SPREAD_DISC: true,  // true=实心圆盘(面积均匀)；false=仅圆周
 };
 
@@ -173,6 +174,38 @@ export const SCATTER_BURST = {
   DIST: 9,            // 轴向距离（米）：弹头圆盘中心在枪口前方此距离处
   RADIUS: 3,          // 圆盘半径（米）
   SPREAD_DISC: true,  // 实心圆盘
+};
+
+// 黑洞（第六十七修：替换第 3 关第三张技能卡「散射强化」）
+//   现场口径（6 条已确认）：
+//     ① 伤害 20/秒，只有靠近洞心才受伤；② Boss 免疫；③ 方向取「释放瞬间的头部朝向」；
+//     ④ 被吸期间暂停攻击；⑤ 6 秒结束后原地放回；⑥ 默认技能「能量散射」保留。
+//   小怪 1 秒后填进竖直圆饼并完全静止；精英 2 秒到位后做「向前挪一点又被拽回来」的径向振荡。
+//   路径穿过飞毯时走过顶弧线（ARC_HEIGHT），逻辑上全程打 _bhCaptured 标 → 不触发自爆/攻击。
+export const BLACK_HOLE = {
+  DIST: 15,            // 洞心距玩家（水平距离，米）
+  CENTER_Y: 2.0,       // 洞心高度（米）：竖立漩涡的下沿刚好贴地
+  RIM: 2.0,            // 黑洞视觉半径（米）：漩涡 / 吸积盘的大小，不再兼作怪物吸附半径
+  ABSORB_RIM: 1.0,     // 怪物停留的竖直吸附环半径（米）：第七十三修现场口径「圈再缩小一半」
+  DISC_FILL: 0.94,     // 第七十四修：竖直圆饼填充比例，小怪从洞心铺到 0.94×ABSORB_RIM
+  DURATION: 6,         // 持续吸附时间（秒）
+  COOLDOWN: 12,        // 释放冷却（秒）—— 6 秒控制 + 6 秒空窗
+  PULL_BASIC: 1.0,     // 小怪吸附到位时间（秒）
+  PULL_ELITE: 2.0,     // 精英吸附到位时间（秒）
+  RING_FRONT: 0.55,    // 吸附环整体向玩家前移（米）：竖环贴在漩涡正面，0.55m 足够避免黑盘深度遮挡
+  OSC_AMP: 0.8,        // 精英径向振荡幅度（米）
+  OSC_PERIOD: 1.2,     // 精英振荡周期（秒）
+  DPS: 20,             // 洞心伤害（点/秒，×player.skillDamageMul）
+  DAMAGE_RADIUS: 3.5,  // 伤害半径（米）：只有靠近洞心才受伤
+  TICK: 0.5,           // 伤害结算间隔（秒）：20/s → 每跳 10 点，避免每帧刷数字
+  ARC_HEIGHT: 4.0,     // 掠过飞毯时的过顶弧线高度（米）
+  GROW_TIME: 1.0,      // 第六十八修：从小猛然长大的时间（秒）
+  START_SCALE: 0.06,   // 出现瞬间的起始尺寸（相对最终大小）
+  BLINK_TIME: 1.0,     // 第六十八修：结束前最后 1 秒开始闪烁
+  BLINK_COUNT: 2,      // 闪烁次数（最后 1 秒内闪 2 下）
+  SLOT_GOLDEN: Math.PI * (3 - Math.sqrt(5)), // 吸附落点的黄金角：多只怪围成小圈而不是挤成一条线
+  COLOR: 0x0a0014,     // 漩涡底色
+  RIM_COLOR: 0x9b4dff, // 吸积盘紫色
 };
 
 // ===== 敌人模型加载期间的「光点」占位（第三十四修）=====
@@ -651,16 +684,16 @@ export const SHOP = {
   //   飞毯只有 4m(X) × 8m(Z)：两列卡必须**留在毯面上**（|X| < 2.0），且**绕场地中心 Z=0 对称铺开**。
   //   排布公式（shop.columnZ）：z_i = ZC + (i - (n-1)/2) × DZ —— n 张卡围绕 ZC 均匀、对称，
   //   整列长度随张数自动伸缩（道具 4 张 ≈ ±1.7m；预告最多 6 张 ≈ ±2.9m，都在 ±4.0 内）。
-  ITEM_X: -1.75,            // 道具区一列气球的 X（左手边；飞毯半宽 2.0，必须 < 2.0）
+  ITEM_X: -1.90,            // 道具区一列气球的 X（左手边；飞毯半宽 2.0，留 0.10m 余量）
   ITEM_Y: 2.2,              // 道具区卡面中心高度
   ITEM_ZC: 0,               // 道具列中心的 Z（0 = 场地中心 → 整列绕它对称铺开）
-  ITEM_DZ: 1.15,            // 道具列相邻卡沿 Z 的间距（米，恒为正；前后顺序由对称公式决定）
+  ITEM_DZ: 0.90,            // 道具列相邻卡沿 Z 的间距：4 张在约 75° 转头内可一次看全
   // —— 右手边「精英预告」卡列（第五十七修 · 现场口径）——
   //   只读卡（不绑气球、不可射击），与左手边道具列镜像；内容见 content/eliteBrief.js。
-  PREVIEW_X: 1.75,          // 卡列 X（镜像 ITEM_X = -1.75 → 玩家右手边）
+  PREVIEW_X: 1.90,          // 卡列 X（镜像 ITEM_X = -1.90 → 玩家右手边）
   PREVIEW_Y: 2.2,           // 卡面中心高度（与道具列同高，视线不用上下找）
   PREVIEW_ZC: 0,            // 卡列中心的 Z（与道具列同口径：绕场地中心对称）
-  PREVIEW_DZ: 1.15,         // 相邻卡沿 Z 的间距（与道具列同节奏）
+  PREVIEW_DZ: 0.90,         // 相邻卡沿 Z 的间距（4 张不再排到玩家身后）
   PREVIEW_MAX: 6,           // 最多展示几张（第 3 关 5 张、第 9/15 关各 3 张）
   // —— 第五十八修：卡面尺寸与价位 ——
   //   现场口径：道具 / 精英预告的卡太小 → 放大 2 倍；「购物完成」保持原样；
@@ -679,6 +712,9 @@ export const SHOP = {
                             //   画布仍是 512×160、aspect 3.2 —— 尺寸必须按同比例调，否则文字被拉伸
   BADGE_H: 0.45,            // 区域牌子高（米；1.44 / 0.45 = 3.2 与画布同比例，见 cardDraft.makeBadge）
   BUY_FLY: 0.35,            // 购买后光点飞向玩家 / 气球爆开的时长（秒）
+  // 第八十修：刷新/进店时新卡从下方升起的时长与高度（现场口径：旧卡飞走、新卡升起）
+  CARD_RISE_T: 0.38,
+  CARD_RISE_H: 0.90,
 };
 
 // 等待房间参数（src/game/waitingRoom.js 引用）—— 进入第 1 关前的开场影片房间
@@ -2261,16 +2297,9 @@ if (USER_CONFIG?.SFX_GAIN !== undefined) {
 //   名字「龙族宝箱」显示在宝箱**下方**；5 秒后宝箱化成光点飞向玩家，然后选项卡再弹出。
 //   实现见 src/game/dragonChest.js（纯函数 chestBonus / chestValueText 有单测）。
 // ============================================================
-export const DRAGON_CHEST = {
-  ENABLED: true,
-  LEVEL: 12,                    // 只在第 12 关（龙 Boss 关）收尾触发
-  WINDOW: 5,                    // 计数窗口（秒）
-  BULLETS_FULL: 30,             // ≥ 该发数 → 满额
-  MAX_BONUS: 150,               // 满额攻击力加成（线性分摊到 0..BULLETS_FULL 发）
-  MODEL: 'Model/宝箱.glb',      // 现成素材（现场：不用另做「龙族宝箱」模型，只改名字）
-  NAME: '龙族宝箱',
-  NAME_COLOR: '#ffe08a',
-  VALUE_COLOR: '#7dff9b',
+// 宝箱通用外观 / 光点 / 受击参数（第 6、12 关共用；名字与奖励口径在下面各自的配置里）
+const BOSS_CHEST_STYLE = {
+  MODEL: 'Model/宝箱.glb',      // 现成素材（现场：不另做素材，只改名字与奖励）
   POS: [0, CARD.ROW_Y, CARD.ROW_Z],   // 出现位置 = 选项卡位置（CARD.ROW_*）
   SCALE: 1.0,                   // 宝箱缩放：buildModelClone 先按半径 0.5 贴合（≈1m 见方），这里只做微调；
                                 //   ⚠ 别调太大 —— NAME_DY / VALUE_DY 的标签间距是按 1m 箱子定的
@@ -2291,4 +2320,50 @@ export const DRAGON_CHEST = {
   HIT_SPARK: 0xffd54a,          // 命中火花颜色（与光点同色系）
   PUNCH_SCALE: 0.16,            // 受击「压一下」幅度（横向鼓、纵向扁）
   PUNCH_DECAY: 5,               // 压一下的回弹速度（每秒衰减）
+};
+
+// 第十二关 · 龙族宝箱：窗口内按玩家**打出的弹数**线性换攻击力（口径不变）
+export const DRAGON_CHEST = {
+  ...BOSS_CHEST_STYLE,
+  ENABLED: true,
+  LEVEL: 12,                    // 只在第 12 关（龙 Boss 关）收尾触发
+  KIND: 'attack',               // 奖励类型：攻击力
+  WINDOW: 5,                    // 计数窗口（秒）
+  BULLETS_FULL: 30,             // ≥ 该发数 → 满额
+  MAX_BONUS: 150,               // 满额攻击力加成（线性分摊到 0..BULLETS_FULL 发）
+  NAME: '龙族宝箱',
+  NAME_COLOR: '#ffe08a',
+  VALUE_COLOR: '#7dff9b',
+};
+
+// 第六关 · 脸谱宝箱：玩家**子弹命中**宝箱会推高数值（0.1 → 2.0），
+// 窗口结束按现场口径结算额外弹道：<0.5 → 0；0.5~<2.0 → 1；满 2.0 → 2。
+export const MASK_CHEST = {
+  ...BOSS_CHEST_STYLE,
+  ENABLED: true,
+  LEVEL: 6,                     // 第 6 关（脸谱 Boss 关）收尾触发
+  KIND: 'bullets',              // 奖励类型：额外弹道
+  WINDOW: 4,                    // 计数窗口（秒）—— 现场「也是持续 4 秒」
+  VALUE_START: 0.1,             // 初始显示值
+  VALUE_STEP: 0.1,              // 每次命中 +0.1
+  VALUE_MAX: 2.0,               // 显示上限
+  NAME: '脸谱宝箱',
+  NAME_COLOR: '#ffcf6a',
+  VALUE_COLOR: '#8be9fd',
+  HIT_SPARK: 0xff8a4a,          // 脸谱箱用偏橙的命中火花，和龙箱区分
+};
+
+// 宝箱出现前的 2 秒横幅（复用准星前方那块 Sprite 的 'chest' 样式）
+export const CHEST_BANNER = {
+  ENABLED: true,
+  SECONDS: 2,
+  FADE_IN: 0.2,
+  FADE_OUT: 0.25,
+  DIST: 2.6,
+  WIDTH: 2.2,
+  RISE: 0.18,
+  COLOR: '#ffd24a',
+  BG: 'rgba(38, 25, 5, 0.90)',
+  TEXT_COLOR: '#fff4c7',
+  TEXT: '宝箱出现，快攻击',
 };

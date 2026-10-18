@@ -95,7 +95,8 @@ export function bombMarkColor(b, time) {
 
 /** 「爆」标记的判定（纯函数，便于单测）：活着的**基础小怪** —— 非精英 / 非 Boss / 非龙部件 / 非受控。 */
 export function isBombMarkTarget(b) {
-  return !!(b && b.alive && !b.isElite && !b.isBoss && !b.isDragonPart && !b.controlled);
+  // 第六十七修：被黑洞吸住的怪不再显示「爆」/不触发内圈滴滴（它已不受控、也不该再吓玩家）
+  return !!(b && b.alive && !b.isElite && !b.isBoss && !b.isDragonPart && !b.controlled && !b._bhCaptured);
 }
 const _orbTmp    = new THREE.Vector3();   // 忍者蓄力光球定位临时量（_updateChargeOrb 复用，消除每帧 new 的 GC 压力）
 let _balloonUid = 0;      // 气球唯一 id（第五十五修：穿甲弹用它记录「已命中过谁」，避免同一发反复结算）
@@ -518,6 +519,7 @@ export class Balloon {
 
   // 各小怪专属行为（占位/盾兵以外的特殊逻辑）
   _updateBehavior(dt, target) {
+    if (this._bhCaptured) return;   // 第六十七修：被黑洞吸附期间暂停一切攻击/闪现/跳跃行为
     const t = this.type;
     // 宝箱怪：绕着玩家短跳（2秒一次）
     if (t.behavior === 'chest') {
@@ -760,6 +762,10 @@ export class BalloonManager {
     this.projectiles = null; // 远程投射物管理器（由 game.js 注入）；非空时忍者/幽灵/章鱼才会投掷
     this._playerPos = null;  // 每帧玩家位置（update 注入），供「最近发射者」判定
     this._bombMarks = null;  // 「爆」标记 InstancedMesh（惰性创建，见 _updateBombMarks）
+    // 第六十八修：延迟释放队列。融合吸收 / 切关清场时把「从场景摘下来」和「释放 GPU 资源」分开：
+    //   同一帧 dispose 十几只怪会触发大量材质/贴图删除，且可能把共用 shader program 的引用计数打到 0，
+    //   下一帧新怪又要同步重编译 —— 这正是末尾精英出现时「转头黑一下」的根因之一。
+    this._retired = [];
   }
 
   setProjectileManager(m) { this.projectiles = m; }
@@ -790,11 +796,38 @@ export class BalloonManager {
     return b;
   }
 
-  remove(b) {
+  remove(b, deferDispose = false) {
     const i = this.list.indexOf(b);
     if (i !== -1) this.list.splice(i, 1);
     this.scene.remove(b.mesh);
-    b.dispose();
+    if (deferDispose) {
+      b.alive = false;
+      // 第六十九修（现场「末尾精英出现时放黑洞，部分小怪静止、打不到也没伤害数字」）：
+      //   延迟释放只把 3D 主体移出 scene；DepthSprite（2D 立绘）在独立场景，
+      //   忍者蓄力球也单独挂在 manager.scene 上 —— 不立刻隐藏就会留下静止残影，
+      //   要等下一关云雾窗 flushRetired 才消失。黑洞把怪拉到洞缘后，残影正好停在视野正前方，最显眼。
+      if (b.mesh) b.mesh.visible = false;
+      if (b.depthSprite && b.depthSprite.mesh) b.depthSprite.mesh.visible = false;
+      if (b._chargeOrb) b._chargeOrb.visible = false;
+      this._retired.push(b);   // 资源留到云雾窗里再释放（见 flushRetired）
+    } else {
+      b.dispose();
+    }
+  }
+
+  /**
+   * 第六十八修：分帧释放延迟队列。只在切关/开场的云雾窗里调用，
+   * 每帧最多释放 max 只，把 dispose 的 CPU/GPU 峰值摊开。
+   */
+  flushRetired(max = 2) {
+    if (!this._retired || !this._retired.length) return 0;
+    let n = 0;
+    while (this._retired.length && n < max) {
+      const b = this._retired.pop();
+      try { b.dispose(); } catch (e) { /* 单只失败不影响其余 */ }
+      n++;
+    }
+    return n;
   }
 
   update(dt, target, camera, opts = {}) {
@@ -826,7 +859,7 @@ export class BalloonManager {
   //   PULSE=false 时退回第四十六修的旧口径（每帧按半径连续回血）。
   _applyHealAura(dt) {
     for (const h of this.list) {
-      if (h.behavior !== 'heal' || !h.alive || h._frozen) continue; // 冻结中的治疗者暂停治疗
+      if (h.behavior !== 'heal' || !h.alive || h._frozen || h._bhCaptured) continue; // 冻结/被黑洞吸住的治疗者暂停治疗
       if (HEAL_LINK.PULSE === false) {
         const hr = h.type.healRadius || 6;
         const ha = h.type.healAura || 10;
@@ -871,10 +904,10 @@ export class BalloonManager {
     const list = this.list;
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
-      if (a.controlled || a._frozen) continue;
+      if (a.controlled || a._frozen || a._bhCaptured) continue;
       for (let j = i + 1; j < list.length; j++) {
         const b = list[j];
-        if (b.controlled || b._frozen) continue;
+        if (b.controlled || b._frozen || b._bhCaptured) continue;
         this._sepVec.subVectors(a.mesh.position, b.mesh.position);
         this._sepVec.y = 0;
         const dist = this._sepVec.length();
@@ -945,7 +978,8 @@ export class BalloonManager {
   }
 
   clear() {
-    for (let i = this.list.length - 1; i >= 0; i--) this.remove(this.list[i]);
+    // 第六十八修：切关时先摘掉、后释放 —— dispose 交给 flushRetired 在下一关云雾里摊开。
+    for (let i = this.list.length - 1; i >= 0; i--) this.remove(this.list[i], true);
   }
 
   get count() { return this.list.length; }
