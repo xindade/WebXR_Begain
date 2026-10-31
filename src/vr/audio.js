@@ -738,6 +738,64 @@ export class AudioManager {
     src.start(t); src.stop(t + 0.12);
   }
 
+  // 第八十五修 · 爆炮手：火箭出膛（低频推动 + 短噪声），与普通枪声明显区分。
+  playRocket() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(58, t + 0.22);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(1200, t);
+    lp.frequency.exponentialRampToValueAtTime(260, t + 0.24);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(this._jitter(0.24, 0.12), t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
+    o.connect(lp).connect(g).connect(this.sfxBus);
+    o.start(t); o.stop(t + 0.27);
+
+    const n = this.ctx.createBufferSource();
+    n.buffer = this._noiseBuffer(0.16);
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.12, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    n.connect(ng).connect(this.sfxBus);
+    n.start(t); n.stop(t + 0.17);
+  }
+
+  // 第八十五修 · 爆炸：低频坐底 + 带通噪声。radius 只影响音量，不影响时长（避免连发拖尾）。
+  playBlast(radius = 2) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const k = Math.max(0.35, Math.min(1.4, Number(radius) || 2)) / 2;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(96, t);
+    o.frequency.exponentialRampToValueAtTime(34, t + 0.20);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.34 * k, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
+    o.connect(g).connect(this.sfxBus);
+    o.start(t); o.stop(t + 0.27);
+
+    const n = this.ctx.createBufferSource();
+    n.buffer = this._noiseBuffer(0.24);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(900, t);
+    bp.frequency.exponentialRampToValueAtTime(160, t + 0.22);
+    bp.Q.value = 0.7;
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.22 * k, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+    n.connect(bp).connect(ng).connect(this.sfxBus);
+    n.start(t); n.stop(t + 0.25);
+  }
+
   playPop() {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
@@ -844,6 +902,40 @@ export class AudioManager {
     n.start(t); n.stop(t + 1.26);
   }
 
+  // 第九十三修 · 瘟疫「感染」范围疫爆：低沉的毒雾爆开 + 湿润噪声。
+  //   chain 越大音高越亮（最多 +8 档），让玩家不用看数字也能听出连锁在扩散。
+  playPlagueBurst(chain = 1) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const steps = Math.max(0, Math.min(8, (chain | 0) - 1));
+    const mul = Math.pow(1.07, steps);
+
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(190 * mul, t);
+    o.frequency.exponentialRampToValueAtTime(58 * mul, t + 0.26);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.13, t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.30);
+    o.connect(g).connect(this.sfxBus);
+    o.start(t); o.stop(t + 0.32);
+
+    const n = this.ctx.createBufferSource();
+    n.buffer = this._noiseBuffer(0.34);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 1.1;
+    bp.frequency.setValueAtTime(980 * mul, t);
+    bp.frequency.exponentialRampToValueAtTime(240, t + 0.30);
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.linearRampToValueAtTime(0.11, t + 0.012);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    n.connect(bp).connect(ng).connect(this.sfxBus);
+    n.start(t); n.stop(t + 0.34);
+  }
+
   // 第四十六修 · 精英批次清空 → 金点引导前的上扬提示音（C5→G5→C6）
   playEliteWipe() {
     if (!this.ctx) return;
@@ -860,6 +952,56 @@ export class AudioManager {
       g.gain.exponentialRampToValueAtTime(0.001, at + 0.3);
       o.connect(g).connect(this.sfxBus);
       o.start(at); o.stop(at + 0.32);
+    }
+  }
+
+  // 第八十四修 · 掌风弹窗口：收掌瞬间一记上扬金鸣，结束时短促回落。
+  playPalmWindStart() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const seq = [392.0, 523.25, 659.25, 783.99];
+    for (let i = 0; i < seq.length; i++) {
+      const at = t + i * 0.055;
+      const o = this.ctx.createOscillator();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(seq[i], at);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(0.13, at + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, at + 0.28);
+      o.connect(g).connect(this.sfxBus);
+      o.start(at); o.stop(at + 0.30);
+    }
+    // 很短的一层风声，提示「子弹已经换了形态」
+    const n = this.ctx.createBufferSource();
+    n.buffer = this._noiseBuffer(0.35);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.Q.value = 1.1;
+    bp.frequency.setValueAtTime(2100, t);
+    bp.frequency.exponentialRampToValueAtTime(620, t + 0.32);
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.linearRampToValueAtTime(0.07, t + 0.02);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.34);
+    n.connect(bp).connect(ng).connect(this.sfxBus);
+    n.start(t); n.stop(t + 0.36);
+  }
+
+  playPalmWindEnd() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const seq = [659.25, 523.25, 392.0];
+    for (let i = 0; i < seq.length; i++) {
+      const at = t + i * 0.06;
+      const o = this.ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(seq[i], at);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(0.09, at + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, at + 0.22);
+      o.connect(g).connect(this.sfxBus);
+      o.start(at); o.stop(at + 0.24);
     }
   }
 

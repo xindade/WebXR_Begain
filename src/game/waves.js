@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { isTutorialLevel } from '../content/tutorial.js';   // 第六十修：教学关（第 1 关）判定
 import { WAVE, NORMAL_TEST, DDA, FACE_BOSS, PORTAL_BEAM, SPAWN_RING, SPAWN_LAYER, ELITE_TUNING, levelSecondsOf, levelTimeScale } from '../core/constants.js';
 import { scriptFor, scriptEventTimes, scriptEndTime, layerOfType, comboTotal, DIR_TEXT, FUSE, LAYER, isClimaxEvent, isClimaxGateBanner, pickFuseAbsorb, climaxEliteHp, eliteTravelSpeed } from '../content/spawnDirector.js';
+import { bodyHp, levelFor, normalEliteHp, stageSpawnOpts } from '../content/enemyLevels.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 import { ELITE_SCHEDULE, ELITE_WINDOW, ELITE_BASE_HP, RANGED_DPS_HP } from '../content/eliteMonsters.js';
 import { isBoss } from '../content/levels.js';
@@ -122,6 +123,13 @@ export class WaveManager {
     if (this._magicianBoss) { this._magicianBoss.dispose(); this._magicianBoss = null; }
     this.clearPending();       // 清残留光点 + _bossQueued（幂等）
     this.level = level;
+    // 第八十一修：进入本关时快照 DPS + 关卡号。普通精英 / 末尾批后续只用这份快照，
+    //   不随战斗中途攻击力变化（现场口径：按「进入当前关卡的 DPS」算）。
+    this.stage = level.n;
+    this.stageDps = this.hooks.playerDps ? (Number(this.hooks.playerDps()) || 0)
+      : (this.getPlayerDPS ? (Number(this.getPlayerDPS()) || 0) : 0);
+    // 基础怪头顶「爆」标记的等级：Boss 关写 0（Boss 召唤物不套等级血量，也不显示等级）
+    if (this.balloons) this.balloons.stageLevel = level.boss ? 0 : level.n;
     this.elapsed = 0;
     this.timer = 0;
     this.spawned = 0;
@@ -241,19 +249,21 @@ export class WaveManager {
 
   // 统一出怪入口：有门 → 光点入队；无门/开关关 → 同步直接 spawn（保持原行为，onSpawn 也同步执行）
   _queueSpawn(type, pos, opts = {}) {
+    // 第八十一修：普通关基础怪在这里统一补「等级 + 等级血量」；Boss 关不补（召唤物保持 Boss 口径）。
+    const balloon = stageSpawnOpts(type, this._stageNo(), opts.balloon || null, !!(this.level && this.level.boss));
     // 类型开关关 → 直接 spawn
-    if (opts.effect === false) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn || null, balloon: opts.balloon || null });
+    if (opts.effect === false) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn || null, balloon });
     // 出发点：显式指定（第三十八修 · Boss 召唤物从 Boss 身上飞出）优先；否则取最近传送门
     let from = opts.from ? opts.from.clone() : null;
     if (!from) {
       // 无门 / 总开关关 → 直接 spawn（Boss/激光关自动兜底）
       const portals = this.getPortals ? this.getPortals() : null;
       if (!PORTAL_BEAM.ENABLED || !portals || !portals.length) {
-        return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn || null, balloon: opts.balloon || null });
+        return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn || null, balloon });
       }
       // 最近传送门稳定中心
       const nearest = this._nearestPortal(portals, pos);
-      if (!nearest) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn || null, balloon: opts.balloon || null });
+      if (!nearest) return this._commitSpawn({ type, pos, onSpawn: opts.onSpawn || null, balloon });
       from = nearest.getWorldPos(new THREE.Vector3());
       // 出发点相对门中心上抬 START_Y_OFFSET 米（让光点从门上方飞出，视觉更明显）
       from.y += PORTAL_BEAM.START_Y_OFFSET || 0;
@@ -276,7 +286,7 @@ export class WaveManager {
       summonOwner: opts.summonOwner || null,
       group: opts.group || null,
       ring: opts.ring || null,   // 'inner' | 'outer'：供 _pendingInRing 统计
-      balloon: opts.balloon || null,   // 第四十六修：构造参数（精英用 { hp, isElite }）
+      balloon,   // 第四十六修：构造参数（精英用 { hp, isElite }；第八十一修补基础怪等级血量）
     });
     return null;   // 已入队，无 balloon 引用
   }
@@ -390,6 +400,7 @@ export class WaveManager {
     this._bossQueued = true;
     const pos = this._spawnPos(ENEMY_TYPES.knight.radius);
     this._queueSpawn('knight', pos, {
+      balloon: { isBoss: true },
       onSpawn: (b) => {
         b.maxHp = 3000; b.hp = 3000; b.speed = 0.25; b.radius = 2; b.score = 500;
         b.mesh.scale.setScalar(4);
@@ -425,6 +436,24 @@ export class WaveManager {
 
   // ===== 精英波（叠加于普通出怪之上，来自 ELITE_SCHEDULE）=====
 
+  /** 当前关卡号（进入本关时快照；测试里没有 startLevel 时退回 level.n）。 */
+  _stageNo() {
+    const n = Number(this.stage);
+    if (Number.isFinite(n) && n > 0) return n;
+    const m = Number(this.level && this.level.n);
+    return Number.isFinite(m) ? m : 0;
+  }
+
+  /** 进入本关时快照的 DPS；测试 / 老存档没有快照时才读实时钩子。 */
+  _stageDps() {
+    if (Number.isFinite(this.stageDps) && this.stageDps >= 0) return this.stageDps;
+    let v = 0;
+    if (this.hooks && this.hooks.playerDps) v = this.hooks.playerDps();
+    else if (this.getPlayerDPS) v = this.getPlayerDPS();
+    v = Number(v);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  }
+
   // 取某敌种的「默认血量」：优先用 Excel 跨关聚合的全局表 ELITE_BASE_HP
   // （骑士1000/盾兵2000/心形5000/幽灵7000/忍者8000/章鱼20000）。
   // 未收录的敌种回退到其基础血量（ENEMY_TYPES.hp），再不行给 500。
@@ -435,12 +464,11 @@ export class WaveManager {
   }
 
   /**
-   * 第五十一修 · 远程三兄弟（忍者/幽灵/章鱼）的构造参数（现场口径）：
-   *   · Boss 关 = 默认血量 + 玩家DPS × BOSS_SEC(10)、体型保持敌种自带 scale；
-   *   · 普通关 = 默认血量 + 玩家DPS × NORMAL_SEC(2)、体型 ×NORMAL_SIZE_MUL(2)。
-   *   非远程类型返回 null（调用方原样走老口径）。
-   *   为什么单独成函数：普通精英（_eliteOpts 非 climax 分支）与 Boss 召唤池
-   *   （bossMagician._spawnMinion）**两处**都要用同一份口径，口径只能有一份。
+   * 第五十一修 · 远程三兄弟（忍者/幽灵/章鱼）的 Boss 召唤参数：
+   *   Boss 关 = ELITE_BASE_HP + 玩家DPS × BOSS_SEC(10)、体型保持敌种自带 scale。
+   *   非远程类型返回 null。
+   *   第八十一修后，**普通关**不再走这里，改用 enemyLevels.normalEliteHp（本体 + 进关 DPS×1）；
+   *   本函数保留普通分支只为兼容旧调用 / 单测，实际出怪只由 bossMagician._spawnMinion 使用。
    */
   rangedHpOpts(type) {
     if (!RANGED_DPS_HP.ENABLED || !RANGED_DPS_HP.TYPES.includes(type)) return null;
@@ -458,30 +486,35 @@ export class WaveManager {
    * 精英的构造参数（体型 / 血量 / 移动速度）—— 第四十八修起**分两档**：
    *
    * <p>① 末尾精英（climax）：关卡脚本里带 goldReturn 的那一批（横幅 + 清场融合 + 金点抽卡）。
-   *   体型 ×SIZE_MUL、出生点放远、定速（10 秒走 2/3）；
-   *   血量 = clamp(本批基础血量 × HP_MUL, DPS×HP_MIN_SECONDS, DPS×HP_MAX_SECONDS) ——
-   *   上限就是「可击杀保证」（纯输出最多 HP_MAX_SECONDS 秒），下限是「仪式感」。
+   *   体型 ×SIZE_MUL、出生点放远、定速（速度 ×SPEED_MUL，第八十二修减半）；
+   *   血量 = 本体 ×1.5 + DPS×6 ÷ 本批只数（见 spawnDirector.climaxEliteHp）。
    *
-   * <p>② 普通精英：原生体型（sizeMul:1 —— 连敌种自带的 scale 也压回 1）、原生速度、
-   *   固定血量 ELITE_BASE_HP[型]。它只是「比杂鱼厚一点的怪」，不该吃掉玩家一大半输出，
-   *   更不能把关卡堵死（第四十七修现场踩过：全员 DPS 血量 → 中段精英也变墙）。
+   * <p>② 普通精英：等级 = 关卡数 + 首次出场偏移；本体 = 基础 + 成长×LV。
+   *   忍者/幽灵/章鱼额外吃「进关快照 DPS × 1」并放大 2 倍体型；其余只吃本体、原生体型。
+   *   用的是 startLevel 的快照 DPS，不随战斗中途攻击力变化。
    */
   _eliteOpts(type, combos, climax, batch = 0) {
     // 第四十九修：climax 同时决定名牌档次（普通精英冰蓝 / 末尾精英金红 + 「 Boss」后缀），
-    //   batchId 供 _updateEliteWatch 按批判定「这一批是否已清空」。
-    const tag = { climax: !!climax, batchId: batch || 0 };
+    //   batchId 供 _updateEliteWatch 按批判定「这一批是否已清空」；level 供名牌显示 Lv.N。
+    const stage = this._stageNo();
+    const stageDps = this._stageDps();
+    const tag = { climax: !!climax, batchId: batch || 0, level: levelFor(type, stage) };
     if (!climax) {
-      // 第五十一修：远程三兄弟走「DPS 血量 + 普通关放大两倍」，其余普通精英保持原口径
-      const ranged = this.rangedHpOpts(type);
-      if (ranged) return Object.assign(ranged, tag);
-      return Object.assign({ isElite: true, hp: this._eliteBaseHP(type), sizeMul: 1 }, tag);
+      const hp = normalEliteHp(type, stage, stageDps);
+      const ranged = RANGED_DPS_HP.TYPES.includes(type);
+      return Object.assign({
+        isElite: true,
+        hp: hp != null ? hp : this._eliteBaseHP(type),
+        sizeMul: ranged ? RANGED_DPS_HP.NORMAL_SIZE_MUL : 1,
+      }, tag);
     }
     const list = combos || [];
-    const batchBaseTotal = list.reduce((s, c) => s + this._eliteBaseHP(c.type) * (c.count || 0), 0);
-    const dps = this.hooks.playerDps ? this.hooks.playerDps() : 0;
+    const unitBody = bodyHp(type, stage);
+    const base = unitBody != null ? unitBody : this._eliteBaseHP(type);
+    const batchCount = comboTotal(list);
     return Object.assign({
       isElite: true,
-      hp: climaxEliteHp(this._eliteBaseHP(type), batchBaseTotal, dps, ELITE_TUNING),
+      hp: climaxEliteHp(base, batchCount, stageDps, ELITE_TUNING),
       sizeMul: ELITE_TUNING.SIZE_MUL,
       speed: eliteTravelSpeed(ELITE_TUNING),
     }, tag);
@@ -923,6 +956,7 @@ export class WaveManager {
     const [x, y, z] = FACE_BOSS.POSITIONS[0];
     this._bossQueued = true;   // 排队即占位（防每帧重入）
     this._queueSpawn('faceMask', new THREE.Vector3(x, y, z), {
+      balloon: { isBoss: true },
       onSpawn: (b) => {
         b.maxHp = FACE_BOSS.HP;
         b.hp = FACE_BOSS.HP;

@@ -58,20 +58,20 @@ test('技能强化表：威力+ / 消耗- / 冷却- 三项，文案与 SHOP 参�
   assert.ok(SKILL_UPGRADES.find((u) => u.id === 'skillCdDown').desc.includes(String(SHOP.CD_DOWN)));
 });
 
-test('道具表：六种、id 唯一、卡面字段齐全、desc 够短（三行内画得下）', () => {
-  assert.equal(SHOP_ITEMS.length, 6);
-  assert.equal(new Set(SHOP_ITEMS.map((i) => i.id)).size, 6);
+test('道具表：九种、id 唯一、卡面字段齐全、desc 够短（三行内画得下）', () => {
+  assert.equal(SHOP_ITEMS.length, 9);
+  assert.equal(new Set(SHOP_ITEMS.map((i) => i.id)).size, 9);
   for (const it of SHOP_ITEMS) {
     assert.ok(it.label && it.desc && it.icon && it.color, `${it.id} 缺卡面字段`);
     assert.ok([...it.desc].length <= 10, `${it.id} 的 desc 太长（卡面最多 3 行）`);
   }
   assert.deepEqual(SHOP_ITEMS.map((i) => i.id),
-    ['dogOwner', 'warFeed', 'candyString', 'moreIsBetter', 'lifesteal', 'strongHunter']);
+    ['dogOwner', 'warFeed', 'candyString', 'moreIsBetter', 'lifesteal', 'strongHunter', 'focusFire', 'blastPlus', 'dosage']);
 });
 
 // ---------- ② 纯函数 ----------
 
-test('道具抽签：6 选 3 不重复；补位不落在已展示的三个里', () => {
+test('道具抽签：基础池 6 选 3 不重复；补位不落在已展示的三个里', () => {
   const seen = new Set();
   for (let i = 0; i < 80; i++) {
     const picks = pickShopItems(3);
@@ -84,6 +84,33 @@ test('道具抽签：6 选 3 不重复；补位不落在已展示的三个里', 
   }
   assert.equal(seen.size, 6, '抽多了应把六种都抽到过');
   assert.deepEqual(pickShopItems(3, () => 0).length, 3);
+});
+
+test('第八十七修 · 角色专属道具：蜂群集中火力 / 爆炮手再大一点互不串池', () => {
+  const swarmOnly = new Set(['focusFire']);
+  const bombardOnly = new Set(['blastPlus']);
+  for (let i = 0; i < 80; i++) {
+    const rapid = pickShopItems(3, Math.random, 'rapid');
+    assert.ok(rapid.every((id) => !swarmOnly.has(id) && !bombardOnly.has(id)), '非专属角色不能出现专属道具');
+    const swarm = pickShopItems(3, Math.random, 'swarm');
+    assert.equal(new Set(swarm).size, 3);
+  }
+  const allSwarm = pickShopItems(8, Math.random, 'swarm');
+  assert.equal(allSwarm.length, 7);
+  assert.ok(allSwarm.includes('focusFire') && !allSwarm.includes('blastPlus'));
+  const allBombard = pickShopItems(8, Math.random, 'bombard');
+  assert.equal(allBombard.length, 7);
+  assert.ok(allBombard.includes('blastPlus') && !allBombard.includes('focusFire'));
+  const allRapid = pickShopItems(8, Math.random, 'rapid');
+  assert.equal(allRapid.length, 6);
+  assert.ok(allRapid.every((id) => !swarmOnly.has(id) && !bombardOnly.has(id)));
+});
+
+test('第八十七修 · 满级道具不再上架，抽签/补位会过滤', () => {
+  const swarmIds = pickShopItems(8, Math.random, 'swarm', { focusFire: 6 });
+  assert.ok(!swarmIds.includes('focusFire'));
+  const bombardIds = pickShopItems(8, Math.random, 'bombard', { blastPlus: 1 });
+  assert.ok(!bombardIds.includes('blastPlus'));
 });
 
 test('道具费用 = ITEM_BASE_PRICE × 目标等级（0 级 → 1000，1 级 → 2000）', () => {
@@ -106,13 +133,14 @@ test('道具数值换算：以战养战 +10%/级、吸血 10%/级、专打强者
 
 // ---------- ③ ShopDraft 状态机 ----------
 
-function makeShop(coin = 0, hasSkill = false, itemLv = {}, priceMul = 1) {
+function makeShop(coin = 0, hasSkill = false, itemLv = {}, priceMul = 1, role = null) {
   const calls = { skill: [], upgrade: [], item: [], denied: [], notice: [] };
   // 生产同口径：game._applySkillCard 会把 selectedSkill 写成刚买的技能，于是 hasSkill() 变 true
   const flags = { skill: hasSkill };
   const state = {
     coin,
     getShopCoin() { return this.coin; },
+    getRole: () => role,
     spendShopCoin(c) { this.coin -= c; },
     hasSkill: () => flags.skill,
     getItemLevels: () => itemLv,
@@ -128,6 +156,26 @@ function makeShop(coin = 0, hasSkill = false, itemLv = {}, priceMul = 1) {
   shop.open(ORIGIN(), state);
   return { shop, state, calls, itemLv, flags };
 }
+
+test('第八十六修 · 商店整店抽签也遵守角色限制（蜂群能出专属卡，疾风不能）', () => {
+  const swarm = makeShop(0, false, {}, 1, 'swarm').shop;
+  const swarmIds = swarm.entries.filter((e) => e.kind === 'item').map((e) => e.def.id);
+  assert.ok(swarmIds.length === 3);
+  // 用固定大池验证 sanitize 后仍可包含专属项，不要求每次随机一定抽中。
+  swarm._itemDisplay = ['focusFire', 'blastPlus', 'dogOwner'];
+  const swarmClean = swarm._sanitizeItemDisplay();
+  assert.equal(swarmClean.length, 3);
+  assert.ok(swarmClean.includes('focusFire') && swarmClean.includes('dogOwner'));
+  assert.ok(!swarmClean.includes('blastPlus'));
+  swarm.dispose();
+
+  const rapid = makeShop(0, false, {}, 1, 'rapid').shop;
+  rapid._itemDisplay = ['focusFire', 'blastPlus', 'dogOwner'];
+  const clean = rapid._sanitizeItemDisplay();
+  assert.ok(!clean.includes('focusFire') && !clean.includes('blastPlus'));
+  assert.equal(clean.length, 3);
+  rapid.dispose();
+});
 
 /** 朝某个气球打一发（用气球世界坐标造子弹），返回被命中的 entry */
 function hitEntry(shop, pred) {

@@ -136,3 +136,10 @@ test('名牌文字：只有末尾精英加 Boss 后缀，普通精英只显示�
   assert.ok(CLIMAX_SUFFIX.trim() === 'Boss', '后缀就是 Boss');
   assert.equal(eliteLabelText(undefined, false), 'undefined', '不炸就行（调用方会先兜底）');
 });
+
+test('第八十一修 · 名牌带等级；Boss 本体不带等级（level=0 不显示）', () => {
+  assert.equal(eliteLabelText('铁甲兵', false, 2), 'Lv.2 铁甲兵');
+  assert.equal(eliteLabelText('章鱼将军', true, 22), 'Lv.22 章鱼将军 Boss');
+  assert.equal(eliteLabelText('铁甲兵', true, 0), '铁甲兵 Boss', 'Boss 本体 / 召唤物 level=0 时不显示 Lv');
+  assert.equal(eliteLabelText('铁甲兵', false, NaN), '铁甲兵');
+});

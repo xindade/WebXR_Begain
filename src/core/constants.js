@@ -144,15 +144,113 @@ export const GUN_MODES = {
   full:    { shotCount: 5, cooldown: 100 },  // 5 弹道 / 10 发每秒
 };
 
-// 「进入 VR」二选一开局加成（2026-09-23 第二十二修）。
-//   · 只作用于**初始属性**：在 Player.reset 里按倍率乘到 atk / fireRate 上；
-//     之后的抽卡（攻击力 +100 / 射速 +2）与死亡重开（攻击力 +50）照旧在其之上叠加。
-//   · fireRate 是「发/秒」模型，最终落到真实节流源 = game._loadLevel 里的 input.setFireRate(player.fireRate)。
-//   · 键名同时用作 URL/日志里的标识；label 就是按钮文案（蓝=rapid，红=power）。
-export const LOADOUTS = {
-  rapid: { key: 'rapid', atkMul: 0.5, fireRateMul: 2,   label: '⚡ 射速加倍 · 攻击力减半' },
-  power: { key: 'power', atkMul: 2,   fireRateMul: 0.5, label: '💥 攻击力加倍 · 射速减半' },
+// ============================================================
+// 第八十五修 · 三角色；第九十一修新增瘟疫医生（第四角色）
+//   共同成长资源：卡池里的「弹道 +1」不再只是一条子弹，而是按角色转化：
+//     rapid   → 主枪多一条普通弹道（旧蓝色流派）
+//     swarm   → 一支浮游炮；最多 10 支，超出后全炮提升伤害
+//     bombard → 一枚微型火箭；最多 6 枚，超出后全火箭提升伤害
+//   · 只作用于**初始属性**：Player.reset 按倍率乘到 atk / fireRate；
+//     后续抽卡（攻击力 +100 / 射速 +2）与死亡重开（攻击力 +50）照旧叠加。
+//   · fireMode 决定 game._firePlayerShots 如何解释 shotCount。
+//   · CHARACTER_ORDER 同时是头显选角页的展示顺序。
+// ============================================================
+export const CHARACTERS = {
+  rapid: {
+    key: 'rapid', icon: '⚡', name: '疾风', title: '弹幕游侠',
+    desc: '高射速，多弹道全部从主枪射出。',
+    passive: '连杀加速',
+    color: '#1f6feb', bulletTint: null,
+    atkMul: 0.5, fireRateMul: 2, fireMode: 'fan',
+    cardStats: ['攻击 50', '射速 4/s', '多重弹道'],
+  },
+  swarm: {
+    key: 'swarm', icon: '🛰', name: '蜂群', title: '浮游炮手',
+    desc: '主枪只有一条弹道，多余弹道化为身边的浮游炮。',
+    passive: '浮游炮自动索敌',
+    color: '#19c9bd', bulletTint: 0x6ef7ea,
+    atkMul: 1, fireRateMul: 1, fireMode: 'satellite',
+    cardStats: ['攻击 100', '射速 2/s', '浮游炮'],
+    satellite: {
+      START: 2,                 // 初始自带 2 支，选到角色就能感知特性
+      MAX: 10,                  // 场上最多 10 支
+      DMG_MUL: 0.40,            // 每支基础 = 玩家攻击力 × 40%
+      OVERFLOW_STEP: 0.10,      // 超过 10 支后，每多一条弹道：全炮 +10 个百分点
+      DMG_CAP: 1.00,            // 浮游炮伤害系数上限（100%）
+      ORBIT_RADIUS: 0.78,       // 环绕半径（米）
+      HEIGHT_OFFSET: -0.22,     // 相对头显高度（米）
+      MIN_ANGLE_DEG: 45,        // 第一支在侧前方 45°
+      STEP_ANGLE_DEG: 22,       // 左右两侧依次向外展开
+      AIM_CONE_DEG: 60,         // 只索敌前方 60° 锥形
+      AIM_RANGE: 30,            // 索敌距离（米）
+      BULLET_TINT: 0x6ef7ea,
+      BULLET_SCALE: 0.78,
+      TRAIL_MUL: 1.15,
+      // 第八十六修 · 拱门排布与枪模；第八十七修按现场口径整体后移。
+      //   中心平面略在头显后方，枪身沿「玩家枪支」的水平朝向伸出——
+      //   正视前方时只会在左右余光里看到枪头，不再整排悬在视野中央。
+      ARCH_FRONT_DIST: -0.12,   // 拱门中心相对头显的前后位置（米；负=后移）
+      ARCH_HALF_WIDTH: 1.20,    // 拱门半宽（米）
+      ARCH_BASE_OFFSET: -0.22,  // 拱门底部相对相机高度（米）
+      ARCH_HEIGHT: 0.40,        // 拱门顶部比底部高（米）
+      MODEL_LENGTH: 0.38,       // 浮游炮枪模目标长度（米，按模型包围盒自动缩放）
+      FOCUS_CONE_DEG: 12,       // 集中火力：瞄准精英/Boss 的判定半角
+      FOCUS_DMG_PER_LEVEL: 0.10,// 集中火力：每级浮游炮基础攻击 +10%（1 级即生效）
+    },
+  },
+  bombard: {
+    key: 'bombard', icon: '💥', name: '轰山', title: '爆炮手',
+    desc: '主炮发射爆裂火箭，多余弹道化为微型火箭齐射。',
+    passive: '范围爆破',
+    color: '#ff8c1a', bulletTint: 0xff9b32,
+    atkMul: 2.0, fireRateMul: 0.4, fireMode: 'bombard',
+    cardStats: ['攻击 200', '射速 0.8/s', '爆裂火箭'],
+    dpsWeight: 1.65,            // 精英血量缩放用：爆炮手按多目标收益折算
+    bombard: {
+      MAIN_RADIUS: 7.5,         // 主炮爆炸半径（米，第八十七修 ×3）
+      MAIN_EDGE_FALLOFF: 0.40,  // 边缘最低保留 60% 伤害
+      EXTRA_MAX: 6,             // 微型火箭最多 6 枚
+      EXTRA_DMG_MUL: 0.50,      // 每枚基础 = 玩家攻击力 × 50%
+      OVERFLOW_STEP: 0.10,      // 超过 6 枚后，每多一条弹道：全火箭 +10 个百分点
+      DMG_CAP: 0.90,            // 微型火箭伤害系数上限（90%）
+      EXTRA_RADIUS: 3.6,        // 微型火箭爆炸半径（米，第八十七修 ×3）
+      EXTRA_EDGE_FALLOFF: 0.35,
+      FAN_DEG: 8,               // 微型火箭窄扇半角（度）
+      ROCKET_TINT: 0xff9b32,
+      MAIN_SCALE: 3.6,
+      EXTRA_SCALE: 2.2,
+      TRAIL_MUL: 2.0,
+      SPEED: 30,                // 火箭速度（米/秒）
+      MULTI_BLAST_DMG_MUL: 0.50,     // 「多重爆炸」追加爆炸：伤害倍率
+      MULTI_BLAST_RADIUS_MUL: 0.85,  // 「多重爆炸」追加爆炸：半径倍率
+    },
+  },
+  plague: {
+    key: 'plague', icon: '🧪', name: '瘟疫医生', title: '毒素射手',
+    desc: '单发低攻，子弹叠毒；毒素每秒持续结算。',
+    passive: '毒素叠层',
+    color: '#2ed573', bulletTint: 0x4dff88,   // 第九十五修：瘟疫子弹明确用绿色
+    atkMul: 0.5, fireRateMul: 1, fireMode: 'fan',
+    atkGainMul: 0.5,            // 攻击力选项卡写 +100，实际只加 50
+    cardStats: ['攻击 50', '射速 2/s', '毒素叠层'],
+    poison: {
+      MAX_STACKS: 5,            // 默认叠层上限
+      PER_STACK_DMG_MUL: 0.25,  // 每层每秒 = 玩家当前攻击力 × 25%
+      TICK: 1,                  // 每秒统一结算一次
+      INFECT_RATIO: 0.7,        // 「感染」：死亡时按 70% 向下取整向外扩散
+      BURST_MIN_STACKS: 3,      // 3 层起触发范围疫爆；2 层只弱传给最近 1 只
+      BURST_RADIUS: 5,          // 疫爆半径（米）
+      BURST_TARGETS: 6,         // 单次疫爆最多影响的敌人数量
+      BURST_WINDOW: 1.5,        // 连锁预算滑动窗口（秒）
+      BURST_MAX_TARGETS: 18,    // 窗口内最多影响多少只，防止一尸清屏
+      DOSAGE_FIRST_BONUS: 3,    // 「加大剂量」Lv.1：5 → 8
+      DOSAGE_STEP: 2,           // 之后每级 +2：Lv.2=10、Lv.3=12……
+    },
+  },
 };
+// 兼容旧代码/旧文档的常量名；新代码统一使用 CHARACTERS。
+export const LOADOUTS = CHARACTERS;
+export const CHARACTER_ORDER = ['rapid', 'swarm', 'bombard', 'plague'];
 
 // 能量散射技能（前期默认技能）：消耗能量，从枪口喷出 COUNT 弹头，轴向 DIST 米处铺成半径 RADIUS 圆盘
 export const SCATTER = {
@@ -236,11 +334,30 @@ export const SHIP = {
 };
 
 export const BUDDHA = {            // 如来神掌（大招）
-  COOLDOWN: 8,                     // 释放冷却 s
+  COOLDOWN: 12,                    // 释放冷却 s（第八十四修：8 → 12，给 5 秒掌风弹留出空档）
   HIT_MARGIN_XY: 1.3,             // 命中盒 XY 放大系数：以掌图平面半宽/半高为基准再乘该系数（1=完全贴合掌面）
   HIT_Z_BAND: 8,                  // 命中盒 Z 半厚（米）：掌图作「横扫墙」，仅命中其当前 Z 前后 ±HIT_Z_BAND 内的敌人（沿 +Z 扫过逐步清场）
-  DAMAGE: 700,                     // 命中盒内单体基础伤害（×player.skillDamageMul 倍率），消耗 player.skillCost
+  DAMAGE: 350,                     // 命中盒内单体基础伤害（×技能倍率；倍率另受 DAMAGE_MUL_CAP 限制）
+  DAMAGE_MUL_CAP: 3,               // 初始横扫的技能倍率上限：350×3=1050，能清后期基础怪但不会继续秒精英
+  ELITE_MUL: 0.5,                  // 初始横扫对精英的伤害倍率（第八十四修）
+  BOSS_MUL: 0.25,                  // 初始横扫对 Boss / 龙部件的伤害倍率（第八十四修）
   MAX_DAMAGE_PER_FRAME: 6,         // 单帧最多结算几只怪（第四十二修）：详见 game._updateBuddhaFx 的分帧队列。
+  // 第八十四修 · 掌风弹：神掌横扫结束后，接下来 DURATION 秒内新打出的普通子弹
+  // 全部变成掌形掌风弹；伤害按玩家攻击力 ×DAMAGE_MUL，穿透 PIERCE 个敌人。
+  // 只改普通枪弹（含多重弹道），不劫持技能弹与商店追踪弹、穿甲弹等特殊弹。
+  PALM_WIND: {
+    ENABLED: true,
+    DURATION: 5,                   // 收掌后持续秒数（从 grow→move 结束、进入 pause 时起算）
+    DAMAGE_MUL: 1.5,               // 掌风弹伤害 = 玩家当前攻击力 × 1.5
+    PIERCE: 1,                     // 掌风弹可额外穿透 1 个敌人
+    TRAIL_MUL: 1.2,                // 曳光加长倍率（轻微增强，不叠大面积透明光）
+    TINT: 0xffd76a,                // 掌风弹金色；加速期仍会按实例色变蓝
+    TEX_W: 128,                    // 掌形贴图宽（px）：专用小图，不复用 1024×1536 大掌贴图
+    TEX_H: 192,                    // 掌形贴图高（px）
+    BULLET_W: 0.16,                // 掌风弹面片宽（米）
+    BULLET_H: 0.24,                // 掌风弹面片高（米）
+    ALPHA_TEST: 0.35,              // 硬边镂空阈值：避免大面积半透明叠加
+  },
   // —— 视觉参数（基于透明 PNG 贴图） ——
   TEXTURE_URL: 'assets/buddha-palm.jpg', // 贴图路径（相对 index.html）；若原图为 PNG 可换 .png
   COLOR_KEY_THRESHOLD: 0.92,       // 白底剔除阈值：R/G/B 均大于 0.92×255 的像素变透明（0~1，越低越激进）
@@ -250,10 +367,10 @@ export const BUDDHA = {            // 如来神掌（大招）
   END_POS:   { x: 0, y: 0, z:  30 }, // 移动终点（世界坐标）
   START_SCALE: 1.0,                // 初始缩放倍数
   END_SCALE: 10.0,                 // 最终缩放倍数（10 倍）
-  GROW_TIME: 1.0,                  // 原地放大总时长 s（1 秒内分两段变化：1→中间→10）
-  MOVE_TIME: 1.0,                  // 沿 +Z 移动时长 s
-  PAUSE_TIME: 1.0,                 // 到达终点后停顿 s
-  FADE_TIME: 0.3,                  // 淡出消失时长 s
+  GROW_TIME: 0.8,                  // 原地放大总时长 s（第八十四修：起手压缩，尽快进入掌风弹窗口）
+  MOVE_TIME: 0.6,                  // 沿 +Z 移动时长 s
+  PAUSE_TIME: 0.4,                 // 到达终点后停顿 s
+  FADE_TIME: 0.25,                 // 淡出消失时长 s
   // 掌面朝向（第四十五修定稿）：**固定解** —— 法线恒等于飞行轴、上方向恒垂直于飞行轴，
   //   ⇒ 掌图永远是一堵「垂直于地面」的墙；越过玩家后看到的是背面（上下颠倒，可接受），
   //   但绝不会再倾斜。
@@ -492,6 +609,29 @@ export const EXPLOSION = {        // 气球进入4×8区域自爆特效
   START_OPACITY: 0.85,  // 起始不透明度
   COLOR: 0xff6b3d,     // 爆炸颜色（橙红）；第五十六修：尺寸/亮度调大 + 现场追加碎片与火花（见 game._checkExplosions）
 };
+
+// 第八十六修 · 爆炮手爆炸（与气球自爆分开，避免「闪瞎眼」+ 视觉半径远大于实际 AoE）
+//   · 终态球半径 = 真实 AoE 半径（不再 ×4.4）；
+//   · 边缘亮、中心淡的球壳，配低不透明度加法混合，像冲击波而不是一块实心透镜；
+//   · 时长更短，避免多枚微型火箭叠在一起时糊成一片。
+export const BLAST_FX = {
+  DURATION: 0.34,
+  START_SCALE: 0.18,
+  OPACITY: 0.30,
+  COLOR: 0xff7a2f,
+};
+
+// 第九十三修 · 瘟疫医生「感染」范围疫爆：尸体中心向外扩散的绿色冲击环。
+//   池化 3 个环，复用同一份 RingGeometry；只在 0.55s 内可见，避免连锁时叠成绿幕。
+export const PLAGUE_BURST = {
+  ENABLED: true,
+  POOL: 3,
+  COLOR: 0x5dff9b,
+  OPACITY: 0.58,
+  DURATION: 0.55,
+  START_SCALE: 0.12,
+  Y_LIFT: 0.06,
+};
 // ============================================================
 // 打击感层（第四十修）—— 命中/击杀音效分层 + 音高抖动 + 连击 + 手柄震动
 //   现场反馈「打击感偏弱」：此前命中与击杀共用同一个 playPop()，且每次播放音量/音高完全相同，
@@ -536,6 +676,8 @@ export const DAMAGE_NUMBER = {
   BIG_TIER: 4,               // 达到该档起加金色描边（暴击级伤害更醒目）
   BIG_STROKE: "#ffd24a",     // 高档位描边色
   STROKE: "rgba(0,0,0,0.85)",// 常规描边（保证任何背景下都能看清）
+  POISON: "#5dff9b",         // 瘟疫医生毒素跳伤：固定绿色（精英金框也不覆盖）
+  POISON_STROKE: "#0b3d22",  // 毒素数字描边
   SIZE: 0.30,                // 数字世界高度(m)（第 0 档）
   TIER_SCALE_STEP: 0.06,     // 每高一档，字号 +6%
   TEX_W: 256,                // 数字贴图宽(px)
@@ -795,6 +937,13 @@ export const OPENING_MAGICIAN = {
   15: { pos: [0, 1.4, -5], scaleHeight: 2.0 },   // 第15关 · 九宫格翻转：同上
   SHOW_SECONDS: 10,   // 出现后循环播放时长（秒），到时自动消失（也是语音联动的兜底上限）
   FOLLOW_VOICE: true, // true：机制关开场语音播完，魔术师同步消失（动画与语音对齐）；false：只按 SHOW_SECONDS 计时
+  // 第八十三修：商店关（3/9/15）开场语音 —— 等云雾散尽 + 关卡名横幅收掉后才播；
+  //   语音 ended → 魔术师停止并炸成碎片消失（仍以 SHOW_SECONDS 兜底）。
+  SHOP_VOICE_ENABLED: true,
+  SHOP_VOICE_URL: 'music/商店语音.wav',
+  SHOP_VOICE_VOLUME: 1.0,
+  SHATTER_COLOR: 0xc9a7ff,   // 碎片颜色（淡紫，和魔术师体色一致）
+  SHATTER_MUL: 2,            // 碎片数量倍率（相对 FX.DEBRIS.COUNT）
 };
 
 // ===== 基础怪群体语音（"冲冲冲"）=====
@@ -855,6 +1004,36 @@ export const GUN = {
     DECAY:      0.80,    // 每帧(60fps基准)回正系数，越小回正越快、抖得越短促
     CURVE:      1.5,     // 射速→幅度映射曲率(>1 让快射时幅度掉得更陡，强化「整体变小」)
   },
+};
+
+// ============================================================
+// 第八十七修 · 爆炮手火箭筒
+//   FBX 原文件 130MB / 150 万三角面 / 4K×4 贴图，已离线减面到 6 万面、
+//   贴图降到 1024 并导出为 GLB（Model/火箭筒.glb）。运行时与 AK 共用
+//   右手柄挂载层，但位置/旋转/缩放独立——PC 界面可直接调这六个数。
+// ============================================================
+export const BOMBARD_WEAPON = {
+  MODEL_URL: 'Model/火箭筒.glb',
+  POSITION: { x: 0.0, y: -0.25, z: 0.0 },
+  ROTATION: { x: -60, y: 90, z: 0 },
+  SCALE: 0.5,
+};
+
+// ============================================================
+// 第九十四修 · 瘟疫医生毒枪
+//   原模型 150 万面 / 3 张 4K PNG（89.5MB），离线减面到 6 万面、
+//   贴图 1024 WebP 后为 2.42MB（Model/毒枪械.glb）。
+//   模型原始枪身轴与 AK 不同（AK 沿 X，毒枪沿 Z），所以 Y 旋转用 180°，
+//   让枪口方向与 AK 一致；位置/缩放沿用 AK 基准。
+// ============================================================
+export const PLAGUE_WEAPON = {
+  MODEL_URL: 'Model/毒枪械.glb',
+  POSITION: { x: 0.0, y: -0.28, z: 0.0 },   // 第九十五修：现场基础上垂直下移 3cm
+  ROTATION: { x: -60, y: 180, z: 0 },
+  SCALE: 0.5,
+  MODEL_COLOR_MUL: 1.15,     // 毒枪专用提亮：颜色乘 1.15
+  MODEL_EMISSIVE: 0.25,      // 纹理自发光补光，避免头显里偏暗
+  MODEL_MAX_METALNESS: 0.65, // 无环境贴图时金属度过高会发黑，压到 0.65
 };
 
 // ============================================================
@@ -926,6 +1105,8 @@ export const SKILL_HINT = {
   FLASH_OFF:    0.12,                     // 单次闪烁"灭"间隔（秒）；一明一灭 = FLASH_ON+FLASH_OFF
   FLASH_BORDER: '#ff3b30',               // 闪烁时的红框/红字色
   READY_BORDER: '#ffd24a',               // 就绪常亮边框色（金）
+  PALM_BORDER:  '#ffd24a',               // 第八十四修：掌风弹 5 秒窗口边框色
+  PALM_TEXT:    '#fff3c4',               // 第八十四修：掌风弹倒计时文字色
   COOLDOWN_BORDER:    '#ff7a00',         // 冷却中边框色（橙）
   COOLDOWN_BAR_COLOR: '#ff9d2e',         // 冷却恢复进度条填充色（橙亮）
   COOLDOWN_BG:        'rgba(255,255,255,0.15)', // 冷却进度条底色
@@ -1044,10 +1225,16 @@ export const DRAGON = {
 
   HEAD_SCALE: 1.0,                        // 龙头模型额外缩放倍率（模型已按包围盒自动贴合身体尺寸，此项做微调）
   HEAD_YAW:   0,                          // 龙头模型自身前向轴修正(度)：在全局旋转之后，lookAt 路径切线时额外绕 Y 旋转
-  HP_MULT:    1.0,                         // 龙气球血量倍率（>1 更肉，如 2.0 = 每节 200 血）
+  HP_MULT:    2.0,                         // 龙气球血量倍率（第八十二修：龙 Boss 整体 ×2）
+  HP_BAR_W: 6,                            // 龙 Boss 头顶 3D 血条世界宽度(m)
+  HP_BAR_H: 1.875,                        // 龙 Boss 头顶 3D 血条世界高度(m)（与 6m 宽保持 3.2:1）
+  HP_BAR_OFFSET_Y: 3.2,                   // 血条相对龙头中心的抬高(m)
 
   // —— 龙身减伤 & 击杀基础怪扣血（需求：龙身气球减伤95% / 每5个基础怪扣Boss 1%血）——
   DAMAGE_REDUCTION: 0.95,          // 龙身/龙爪气球减伤比例（受击只吃 5%；含激光剑穿透，takeDamage 强制减伤）
+  // 第九十修：爆炮手的爆炸会在龙身多节上同时结算；这里再乘 0.30 ⇒ 实际承伤 1.5%（等效总减伤 98.5%）。
+  //   只影响爆炮手的爆炸，不影响其它角色/其它伤害来源。
+  BOMBARD_AOE_TAKE_MUL: 0.30,
   BASIC_KILLS_PER_PERCENT: 5,      // 每消灭多少个「基础怪(basic)」扣 Boss 1% 总血量
   BASIC_KILL_PERCENT: 0.01,        // 每次扣除 Boss 总血量的比例（1%）
 
@@ -1280,8 +1467,8 @@ export const BOMB_LABEL = {
   OUTLINE_W: 10,                   // 描边宽度（画布像素）
   GLOW: 18,                        // 外发光 blur（0 = 关）
   CANVAS: 128,                     // 画布边长（正方形，像素）
-  SIZE: 0.62,                      // 世界边长（米）
-  Y_PAD: 0.22,                     // 怪顶之上的额外抬升（米）
+  SIZE: 0.72,                      // 世界边长（米）：第八十一修加 Lv.N 后略放大，远看仍可读
+  Y_PAD: 0.24,                     // 怪顶之上的额外抬升（米）
   MAX: 96,                         // 实例上限（同屏基础怪数量超过时只画前 MAX 只）
   // —— 第五十七修（现场）：① 进内圈要闪红 ② 标记要被前面的怪挡住（别再糊在它前方的怪身上）——
   INNER_RADIUS: 9,                 // 内圈半径（米，距圆心）：进这个圈 = 危险区 → 开始闪烁
@@ -1352,9 +1539,9 @@ export const SPAWN_LAYER = {
 //   ② 普通精英（前面零星出现的，如 L2/L5 每 10s 一只、L4 的 2 只直出）= 原生体型 / 原生速度 /
 //      固定血量 ELITE_BASE_HP[型]（见 waves._eliteOpts 的 !climax 分支）。
 //
-//   末尾批的口径：体型 ×SIZE_MUL；出生点放远且「10 秒只走到场地的 2/3」（速度由距离反推）；
-//   血量 = clamp(本批基础血量 × HP_MUL, DPS × HP_MIN_SECONDS, DPS × HP_MAX_SECONDS) ——
-//   上限是**可击杀保证**（最难也就打 HP_MAX_SECONDS 秒纯输出），下限是**仪式感**（不会一秒蒸发）。
+//   末尾批的口径：体型 ×SIZE_MUL；出生点放远、移动速度 ×SPEED_MUL（第八十二修减半）；
+//   血量（第八十二修）= 本体 × BODY_MUL(1.5) + DPS × DPS_SECONDS(6) ÷ 本批只数。
+//   也就是「本体变厚 + 整批共享 6 秒 DPS 池，均分到每只」，让每只末尾精英都有压力。
 //   ⚠ SIZE_MUL 的「总体型」语义由 balloons.js 兜底：显式倍数优先、覆盖 enemies.js 的 scale，
 //     否则 heart/ninja/ghost/octopus（本就 scale:3）会叠成 9 倍；普通精英传 1 也是同一机制。
 //   实现：content/spawnDirector.js 的 isClimaxEvent / climaxEliteHp / eliteTravelSpeed（纯函数，有单测），
@@ -1368,9 +1555,9 @@ export const ELITE_TUNING = {
   SPAWN_SPREAD: 9,         // 末尾精英出生散布（米）：随距离等比放大（原 6）
   TRAVEL_SECONDS: 10,      // 「10 秒」基准
   TRAVEL_FRACTION: 2 / 3,  // 10 秒内走过的路程比例（2/3 → 剩下的 1/3 再走 5 秒）
-  HP_MUL: 2,               // 末尾批血量基准：本批基础血量之和 × 该系数（再被下面两行夹住）
-  HP_MIN_SECONDS: 2.5,     // 「纯输出秒数」下限：DPS 再高也不会一秒蒸发（仪式感）
-  HP_MAX_SECONDS: 6,       // 「纯输出秒数」上限 ★ 可击杀保证：再难的批也只打 6 秒纯输出
+  SPEED_MUL: 0.5,          // 第八十二修：末尾精英移动速度减半（同样路程走 20 秒）
+  BODY_MUL: 1.5,           // 第八十二修：每只本体血量 ×1.5
+  DPS_SECONDS: 6,          // 第八十二修：整批共享 DPS × 6，按只数均分
 };
 
 // ============================================================
@@ -1683,7 +1870,7 @@ export const RAPID_FIRE = {
 // ============================================================
 export const FACE_BOSS = {
   // —— 通用 ——
-  HP: 3000,
+  HP: 9000,                 // 第八十二修：脸谱 Boss 血量 ×3（原 3000）
   DAMAGE_REDUCTION: 0.95,   // 直接射击减伤 95%（实际受击 = 伤害 × 5%）
   PHASE_DURATION: 15,       // 每阶段时长 s（前/中子阶段不变，多余时间给尾段动作）
   SCALE: 1.5,               // 主 Boss 体型（缩小一半，原 3；碰撞 effective=1.5*1.5=2.25m）
@@ -1779,6 +1966,7 @@ export const MAGICIAN_BOSS = {
   MODEL: 'Model/魔术师动画版.glb',
   HP_BASE: 20000,             // Boss 基础血量（集中可调）
   HP_DPS_SEC: 30,             // 血量 = HP_BASE + 玩家DPS × 本值（按战力缩放，避免高 DPS 下秒杀/低 DPS 下打不动）
+  HP_MULT: 5,                 // 第八十二修：最终血量再 ×5（基础 + DPS 加成一起放大）
   PROXY_RADIUS: 8.0,          // 命中代理碰撞半径(m)：Boss模型随 MODEL_SCALE 缩放(现5倍≈10m高，脚底在y=2、头顶≈y=12)；
                               //   半径放大到8m覆盖全身，确保各阶段(含激光/九宫格)瞄准躯干即可正常击中掉血
   SCALE: 2.0,                 // 模型基准高度（米）：先按此把 GLB 缩放到 2m，再 ×MODEL_SCALE
@@ -2231,6 +2419,8 @@ const _OVERRIDES = [
   ['ENEMY_DOT', ENEMY_DOT, USER_CONFIG.ENEMY_DOT],
   ['BALLOON', BALLOON, USER_CONFIG.BALLOON],
   ['GUN',     GUN,     USER_CONFIG.GUN],
+  ['BOMBARD_WEAPON', BOMBARD_WEAPON, USER_CONFIG.BOMBARD_WEAPON],
+  ['PLAGUE_WEAPON',  PLAGUE_WEAPON,  USER_CONFIG.PLAGUE_WEAPON],
   ['WAVE',    WAVE,    USER_CONFIG.WAVE],
   ['PORTAL_BEAM', PORTAL_BEAM, USER_CONFIG.PORTAL_BEAM],
   ['SPAWN_RING', SPAWN_RING, USER_CONFIG.SPAWN_RING],
@@ -2337,12 +2527,15 @@ export const DRAGON_CHEST = {
 };
 
 // 第六关 · 脸谱宝箱：玩家**子弹命中**宝箱会推高数值（0.1 → 2.0），
-// 窗口结束按现场口径结算额外弹道：<0.5 → 0；0.5~<2.0 → 1；满 2.0 → 2。
+// 窗口结束按同一档位结算攻速：<0.5 → 0 档；0.5~<2.0 → 1 档；满 2.0 → 2 档。
+// 每档 = 一次「射速+50%」成长（按角色基线算，上限 20 发/秒）。
+// 为什么不再给额外弹道：爆炮手的输出是爆炸 AoE，额外弹道对它是空奖励。
 export const MASK_CHEST = {
   ...BOSS_CHEST_STYLE,
   ENABLED: true,
   LEVEL: 6,                     // 第 6 关（脸谱 Boss 关）收尾触发
-  KIND: 'bullets',              // 奖励类型：额外弹道
+  KIND: 'fireRate',             // 奖励类型：攻速（每次成长 = 该角色基线的 50%）
+  VALUE_SUFFIX: '攻速',          // 宝箱上方实时数值的单位
   WINDOW: 4,                    // 计数窗口（秒）—— 现场「也是持续 4 秒」
   VALUE_START: 0.1,             // 初始显示值
   VALUE_STEP: 0.1,              // 每次命中 +0.1

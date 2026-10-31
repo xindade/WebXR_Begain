@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { FX, HEAL_LINK, SHOP_COIN } from '../core/constants.js';
+import { FX, HEAL_LINK, SHOP_COIN, PLAGUE_BURST } from '../core/constants.js';
 
 // ============================================================
 // 打击感视觉层（档2 · 第四十一修）：曳光 / 命中火花 / 击杀碎片 / 枪口焰
@@ -506,6 +506,84 @@ export class HealRingFx {
   }
 }
 
+// ---------------------------------------------------------------- 疫爆冲击环
+// 瘟疫医生「感染」专用：尸体位置向外扩散一圈绿色环，表示真实 5 米传播范围。
+//   不挂加号、不画连线，避免和治疗术士的粉色加号混淆。
+export class PlagueBurstFx {
+  constructor(scene, cfg = PLAGUE_BURST) {
+    this.scene = scene;
+    this.cfg = cfg;
+    this.slots = [];
+    this._geo = new THREE.RingGeometry(0.82, 1, 40);   // 外径 1，靠 scale 放大
+    if (cfg && cfg.ENABLED !== false) {
+      for (let i = 0; i < Math.max(1, cfg.POOL | 0); i++) this._grow();
+    }
+  }
+
+  _grow() {
+    const mat = new THREE.MeshBasicMaterial({
+      color: this.cfg.COLOR,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: false,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(this._geo, mat);
+    mesh.rotation.x = -Math.PI / 2;       // 平铺在场地平面
+    mesh.visible = false;
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 996;
+    this.scene.add(mesh);
+    this.slots.push({ mesh, mat, x: 0, y: 0, z: 0, radius: 5, t: 0, dur: 1, active: false });
+  }
+
+  /** pos = 尸体世界坐标；radius = 传播半径；infected = 本次实际感染数量（只影响亮度）。 */
+  cast(pos, radius, infected = 1) {
+    if (!this.cfg || this.cfg.ENABLED === false || !pos) return;
+    let slot = this.slots.find((s) => !s.active);
+    if (!slot) slot = this.slots[0];    // 池满：复用最老槽（连锁时不会无限 new）
+    slot.x = Number(pos.x) || 0;
+    slot.y = (Number(pos.y) || 0) + (Number(this.cfg.Y_LIFT) || 0);
+    slot.z = Number(pos.z) || 0;
+    slot.radius = Math.max(0.5, Number(radius) || 5);
+    slot.dur = Math.max(0.1, Number(this.cfg.DURATION) || 0.55);
+    slot.t = slot.dur;
+    slot.active = true;
+    slot.mesh.visible = true;
+    slot._boost = 1 + Math.min(0.6, Math.max(0, infected - 1) * 0.08);
+  }
+
+  update(dt) {
+    for (const s of this.slots) {
+      if (!s.active) { s.mesh.visible = false; continue; }
+      s.t -= dt;
+      const k = THREE.MathUtils.clamp(1 - s.t / s.dur, 0, 1);
+      const start = Math.max(0, Number(this.cfg.START_SCALE) || 0.12);
+      const rad = s.radius * (start + (1 - start) * k);
+      s.mesh.position.set(s.x, s.y, s.z);
+      s.mesh.scale.set(rad, rad, 1);
+      const base = Math.max(0, Number(this.cfg.OPACITY) || 0.58);
+      s.mat.opacity = base * (s._boost || 1) * (1 - k) * Math.min(1, k * 6);
+      if (s.t <= 0) { s.active = false; s.mesh.visible = false; }
+    }
+  }
+
+  clear() {
+    for (const s of this.slots) { s.active = false; s.mesh.visible = false; }
+  }
+
+  dispose() {
+    for (const s of this.slots) {
+      this.scene.remove(s.mesh);
+      s.mat.dispose();
+    }
+    this._geo.dispose();
+    this.slots.length = 0;
+  }
+}
+
 // ---------------------------------------------------------------- 粉色飞行加号（第四十九修返工）
 //
 // 现场口径：治疗术士「发射粉色加号，到玩家最近且血最少（百分比）的怪物身上，每秒治疗一次」。
@@ -733,6 +811,7 @@ export class FxEffects {
     this.healRing = new HealRingFx(scene, HEAL_LINK);   // 第四十九修：回血脉冲环（现场说看不到 → RING_ENABLED 默认 false）
     this.healPlusFx = new HealPlusFx(scene, HEAL_LINK); // 第四十九修返工：粉色飞行加号（当前表现）
     this.coinOrbFx = new CoinOrbFx(scene, SHOP_COIN.ORB); // 第六十五修：击杀金点 → 枪上的商店币小框
+    this.plagueBurstFx = new PlagueBurstFx(scene, PLAGUE_BURST); // 第九十三修：瘟疫范围疫爆
   }
 
   /** 命中火花：colorHex 省略用配置里的默认暖金 */
@@ -757,6 +836,9 @@ export class FxEffects {
   /** 击杀金点（第六十五修）：from = 怪物被击杀的位置，amount = 这枚金点代表的金额 */
   coinOrb(from, amount) { this.coinOrbFx.cast(from, amount); }
 
+  /** 瘟疫「感染」范围疫爆：尸体位置向外扩散的绿色冲击环 */
+  plagueBurst(pos, radius, infected = 1) { this.plagueBurstFx.cast(pos, radius, infected); }
+
   /** 还在飞的金点数（商店币小框据此决定显示值要不要落后于真实值） */
   coinFlightCount() { return this.coinOrbFx.inflight; }
 
@@ -773,6 +855,7 @@ export class FxEffects {
     this.healLink.update(dt);
     this.healRing.update(dt);
     this.healPlusFx.update(dt);
+    this.plagueBurstFx.update(dt);
     return this.coinOrbFx.update(dt, coinTarget);
   }
 
@@ -784,6 +867,7 @@ export class FxEffects {
     this.healLink.clear();
     this.healRing.clear();
     this.healPlusFx.clear();
+    this.plagueBurstFx.clear();
     this.coinOrbFx.clear();
   }
 
@@ -795,6 +879,7 @@ export class FxEffects {
     this.healLink.dispose();
     this.healRing.dispose();
     this.healPlusFx.dispose();
+    this.plagueBurstFx.dispose();
     this.coinOrbFx.dispose();
   }
 }

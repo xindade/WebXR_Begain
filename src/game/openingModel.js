@@ -16,6 +16,8 @@ export class OpeningModel {
     // —— 可调项（由 game.js 按关卡从 OPENING_MAGICIAN 配置传入）——
     this._scaleHeight = opts.scaleHeight ?? TARGET_HEIGHT;  // 目标身高（米）：自动等比缩放 GLB 到该高度
     this._showSeconds = opts.showSeconds ?? SHOW_SECONDS;   // 循环播放时长（秒），到期自动消失
+    this._onExpire = typeof opts.onExpire === 'function' ? opts.onExpire : null; // 到期回调（Game 用来播碎片）
+    this._expired = false;   // 防止到期回调重复触发
     this.root = null;        // 加载完成后的 GLB 根节点
     this.mixer = null;       // 动画混合器（无动画则为 null）
     this._t = 0;             // 已显示时长累计（秒）
@@ -61,7 +63,32 @@ export class OpeningModel {
     if (!this._ready || this._disposed) return;
     if (this.mixer) this.mixer.update(dt);
     this._t += dt;
-    if (this._t >= this._showSeconds) this.dispose();  // 播放满 showSeconds 秒后自动消失
+    if (!this._expired && this._t >= this._showSeconds) {
+      this._expired = true;
+      if (this._onExpire) this._onExpire();   // 交给 Game：碎片 + 释放；回调内部必须 dispose
+      else this.dispose();                    // 没有回调时保持旧行为
+    }
+  }
+
+  /** 语音起播时重置兜底计时：避免「云雾/横幅较长 → 模型先到 10s 自动消失」。 */
+  restartTimer() {
+    if (this._disposed) return;
+    this._t = 0;
+    this._expired = false;
+  }
+
+  /**
+   * 语音结束专用：先算出模型世界包围盒中心，再从场景移除。
+   * 返回 { center, size }（调用方据此在身体范围撒碎片）；模型未就绪返回 null。
+   */
+  shatter() {
+    if (this._disposed || !this.root) { this.dispose(); return null; }
+    this.root.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(this.root);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    this.dispose();
+    return { center, size };
   }
 
   // 幂等释放：移出场景、停动画。root 是共享 gltf 的 clone，

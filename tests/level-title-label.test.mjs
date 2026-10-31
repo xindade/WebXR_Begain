@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { LEVELS, levelName, levelTitleText, shouldShowLevelTitle, levelTitleDelay, isShop } from '../src/content/levels.js';
+import { LEVELS, levelName, levelTitleText, shouldShowLevelTitle, levelTitleDelay, isShop, shopVoiceReady } from '../src/content/levels.js';
 import { LEVEL_TITLE, ELITE_LABEL, BOSS_LABEL, MID_WARNING, CLOUD } from '../src/core/constants.js';
 import { WarningBanner3D, styleConfig } from '../src/game/warningBanner.js';
 import { Balloon } from '../src/game/balloons.js';
@@ -93,7 +93,7 @@ test(
     assert.equal(levelTitleDelay(laser, LEVEL_TITLE, false), LEVEL_TITLE.MECHANIC_DELAY,
       '激光关不看云雾：没有雾也照样等语音（否则会和魔术师动画叠在一起）');
     assert.equal(levelTitleDelay(lv3, LEVEL_TITLE, true), LEVEL_TITLE.INTRO_DELAY,
-      '商店关只有魔术师动画、没有语音 ⇒ 和普通关一样在雾里弹');
+      '商店关标题仍和普通关一样在雾里弹；开场语音等它收掉后再起播');
     assert.equal(levelTitleDelay(lv3, LEVEL_TITLE, false), LEVEL_TITLE.DELAY);
     assert.equal(levelTitleDelay(lv1, LEVEL_TITLE, true), LEVEL_TITLE.INTRO_DELAY);
     assert.ok(LEVEL_TITLE.INTRO_DELAY < LEVEL_TITLE.MECHANIC_DELAY,
@@ -101,6 +101,16 @@ test(
     assert.equal(levelTitleDelay(null, LEVEL_TITLE, false), LEVEL_TITLE.DELAY, '容错：没有 lv 也不能给 NaN');
   }
 );
+
+test('第八十三修 · 商店语音闸门：雾散 + 标题排完 + 横幅收掉才允许起播', () => {
+  const ok = { introActive: false, titleAt: 0, titleText: null, bannerShowing: false };
+  assert.equal(shopVoiceReady(ok), true);
+  assert.equal(shopVoiceReady({ ...ok, introActive: true }), false, '云雾未散 → 等');
+  assert.equal(shopVoiceReady({ ...ok, titleAt: 0.4 }), false, '标题还没弹 → 等');
+  assert.equal(shopVoiceReady({ ...ok, titleText: '第 3 关' }), false, '标题已排但还没弹 → 等');
+  assert.equal(shopVoiceReady({ ...ok, bannerShowing: true }), false, '横幅还在屏上 → 等');
+  assert.equal(shopVoiceReady(), true, '缺省参数按「可以播」处理，避免不播');
+});
   assert.equal(shouldShowLevelTitle({ n: 99, kind: 'normal' }, LEVEL_TITLE), false, '没名字 → 不弹');
 });
 

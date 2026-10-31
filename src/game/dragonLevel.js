@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { loadGLB, cloneGLBScene } from './glbCache.js';
 import { DRAGON, DRAGON_SUMMON, DRAGON_VOICE, EXPLOSION } from '../core/constants.js';
 import { attachDragonSegment, loadBalloonModel } from './balloonModels.js';
+import { BossHealthBar3D } from './bossHealthBar.js';
 
 // 第十二关「龙 Boss」
 //   龙头 = Model/龙头.glb（沿 headPath 跟随移动，自动按包围盒缩放贴合龙身）
@@ -127,6 +128,8 @@ export class DragonBoss {
     this._revealed = false;             // 是否已揭示：龙身/龙头在「首次 update 摆到脊柱上」前保持隐形，避免开场瞬间龙头停在原点(玩家脚下)被直接看到
     this._voicePlayed = false;          // 龙 Boss 登场语音是否已播放（仅播一次）
     this._voiceTimer = 0;               // Boss 开始运动(揭示)后计时(s)，到 DELAY 才播语音
+    this._hpBar = null;                 // 龙 Boss 头顶 3D 血条（Boss 只显示「Boss」，不显示等级）
+    this._hpBarPos = new THREE.Vector3(); // 血条定位临时量
 
     // 龙 Boss 召唤（每 INTERVAL 秒召唤基础怪 + 忍者；见 _summonMinions）
     this._summonTimer = 0;                              // 召唤冷却累加(s)
@@ -347,6 +350,11 @@ export class DragonBoss {
 
     this.hpPool = this.maxHpPool; // 固定总血量池（只降不升）
     this.aliveCount = this.allParts.length;
+    if (!this._hpBar) {
+      this._hpBar = new BossHealthBar3D(this.scene, {
+        title: 'Boss', worldW: DRAGON.HP_BAR_W, worldH: DRAGON.HP_BAR_H,
+      });
+    }
   }
 
   _loadHead() {
@@ -503,6 +511,17 @@ export class DragonBoss {
       for (const p of this.clawParts) if (p.balloon.mesh) p.balloon.mesh.visible = true;
     }
 
+    // —— 龙 Boss 头顶血条：跟随龙头（模型未就绪时退回第一节龙身），只显示「Boss」——
+    if (this._hpBar) {
+      this._hpBar.update(this.hpPool, this.maxHpPool);
+      const anchor = this.headModel
+        ? this.headGroup.position
+        : (this.bodyParts[0] && this.bodyParts[0].balloon.mesh.position);
+      if (anchor) {
+        this._hpBar.setPosition(this._hpBarPos.copy(anchor).setY(anchor.y + DRAGON.HP_BAR_OFFSET_Y));
+      }
+    }
+
     // —— 龙 Boss 登场语音：Boss 揭示(开始运动)后延迟 DELAY 秒启动（LOOP=true 则循环，直到死亡/切关停止）——
     if (DRAGON_VOICE.ENABLED && !this._voicePlayed && this._revealed) {
       this._voiceTimer += dt;
@@ -656,6 +675,7 @@ export class DragonBoss {
   _startDeath() {
     this.audio?.stopBGM(); // 龙 Boss 死亡即停背景音乐（龙Boss.wav），转场/选项卡不再续播
     this.audio?.stopLoopVoice(); // 龙 Boss 死亡即停登场循环语音（氛围音不续播）
+    if (this._hpBar) this._hpBar.hide();   // 死亡连爆期间不再挂着空血条
     this.dying = true;
     // 清场：中止进行中的召唤光点（其落点生成的小兵不再出现），避免死亡后还冒出新兵
     for (const it of this._summonFx) if (it.mesh) this._removeBeam(it.mesh);
@@ -763,6 +783,7 @@ export class DragonBoss {
     this._finale = null;
     this.dying = false;
     this.audio?.stopLoopVoice(); // 切关/退出：停止仍在播的龙 Boss 循环语音
+    if (this._hpBar) { this._hpBar.dispose(); this._hpBar = null; }
     this.cleared = false;
 
     // 移除龙头：龙头模型是预览预加载的共享缓存（_headGltf），只从 headGroup 摘下，

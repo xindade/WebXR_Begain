@@ -236,6 +236,53 @@ export function drawSketchIcon(ctx, key, cx, cy, s, color) {
       }
       ctx.beginPath(); ctx.arc(cx, cy, L * 0.08, 0, Math.PI * 2); ctx.fill();
       break;
+    case 'focusFire': { // 准星 + 四路收束射线（集中火力）
+      ctx.beginPath(); ctx.arc(cx, cy, L * 0.72, 0, Math.PI * 2); ctx.stroke();
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        ctx.beginPath();
+        ctx.moveTo(cx + dx * L * 0.38, cy + dy * L * 0.38);
+        ctx.lineTo(cx + dx * L * 0.96, cy + dy * L * 0.96);
+        ctx.stroke();
+      }
+      ctx.beginPath(); ctx.arc(cx, cy, L * 0.1, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
+    case 'blastPlus': { // 向外扩张的冲击波（再大一点）
+      for (const r of [L * 0.32, L * 0.62, L * 0.92]) {
+        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+      }
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(a) * L * 0.52, cy + Math.sin(a) * L * 0.52);
+        ctx.lineTo(cx + Math.cos(a) * L * 1.02, cy + Math.sin(a) * L * 1.02);
+        ctx.stroke();
+      }
+      ctx.beginPath(); ctx.arc(cx, cy, L * 0.12, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
+    case 'dosage': { // 药瓶 + 气泡（感染 / 加大剂量）
+      ctx.beginPath();
+      ctx.moveTo(cx - L * 0.2, cy - L * 0.92);
+      ctx.lineTo(cx + L * 0.2, cy - L * 0.92);
+      ctx.lineTo(cx + L * 0.2, cy - L * 0.5);
+      ctx.lineTo(cx + L * 0.55, cy + L * 0.5);
+      ctx.quadraticCurveTo(cx + L * 0.62, cy + L * 0.88, cx + L * 0.22, cy + L * 0.88);
+      ctx.lineTo(cx - L * 0.22, cy + L * 0.88);
+      ctx.quadraticCurveTo(cx - L * 0.62, cy + L * 0.88, cx - L * 0.55, cy + L * 0.5);
+      ctx.lineTo(cx - L * 0.2, cy - L * 0.5);
+      ctx.closePath(); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx - L * 0.5, cy + L * 0.42);
+      ctx.quadraticCurveTo(cx - L * 0.2, cy + L * 0.18, cx, cy + L * 0.38);
+      ctx.quadraticCurveTo(cx + L * 0.2, cy + L * 0.54, cx + L * 0.48, cy + L * 0.3);
+      ctx.stroke();
+      for (const [dx, dy, r] of [[-0.22, 0.56, 0.09], [0.1, 0.68, 0.07], [0.25, 0.42, 0.055]]) {
+        ctx.beginPath(); ctx.arc(cx + L * dx, cy + L * dy, L * r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.beginPath(); ctx.arc(cx, cy - L * 0.32, L * 0.1, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
     case 'refresh': // 环形箭头（刷新）
       ctx.beginPath(); ctx.arc(cx, cy, L * 0.68, -Math.PI * 0.35, Math.PI * 1.25); ctx.stroke();
       ctx.beginPath();
@@ -736,7 +783,10 @@ export class CardDraft {
       }
     } else {
       // 普通/Boss/机制关：从卡池抽 3 张不重复的属性卡（无刷新卡）
-      const pool = availableAttributes(this._state.player, this._state.pool || undefined, !!this._state.strictPool);
+      const pool = availableAttributes(
+        this._state.player, this._state.pool || undefined, !!this._state.strictPool,
+        this._state.banned || null,
+      );
       const chosen = pickCards(pool, this._guarantee);   // 必出卡优先（支持单卡 / 数组）
       for (const attr of chosen) {
         picks.push({

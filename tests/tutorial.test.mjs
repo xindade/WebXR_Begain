@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import {
   TUTORIAL, TUT_DIR_DEG, isTutorialLevel, tutorialEnemyTypes,
   tutorialSpawnPlan, tutorialTimeout, tutorialWaitsKill, eliteHoldOver,
+  tutorialEliteHp, tutorialEliteLevel, tutorialCardFor, tutorialSeedBanner,
 } from '../src/content/tutorial.js';
 import { TutorialRunner } from '../src/game/tutorial.js';
 import { DIR_TEXT } from '../src/content/spawnDirector.js';
@@ -45,6 +46,31 @@ test('横幅文案逐条对上稿子（提示 1/2/3/5/6 + 末尾精英横幅）'
   assert.equal(TUTORIAL.BANNER.ELITE, '前方精英来袭');
   assert.equal(TUTORIAL.BANNER.SKILL, '射击来不及了，快使用左手侧键的散射技能');
   assert.equal(TUTORIAL.BANNER.DONE, '敌人已清空，拿完奖励去下一个空域');
+});
+
+test('第八十八修 · 第一次教学卡按角色分支：蜂群讲追踪、爆炮手讲空爆、疾风不变', () => {
+  const swarm = tutorialCardFor('swarm');
+  assert.equal(swarm.ID, 'satelliteTrack');
+  assert.equal(swarm.LABEL, '自动追踪');
+  assert.equal(swarm.DESC, '浮游炮自动追踪前方敌人射击');
+  assert.equal(swarm.TIMEOUT, 12);
+
+  const bombard = tutorialCardFor('bombard');
+  assert.equal(bombard.ID, 'blastFuse8');
+  assert.equal(bombard.LABEL, '空爆火箭');
+  assert.equal(bombard.DESC, '炮弹前方无敌人，就会在距场地中心8米处爆炸');
+  assert.equal(bombard.TIMEOUT, 12);
+
+  assert.equal(tutorialCardFor('rapid'), TUTORIAL.CARD);
+  assert.equal(tutorialCardFor(null), TUTORIAL.CARD);
+});
+
+test('第八十八修 · 教学卡后的横幅：蜂群/爆炮手「更多敌人来袭，快试试效果」，疾风仍讲加倍射速', () => {
+  assert.equal(TUTORIAL.BANNER.TEST, '更多敌人来袭，快试试效果');
+  assert.equal(tutorialSeedBanner('swarm'), TUTORIAL.BANNER.TEST);
+  assert.equal(tutorialSeedBanner('bombard'), TUTORIAL.BANNER.TEST);
+  assert.equal(tutorialSeedBanner('rapid'), TUTORIAL.BANNER.RAPID);
+  assert.equal(tutorialSeedBanner(null), TUTORIAL.BANNER.RAPID);
 });
 
 test('超时口径 = 稿子里的 10s / 12s / 15s（精英段只等击杀，不超时）', () => {
@@ -88,11 +114,12 @@ test('连杀种到 8：再杀 2 只（= RAPID_FIRE.KILLS）就会触发一次射
   assert.equal(RAPID_FIRE.KILLS - TUTORIAL.SEED.STREAK, 2, '稿子：「再杀两个试试加倍射速」');
 });
 
-test('精英血量口径：普通射击打不完、一次能量散射能秒（教学才立得住）', () => {
-  const dps = 100 * 2;                            // 基线：100 攻 × 2 发/秒
-  assert.ok(TUTORIAL.ELITE.HP / dps >= 15, '普通射击至少要 15s 打不完');
-  assert.ok(SCATTER.COUNT * 100 * (SCATTER.DAMAGE_MUL || 1) >= TUTORIAL.ELITE.HP,
-    '一次能量散射要能直接秒掉（含基础伤害倍率）');
+test('精英血量口径：第八十一修统一等级公式（L1 铁甲兵 Lv.2 = 1200）', () => {
+  const hp = tutorialEliteHp(0);
+  assert.equal(tutorialEliteLevel(), 2, '第 1 关 + 铁甲兵偏移 1');
+  assert.equal(hp, 1200, '1000 基础 + 100×2');
+  assert.ok(SCATTER.COUNT * 100 * (SCATTER.DAMAGE_MUL || 1) >= hp,
+    '一次能量散射仍要能直接秒掉（含基础伤害倍率）');
   assert.ok(tutorialEnemyTypes().includes('eliteKnight'), '预载口径要含铁甲兵');
   assert.deepEqual(tutorialEnemyTypes().sort(), ['basic', 'eliteKnight']);
 });
@@ -186,7 +213,7 @@ test('教学关没有倒计时（_stopAt → Infinity），其它关照旧', () 
 // 5) 运行态：整条链走一遍 + 超时分支
 // ============================================================
 
-function fakeGame() {
+function fakeGame(role = null) {
   const g = {
     _levelTitleDone: false,
     _gameTime: 0,
@@ -196,6 +223,7 @@ function fakeGame() {
     logs: [], spawned: [], banners: [],
     cardOpens: 0, finishes: 0, hints: [], hintHidden: 0,
     _bannerBusy: false,
+    player: role ? { characterKey: role } : undefined,
     balloons: { list: [], remove(b) { const i = this.list.indexOf(b); if (i >= 0) this.list.splice(i, 1); } },
   };
   g.log = (m) => g.logs.push(m);
@@ -271,7 +299,8 @@ test('教学关全程：名字横幅 → 两只 → 单卡 → 种连杀+五只 
   assert.equal(g.balloons.list.length, 1, '内圈一只精英');
   const elite = g.balloons.list[0];
   assert.equal(elite.type, TUTORIAL.ELITE.TYPE);
-  assert.equal(elite.hp, TUTORIAL.ELITE.HP);
+  assert.equal(elite.hp, tutorialEliteHp(0));
+  assert.equal(elite.level, tutorialEliteLevel(), '教学精英名牌显示 Lv.2');
   assert.equal(elite.isElite, true);
   assert.equal(elite.selfDamage, TUTORIAL.ELITE.SELF_DAMAGE);
   assert.equal(g._tutorialFreeSkill, true, '精英段散射免费');
@@ -296,6 +325,20 @@ test('教学关全程：名字横幅 → 两只 → 单卡 → 种连杀+五只 
   assert.equal(r.done, true);
   r.update(1);
   assert.equal(g.finishes, 1, '收尾只做一次');
+});
+
+test('第八十八修 · 蜂群/爆炮手教学关的横幅3换成「更多敌人来袭，快试试效果」', () => {
+  for (const role of ['swarm', 'bombard']) {
+    const g = fakeGame(role);
+    const r = new TutorialRunner(g);
+    g._levelTitleDone = true;
+    r.update(0.1); land(g); wipe(g);
+    bannerOff(g); r.update(0.1);
+    bannerOff(g); r.update(0.1);
+    r.onCardDone();
+    bannerOff(g); r.update(0.1);
+    assert.equal(g.banners[2], TUTORIAL.BANNER.TEST, role + ' 的横幅3要讲「快试试效果」');
+  }
 });
 
 test('超时分支：横幅1 后 10s 没打完 → 残兵消失并继续（不软锁）', () => {
@@ -515,4 +558,80 @@ test('送币：把 SHOP_COIN 调成 0 就一分不给（唯一回退开关）', 
     assert.equal(ctx.shopCoin, 120, '不送就一分不动');
     assert.deepEqual(ctx.coinSet, [], '也不去动 HUD');
   } finally { TUTORIAL.DONE.SHOP_COIN = before; }
+});
+
+// ============================================================
+// 6) 第八十八修：角色专属第一次教学卡 + 解锁回调
+// ============================================================
+
+function tutorialCardCtx(role) {
+  const opened = {};
+  const ctx = {
+    state: 'playing',
+    player: { characterKey: role, forceSingleShot: false },
+    _fwd: new THREE.Vector3(),
+    _clearExplosions: () => {},
+    bullets: { clear: () => {} },
+    _playerPos: () => new THREE.Vector3(0, 1.4, 0),
+    world: { camera: { getWorldDirection: (v) => v.set(0, 0, -1) } },
+    hud: { message: (...a) => { opened.hud = a; } },
+    log: () => {},
+    cards: { open: (_pp, _fwd, state, cb) => { opened.state = state; opened.cb = cb; } },
+  };
+  Game.prototype._enterTutorialCard.call(ctx);
+  return opened;
+}
+
+test('第八十八修 · 蜂群第一次教学卡实际下发「自动追踪」，不是旧「连杀加速」', () => {
+  const opened = tutorialCardCtx('swarm');
+  assert.equal(opened.state.cards.length, 1);
+  assert.equal(opened.state.cards[0].id, 'satelliteTrack');
+  assert.equal(opened.state.cards[0].label, '自动追踪');
+  assert.equal(opened.state.duration, 12);
+  assert.equal(opened.hud[0], '自动追踪');
+});
+
+test('第八十八修 · 爆炮手第一次教学卡实际下发「空爆火箭」', () => {
+  const opened = tutorialCardCtx('bombard');
+  assert.equal(opened.state.cards[0].id, 'blastFuse8');
+  assert.equal(opened.state.cards[0].desc, '炮弹前方无敌人，就会在距场地中心8米处爆炸');
+  assert.equal(opened.state.duration, 12);
+});
+
+test('第八十八修 · 疾风第一次教学卡仍是「连杀加速」', () => {
+  const opened = tutorialCardCtx('rapid');
+  assert.equal(opened.state.cards[0].id, TUTORIAL.CARD.ID);
+  assert.equal(opened.state.cards[0].label, '连杀加速');
+});
+
+test('第八十八修 · 教学卡完成后按角色解锁追踪/空爆', () => {
+  const mk = (role) => ({
+    player: { characterKey: role, forceSingleShot: true },
+    hud: { clearMessage: () => {} },
+    state: 'card',
+    tutorial: { done: 0, onCardDone() { this.done++; } },
+    _roleUnlocks: { satelliteTrack: false, bombardAirburst: false },
+    _satelliteAutoTrack: false,
+    _bombardAirburst: false,
+    log: () => {},
+  });
+
+  const swarm = mk('swarm');
+  Game.prototype._onTutorialCardDone.call(swarm);
+  assert.equal(swarm._satelliteAutoTrack, true);
+  assert.equal(swarm._roleUnlocks.satelliteTrack, true);
+  assert.equal(swarm.state, 'playing');
+  assert.equal(swarm.player.forceSingleShot, false);
+  assert.equal(swarm.tutorial.done, 1);
+
+  const bombard = mk('bombard');
+  Game.prototype._onTutorialCardDone.call(bombard);
+  assert.equal(bombard._bombardAirburst, true);
+  assert.equal(bombard._roleUnlocks.bombardAirburst, true);
+
+  const rapid = mk('rapid');
+  Game.prototype._onTutorialCardDone.call(rapid);
+  assert.equal(rapid._satelliteAutoTrack, false, '疾风不碰蜂群标记');
+  assert.equal(rapid._bombardAirburst, false, '疾风不碰爆炮手标记');
+  assert.equal(rapid.tutorial.done, 1);
 });

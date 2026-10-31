@@ -22,6 +22,8 @@
 //   即完整回到旧第 1 关 —— 这是本修的**唯一回退开关**，故旧编排数据保留不删。
 // ============================================================
 
+import { levelFor, normalEliteHp } from './enemyLevels.js';
+
 export const TUTORIAL = {
   ENABLED: true,
   LEVEL: 1,                        // 教学关 = 第 1 关
@@ -34,6 +36,7 @@ export const TUTORIAL = {
     KILL:  '敌人出现，扣动扳机击杀他们',
     CARD:  '很棒的枪法，打破前方气球获得奖励吧',
     RAPID: '再杀两个试试加倍射速的威力吧',
+    TEST:  '更多敌人来袭，快试试效果',
     ELITE: '前方精英来袭',
     SKILL: '射击来不及了，快使用左手侧键的散射技能',
     DONE:  '敌人已清空，拿完奖励去下一个空域',
@@ -47,18 +50,32 @@ export const TUTORIAL = {
     ID: 'rapidFire', LABEL: '连杀加速', DESC: '每射击杀敌 10 个，射速加倍 3 秒',
     ICON: 'fireRate', COLOR: '#2e86de', TIMEOUT: 12,   // 12s 未打破 → 选项卡自动默认选择
   },
+  // 角色专属教学卡：第一次选项卡不再讲「连杀加速」，而是讲本角色的核心手感。
+  CARD_BY_ROLE: {
+    swarm: {
+      ID: 'satelliteTrack', LABEL: '自动追踪', DESC: '浮游炮自动追踪前方敌人射击',
+      ICON: 'focusFire', COLOR: '#19c9bd', TIMEOUT: 12,
+    },
+    bombard: {
+      ID: 'blastFuse8', LABEL: '空爆火箭', DESC: '炮弹前方无敌人，就会在距场地中心8米处爆炸',
+      ICON: 'blastPlus', COLOR: '#ff8c1a', TIMEOUT: 12,
+    },
+    plague: {
+      ID: 'plagueInfect', LABEL: '感染', DESC: '中毒敌人死亡时，向周围敌人扩散毒素；层数越高，疫爆范围越强',
+      ICON: 'dosage', COLOR: '#2ed573', TIMEOUT: 12,
+    },
+  },
 
   // ③ 种连杀数 + 前方五只；杀完或 15s 超时进精英段
   //    STREAK=8 的含义：再杀 2 只（RAPID_FIRE.KILLS=10）就会触发一次加速，教玩家看见「加倍射速」
   SEED: { STREAK: 8, COUNT: 5, DIR: 'front', DIST: 15, SPREAD: 8, TIMEOUT: 15 },
 
-  // ④ 内圈精英（铁甲兵）：血量口径「普通射击打不完 → 逼玩家用散射」
-  //    · HP 4000：基线射击 ≈ 100 攻 × 2 发/秒 = 200 DPS → 20s 打不完；
-  //      而一次能量散射 = 50 发 × 100 攻 = 5000 → 一击即杀（技能教学才有说服力）
+// ④ 内圈精英（铁甲兵）：第八十一修起走统一等级血量（L1 → 铁甲兵 LV2 = 1200），
+//    不再保留旧的固定 4000 血。散射伤害仍远高于它，技能教学照样一击即杀。
   //    · SPEED 0.5：9m 外飘向玩家 ≈ 10s 才进飞毯，留够「先试着打枪」的时间
   //    · SELF_DAMAGE 0：教学怪不扣血（教学关不该出现玩家被打死重开）
   ELITE: {
-    TYPE: 'eliteKnight', HP: 4000, SPEED: 0.5, SIZE_MUL: 3,
+    TYPE: 'eliteKnight', SPEED: 0.5, SIZE_MUL: 3,
     DIST: 9, SPREAD: 3, SELF_DAMAGE: 0,
     HINT_DELAY: 2.4,               // 最早在精英标语 2.4s 后排「用散射」提示（横幅 4s 未播完则继续排队等它收掉）
     // 第六十二修（现场）：「精英出现可以先暂停移动」—— 玩家来不及思考，精英已经撞上场地了。
@@ -83,6 +100,30 @@ export const TUT_DIR_DEG = { front: 0, frontLeft: -45, frontRight: 45 };
 
 /** 教学关判定（唯一定义）：开关关掉即回到旧第 1 关 */
 export function isTutorialLevel(n) { return !!TUTORIAL.ENABLED && Number(n) === TUTORIAL.LEVEL; }
+
+/** 第一次选项卡：角色专属；疾风沿用原来的「连杀加速」。 */
+export function tutorialCardFor(role) {
+  return (TUTORIAL.CARD_BY_ROLE && TUTORIAL.CARD_BY_ROLE[role]) || TUTORIAL.CARD;
+}
+
+/** 教学卡之后的五只怪横幅：蜂群/爆炮手/瘟疫医生改为「更多敌人来袭，快试试效果」。 */
+export function tutorialSeedBanner(role) {
+  return (role === 'swarm' || role === 'bombard' || role === 'plague')
+    ? TUTORIAL.BANNER.TEST : TUTORIAL.BANNER.RAPID;
+}
+
+/** 教学精英等级（L1 + 铁甲兵偏移 +1 = Lv.2）。 */
+export function tutorialEliteLevel() {
+  return levelFor(TUTORIAL.ELITE.TYPE, TUTORIAL.LEVEL);
+}
+
+/**
+ * 教学精英血量：第八十一修起不再用固定 4000，改走统一等级公式。
+ * 铁甲兵不吃 DPS 加成，所以 stageDps 只用于保持签名一致；L1 结果为 1200。
+ */
+export function tutorialEliteHp(stageDps = 0) {
+  return normalEliteHp(TUTORIAL.ELITE.TYPE, TUTORIAL.LEVEL, stageDps);
+}
 
 /** 教学关要出现的敌种（预载口径，同 spawnDirector.scriptEnemyTypes） */
 export function tutorialEnemyTypes() {

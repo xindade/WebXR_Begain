@@ -754,6 +754,64 @@ if (el('aimSave')) el('aimSave').onclick = async () => {
     st.className = 'gb'; st.textContent = `✗ ${e.message}`;
   }
 };
+
+// ——————————————— 爆炮手火箭筒（第八十七修） ———————————————
+// 现场在 PC 上调位置/旋转/缩放，保存后覆盖表立即生效；头显重新「启动游戏」即拿到新值。
+const WEAPON_INPUTS = {
+  POSITION: { x: 'bombPosX', y: 'bombPosY', z: 'bombPosZ' },
+  ROTATION: { x: 'bombRotX', y: 'bombRotY', z: 'bombRotZ' },
+};
+function renderWeapon(st) {
+  const w = (st && st.weapon) || {};
+  for (const key of Object.keys(WEAPON_INPUTS)) {
+    const v = w[key] || {};
+    for (const k of ['x', 'y', 'z']) {
+      const inp = el(WEAPON_INPUTS[key][k]);
+      if (inp) inp.value = Number.isFinite(v[k]) ? String(v[k]) : '';
+    }
+  }
+  const sc = el('bombScale');
+  if (sc) sc.value = Number.isFinite(w.SCALE) ? String(w.SCALE) : '';
+  const s = el('weaponStatus');
+  if (!s) return;
+  if (!st || !st.source) { s.className = 'gb'; s.textContent = '✗ 取不到 userConfig.js（配置未就绪）'; return; }
+  s.className = 'gs';
+  s.textContent = `✓ 生效来源：${st.source === 'manifest' ? '服务器清单缓存' : '本地配置目录'}`;
+}
+async function refreshWeapon() {
+  const s = el('weaponStatus');
+  if (!window.castCfg || !window.castCfg.weaponGet) { if (s) s.textContent = '（preload 未启用）'; return; }
+  try { renderWeapon(await window.castCfg.weaponGet()); } catch (e) { /* 忽略 */ }
+}
+if (el('weaponSave')) el('weaponSave').onclick = async () => {
+  const st = el('weaponStatus');
+  if (!window.castCfg || !window.castCfg.weaponSet) { log('当前未启用 preload，无法保存武器参数', 'l-bad'); return; }
+  const patch = { POSITION: {}, ROTATION: {} };
+  for (const key of Object.keys(WEAPON_INPUTS)) {
+    for (const k of ['x', 'y', 'z']) {
+      const raw = (el(WEAPON_INPUTS[key][k]).value || '').trim();
+      if (!raw) continue;
+      const n = Number(raw);
+      if (!Number.isFinite(n)) { st.className = 'gb'; st.textContent = `✗ ${key}.${k} 不是数字：${raw}`; return; }
+      patch[key][k] = n;
+    }
+  }
+  const scaleRaw = (el('bombScale').value || '').trim();
+  if (scaleRaw) {
+    const n = Number(scaleRaw);
+    if (!Number.isFinite(n) || n <= 0) { st.className = 'gb'; st.textContent = `✗ 缩放必须是正数：${scaleRaw}`; return; }
+    patch.SCALE = n;
+  }
+  st.className = 'dim'; st.textContent = '保存中…';
+  try {
+    const r = await window.castCfg.weaponSet(patch);
+    if (!r || !r.ok) { st.className = 'gb'; st.textContent = `✗ ${(r && r.msg) || '保存失败'}`; return; }
+    renderWeapon(r);
+    log(`爆炮手武器参数已保存：${JSON.stringify(patch)}；落盘 ${r.written.length} 处。`, 'l-ok');
+  } catch (e) {
+    st.className = 'gb'; st.textContent = `✗ ${e.message}`;
+  }
+};
 // ——————————————— 授权面板（License） ———————————————
 // 本机（直播端）**自己**的授权状态。★ 兜底 0 天 ⇒ 这里不合法，头显一律启动不了，
 // 所以「头显为什么起不来」的第一嫌疑人永远是这一栏 —— 特意放在最上面一排。
@@ -907,6 +965,7 @@ if (window.castCfg && window.castCfg.onGuardLog) {
 connect();
 refreshCfg();
 refreshAim();          // 第四十五修：瞄准角（PC 界面直接填）
+refreshWeapon();       // 第八十七修：爆炮手火箭筒位置/旋转/缩放
 refreshGuard();
 refreshLicense();
 setInterval(refreshLicense, 60000);   // 剩余天数会走，每分钟刷一次（主进程 6h 才真去联网）

@@ -13,21 +13,34 @@
       color: #fff; font-family: sans-serif; font-size: 13px; opacity: .75;
       text-shadow: 0 1px 3px #000; z-index: 5; pointer-events: none;
     }
-    /* ── 「进入 VR」二选一开局加成（2026-09-23 第二十二修）──
-       蓝 = 射速加倍 · 攻击力减半；红 = 攻击力加倍 · 射速减半。
-       点哪个都直接进游戏，并在 Player.reset 里把倍率乘到初始属性上（见 core/constants.js LOADOUTS）。 */
+    /* ── 「进入 VR」四角色（第八十五修 / 第九十一修）──
+       疾风 = 多弹道；蜂群 = 弹道转浮游炮；爆炮手 = 爆裂火箭；瘟疫医生 = 毒素叠层。
+       点哪个都直接进游戏，并在 Player.reset 里把角色倍率乘到初始属性上（见 core/constants.js CHARACTERS）。 */
     #enter-vr-box {
       position: fixed; bottom: 54px; left: 50%; transform: translateX(-50%);
-      z-index: 20; display: flex; gap: 16px; align-items: stretch;
+      z-index: 20; display: flex; gap: 14px; align-items: stretch;
+      max-width: 96vw; flex-wrap: wrap; justify-content: center;
     }
-    #enter-vr-box button {
-      padding: 14px 28px; font-size: 17px; font-family: sans-serif; font-weight: 700;
-      border: none; border-radius: 12px; color: #fff; cursor: pointer; line-height: 1.35;
-      box-shadow: 0 6px 18px rgba(0,0,0,.45);
+    #enter-vr-box button.role-card {
+      width: 196px; min-height: 116px; padding: 12px 14px; font-family: sans-serif;
+      border: none; border-radius: 14px; color: #fff; cursor: pointer; text-align: left;
+      box-shadow: 0 6px 18px rgba(0,0,0,.45); display: flex; flex-direction: column; gap: 5px;
+      line-height: 1.25; transition: transform .12s ease, filter .12s ease;
     }
+    #enter-vr-box button.role-card:hover { transform: translateY(-3px); filter: brightness(1.1); }
     #enter-vr-box button:disabled { opacity: .6; cursor: default; }
-    #enter-vr-rapid { background: #1f6feb; }   /* 蓝：射速加倍 · 攻击力减半 */
-    #enter-vr-power { background: #d92b2b; }   /* 红：攻击力加倍 · 射速减半 */
+    #enter-vr-rapid { background: linear-gradient(160deg, #2f7ff0, #124a9e); }
+    #enter-vr-swarm { background: linear-gradient(160deg, #19c9bd, #0a6f75); }
+    #enter-vr-bombard { background: linear-gradient(160deg, #ff8c1a, #a33d05); }
+    #enter-vr-plague { background: linear-gradient(160deg, #2ed573, #0a5a35); }
+    #enter-vr-box .role-top { display: flex; align-items: baseline; gap: 7px; }
+    #enter-vr-box .role-icon { font-size: 22px; }
+    #enter-vr-box .role-name { font-size: 20px; font-weight: 900; letter-spacing: 1px; }
+    #enter-vr-box .role-title { font-size: 11px; opacity: .82; font-weight: 700; }
+    #enter-vr-box .role-desc { font-size: 11px; opacity: .94; min-height: 28px; }
+    #enter-vr-box .role-stats { display: flex; flex-wrap: wrap; gap: 4px; }
+    #enter-vr-box .role-stat { font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 999px; background: rgba(0,0,0,.28); }
+    #enter-vr-box .role-passive { font-size: 10px; font-weight: 800; color: #ffe79a; }
 
     /* ── VR 桌面镜像按钮（让 PC 显示器也能看到头显画面）── */
     #mirror-btn {
@@ -185,10 +198,12 @@
     <div id="loading-text" data-page-node-id="qBaNSEBLoLijzHHqrm2E1C">正在加载天空资源…</div>
     <div id="loading-bar" data-page-node-id="KZfIkJHDdvfacXgYZeH8di"><div id="loading-bar-fill" data-page-node-id="b639S2ZfkLPUE5bmM31fGP"></div></div>
   </div>
-  <!-- 进入 VR：二选一开局加成（蓝色=射速加倍/攻击减半，红色=攻击加倍/射速减半），点哪个都直接进游戏 -->
+  <!-- 进入 VR：四角色（内容由 main.js 按 core/constants.js 的 CHARACTERS 渲染） -->
   <div id="enter-vr-box" data-page-node-id="cdkBDFO7uUJG1azzAteMAK">
-    <button id="enter-vr-rapid">⚡ 射速加倍 · 攻击力减半</button>
-    <button id="enter-vr-power">💥 攻击力加倍 · 射速减半</button>
+    <button id="enter-vr-rapid" class="role-card"></button>
+    <button id="enter-vr-swarm" class="role-card"></button>
+    <button id="enter-vr-bombard" class="role-card"></button>
+    <button id="enter-vr-plague" class="role-card"></button>
   </div>
   <button id="mirror-btn">🖥 镜像</button>
   <!-- 页内镜像预览（MIRROR.MODE='page' 时由 mirror.js 显示；'popup' 模式不用） -->

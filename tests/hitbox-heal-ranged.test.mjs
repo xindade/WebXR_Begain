@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import * as THREE from 'three';
 import { ENEMY_TYPES } from '../src/content/enemies.js';
 import { ELITE_BASE_HP, RANGED_DPS_HP } from '../src/content/eliteMonsters.js';
+import { bodyHp, normalEliteHp } from '../src/content/enemyLevels.js';
 import { MAGICIAN_BOSS, DEPTH_SPRITE_TYPES, SHURIKEN, ELITE_TUNING } from '../src/core/constants.js';
 import { WaveManager } from '../src/game/waves.js';
 import { eliteTravelSpeed } from '../src/content/spawnDirector.js';
@@ -113,15 +114,27 @@ test('第五十一修 · 非远程型 / 关掉开关 → 返回 null（调用方
   assert.equal(w.rangedHpOpts(undefined), null);
 });
 
-test('第五十一修 · _eliteOpts 普通精英：远程三兄弟吃新口径，其余仍是固定血量 + 1 倍体型', () => {
+test('第八十一修 · _eliteOpts 普通精英：等级血量 + 远程三兄弟 (本体+DPS)×1.3', () => {
   const w = wavesFor(false, 500);
   const g = w._eliteOpts('ghost', [], false);
-  assert.equal(g.hp, ELITE_BASE_HP.ghost + 500 * RANGED_DPS_HP.NORMAL_SEC);
+  assert.equal(g.hp, normalEliteHp('ghost', 7, 500));
+  assert.equal(g.hp, Math.round((bodyHp('ghost', 7) + 500) * 1.3), '幽灵 = (本体 6000 + DPS 500) ×1.3');
+  assert.equal(g.level, 12, '第 7 关 + 幽灵偏移 5 = Lv.12');
   assert.equal(g.sizeMul, RANGED_DPS_HP.NORMAL_SIZE_MUL);
   assert.equal(g.climax, false);
   const k = w._eliteOpts('eliteKnight', [], false);
-  assert.equal(k.hp, ELITE_BASE_HP.eliteKnight, '普通精英不该被 DPS 血量化（第四十七修踩过的坑）');
+  assert.equal(k.hp, bodyHp('eliteKnight', 7));
+  assert.equal(k.hp, 1800, '铁甲兵 = 1000 + 100×8');
+  assert.equal(k.level, 8, '第 7 关 + 铁甲偏移 1 = Lv.8');
   assert.equal(k.sizeMul, 1);
+});
+
+test('第八十一修 · 普通精英使用「进关快照 DPS」，不跟战斗中途攻击力变化', () => {
+  const w = wavesFor(false, 500);
+  w.stageDps = 500;
+  w.hooks.playerDps = () => 99999;
+  const g = w._eliteOpts('ghost', [], false);
+  assert.equal(g.hp, normalEliteHp('ghost', 7, 500), '应当用 startLevel 的快照 500，而不是实时 99999');
 });
 
 test('第五十一修 · 末尾精英（climax）口径不受影响：仍是「放大 + 定速」的那一套', () => {
@@ -130,7 +143,7 @@ test('第五十一修 · 末尾精英（climax）口径不受影响：仍是「�
   assert.equal(c.climax, true);
   assert.equal(c.sizeMul, ELITE_TUNING.SIZE_MUL, '末尾精英的体型是 ELITE_TUNING.SIZE_MUL');
   assert.ok(c.hp > 0, '血量 > 0');
-  assert.equal(c.speed, eliteTravelSpeed(ELITE_TUNING), '末尾精英是定速的（climax 专属：24m 外 10 秒走 2/3）');
+  assert.equal(c.speed, eliteTravelSpeed(ELITE_TUNING), '末尾精英是定速的（climax 专属；第八十二修速度减半）');
 });
 
 test('第五十一修 · 章鱼不再近身：和忍者一样被夹在 10~15m 环带内', () => {

@@ -7,12 +7,12 @@
 // 属性卡：icon 字段标识卡面简笔画图案；color 用于边框/图标色，rarity 仅作配色不做数值（加法叠加 + 封顶）。
 export const ATTR_TYPES = [
   {
-    id: 'fireRate', label: '射速+2', desc: '射速+2/秒（上限20）',
+    id: 'fireRate', label: '射速+50%', desc: '射速+50%（上限20）',
     color: '#2e86de', icon: 'fireRate',
-    // 落到真实节流源（input.setFireRate）：选卡后射速真正提升。
-    // 上限只写在 ATTRIBUTE_STATS 一处（第五十四修：14 → 20），卡面文案也必须跟着改（单测会锁）。
+    // 按角色基线成长：疾风 4→6→8；蜂群 2→3→4；爆炮手 0.8→1.2→1.6。
+    // 旧版固定 +2 会把爆炮手的 0.8 直接跳到 2.8，现场口径「计算不对」。
     apply: (p) => {
-      p.fireRate = Math.min(ATTRIBUTE_STATS.fireRate[2], (p.fireRate || 2) + 2);
+      p.fireRate = nextFireRate(p);
       p.input?.setFireRate(p.fireRate);
     },
   },
@@ -26,8 +26,11 @@ export const ATTR_TYPES = [
   {
     id: 'atk', label: '攻击力+100', desc: '攻击力+100（上限700）',
     color: '#e67e22', icon: 'atk',
+    // 瘟疫医生的攻击成长减半：卡面仍写 +100，但实际只增加 50。
     // 死亡补偿可超过成长上限；强化绝不扣除已获得的攻击。
-    apply: (p) => { p.atk = Math.max(p.atk || 100, Math.min(700, (p.atk || 100) + 100)); },
+    apply: (p) => {
+      p.atk = Math.max(p.atk || 100, Math.min(700, (p.atk || 100) + attackCardStep(p)));
+    },
   },
   {
     id: 'skillCost', label: '技能消耗-100', desc: '技能消耗-100（下限100）',
@@ -44,21 +47,64 @@ export const ATTR_TYPES = [
     color: '#16a085', icon: 'selfRepair',
     apply: (p) => { p.regen = Math.min(10, (p.regen || 0) + 2); },
   },
+  {
+    // 第八十九修 · 爆炮手专属：替换「额外子弹+1」。
+    //   每一级让每次爆炸额外再触发 1 次爆炸（同点，0.5 倍伤害/0.85 倍半径），最多 3 级。
+    //   放在表尾：全表补位时优先捡通用生存卡，不会把专属卡漏给其它角色。
+    id: 'multiBlast', label: '多重爆炸', desc: '子弹爆炸额外触发1次爆炸（上限3）',
+    color: '#ff6b2c', icon: 'blastPlus',
+    apply: (p) => {
+      const limit = ATTRIBUTE_STATS.multiBlast[2];
+      p.multiBlast = Math.min(limit, (p.multiBlast || 0) + 1);
+    },
+  },
 ];
 
 // 成长上限的**唯一口径**（第五十四修起，ATTR_TYPES 里的 apply 也读这里，避免「卡面写一套、代码封一套」）。
-// 格式：[player 字段, 每次步进, 上限/下限, 基线]；卡面 desc 里写的数字必须与 limit 一致（tests/bullet-volume.test.mjs 会锁）。
+// 格式：[player 字段, 每次步进, 上限/下限, 基线]；fireRate 例外：步进 = 角色基线的 50%，
+// 由 nextFireRate 按 player.baseFireRate 计算。卡面 desc 里写的上限必须与 limit 一致（单测会锁）。
 export const ATTRIBUTE_STATS = {
   fireRate: ['fireRate', 2, 20, 2], multiShot: ['shotCount', 1, 12, 1], atk: ['atk', 100, 700, 100],
+  multiBlast: ['multiBlast', 1, 3, 0],
   skillCost: ['skillCost', -100, 100, 500], skillDamage: ['skillDamageMul', 1, 5, 1],
   selfRepair: ['regen', 2, 10, 0],
 };
+
+export function nextFireRate(player) {
+  const limit = ATTRIBUTE_STATS.fireRate[2];
+  const base = Number(player.baseFireRate) || Number(player.fireRate) || ATTRIBUTE_STATS.fireRate[3] || 2;
+  const before = Number(player.fireRate) || base;
+  return Math.min(limit, Math.round((before + base * 0.5) * 100) / 100);
+}
+
+/** 攻击力选项卡的实际增量（瘟疫医生为 +50；其它角色仍为 +100）。 */
+export function attackCardStep(player) {
+  const base = ATTRIBUTE_STATS.atk[1];
+  const mul = Number(player?.atkGainMul) > 0 ? Number(player.atkGainMul) : 1;
+  return Math.max(1, Math.round(base * mul));
+}
+
+/** 连续推进 n 档射速（每档 = 角色基线的 50%），并把结果推给真实节流源。 */
+export function applyFireRateSteps(player, steps = 1) {
+  const n = Math.max(0, Math.floor(Number(steps) || 0));
+  for (let i = 0; i < n; i++) player.fireRate = nextFireRate(player);
+  player.input?.setFireRate?.(player.fireRate);
+  return player.fireRate;
+}
+
 export function attributePreview(card, player) {
+  if (card.id === 'fireRate') {
+    const before = Number(player.fireRate) || Number(player.baseFireRate) || 2;
+    return `${before} → ${nextFireRate(player)}`;
+  }
   const stats = ATTRIBUTE_STATS[card.id];
   if (!stats) return card.desc;
   const [key, step, limit, base] = stats;
+  const effectiveStep = card.id === 'atk' ? attackCardStep(player) : step;
   const before = player[key] ?? base;
-  const after = step > 0 ? Math.max(before, Math.min(limit, before + step)) : Math.min(before, Math.max(limit, before + step));
+  const after = effectiveStep > 0
+    ? Math.max(before, Math.min(limit, before + effectiveStep))
+    : Math.min(before, Math.max(limit, before + effectiveStep));
   return `${before} → ${after}`;
 }
 /**
@@ -86,17 +132,34 @@ export function attrPoolForLevel(n) {
  * @param {string[]} [ids] 只允许这些 id（缺省 = 全表）
  * @param {boolean} [strict] true = 不足 3 张也不从全表补位（前两关用，见 attrPoolForLevel）
  */
-export function availableAttributes(player, ids = ATTR_TYPES.map(c => c.id), strict = false) {
+export function availableAttributes(player, ids = ATTR_TYPES.map(c => c.id), strict = false, banned = null) {
+  const bannedSet = banned && banned.length ? new Set(banned) : null;
+  const allowed = (card) => ids.includes(card.id) && (!bannedSet || !bannedSet.has(card.id));
   const useful = card => {
     const [key, step, limit, base] = ATTRIBUTE_STATS[card.id];
     return step > 0 ? (player[key] ?? base) < limit : (player[key] ?? base) > limit;
   };
-  const pool = ATTR_TYPES.filter(card => ids.includes(card.id) && useful(card));
+  const pool = ATTR_TYPES.filter(card => allowed(card) && useful(card));
   // 主池不足时补充仍可成长的生存属性；完全满级时提供明确的补给奖励。
   // 第六十修：strict（前两关）时不做全表补位 —— 否则满级后会把被排除的技能卡补回来
-  if (!strict) for (const card of ATTR_TYPES) if (pool.length < 3 && useful(card) && !pool.includes(card)) pool.push(card);
+  // 第八十九修：补位沿用旧口径（可从全表捡），但必须尊重角色禁用卡。
+  if (!strict) for (const card of ATTR_TYPES) if (pool.length < 3 && (!bannedSet || !bannedSet.has(card.id)) && useful(card) && !pool.includes(card)) pool.push(card);
   if (!pool.length) pool.push(RESUPPLY_CARD);
   return pool;
+}
+
+/**
+ * 角色专属属性池：爆炮手把「额外子弹+1」换成「多重爆炸」。
+ * 不修改传入数组；其它角色原样返回。
+ */
+export function roleAttrPool(ids, role) {
+  if (role !== 'bombard' || !Array.isArray(ids)) return ids;
+  return ids.map((id) => (id === 'multiShot' ? 'multiBlast' : id));
+}
+
+/** 角色禁用的属性卡：爆炮手不出「额外子弹+1」；其它角色不出专属的「多重爆炸」。 */
+export function roleBannedCards(role) {
+  return role === 'bombard' ? ['multiShot'] : ['multiBlast'];
 }
 
 // 满级兜底卡：主池已无任何可用成长卡时使用（第五十五修：生命上限卡已移除，血上限固定 100）。
@@ -109,7 +172,7 @@ export const RESUPPLY_CARD = {
 export const SKILL_CARDS = [
   {
     id: 'buddha', label: '如来神掌', rarity: 'gold', color: '#ff3b3b', icon: 'buddha',
-    desc: '全屏伤害200（×技能倍率）',
+    desc: '全屏350，收掌后5秒子弹化为掌风弹（伤害×1.5，穿透1）',
     apply: (p) => { p.buddhaUnlocked = true; p.buddhaTimer = 0; },
   },
   {

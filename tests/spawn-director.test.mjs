@@ -198,49 +198,43 @@ test('末尾批判定：只有带 goldReturn 的事件算本关收尾（唯一�
   }
 });
 
-test('末尾批血量：单只 = 本批基础血量 × HP_MUL，被 DPS 上限夹住（可击杀保证）', () => {
-  // raw = 1000×2 = 2000；DPS=300 → 上限 1800（纯输出 6 秒）⇒ 夹到 1800
-  assert.equal(climaxEliteHp(1000, 1000, 300, ELITE_TUNING), 1800);
-  // 上限就是「纯输出 HP_MAX_SECONDS 秒」：整批总量不会超过 DPS × HP_MAX_SECONDS
-  const dps = 1000;
-  const batch = [{ type: 'eliteKnight', count: 4 }];   // 基础 1000 每只 → 批 4000
-  const per = climaxEliteHp(1000, 4000, dps, ELITE_TUNING);
-  assert.ok(per * 4 <= dps * ELITE_TUNING.HP_MAX_SECONDS + 4, '整批不得超过 6 秒纯输出');
-  assert.equal(per, 1500);   // 2000 × (6000/8000)
+test('末尾批血量：本体 ×1.5 + DPS×6 按只数均分', () => {
+  // 1 只本体 1000 / DPS 300：1500 + 1800 = 3300
+  assert.equal(climaxEliteHp(1000, 1, 300, ELITE_TUNING), 3300);
+  // 4 只本体 1000 / DPS 1000：每只 1500 + 6000/4 = 3000
+  assert.equal(climaxEliteHp(1000, 4, 1000, ELITE_TUNING), 3000);
 });
 
-test('末尾批血量：下限是仪式感（DPS 再高也不会一秒蒸发）', () => {
-  // raw 很小但 DPS 很高 → 抬到 DPS × HP_MIN_SECONDS
-  const hp = climaxEliteHp(100, 100, 1000, ELITE_TUNING);
-  assert.equal(hp, 1000 * ELITE_TUNING.HP_MIN_SECONDS);   // 2500
+test('末尾批血量：本体倍率与 DPS 均分互不影响（各型本体不再按比例压到 6 秒）', () => {
+  const dps = 300;
+  const count = 2;
+  const a = climaxEliteHp(1300, count, dps, ELITE_TUNING);
+  const b = climaxEliteHp(1000, count, dps, ELITE_TUNING);
+  const share = dps * ELITE_TUNING.DPS_SECONDS / count;
+  assert.equal(a, Math.round(1300 * ELITE_TUNING.BODY_MUL + share));
+  assert.equal(b, Math.round(1000 * ELITE_TUNING.BODY_MUL + share));
+  assert.equal(a - b, Math.round(300 * ELITE_TUNING.BODY_MUL), '本体差仍按各自本体 ×1.5 保留');
 });
 
-test('末尾批血量：同批按各型基础血量成比例分摊', () => {
-  const a = climaxEliteHp(1300, 2000, 300, ELITE_TUNING);
-  const b = climaxEliteHp(1000, 2000, 300, ELITE_TUNING);
-  assert.equal(a, 1170);          // 2600 × (1800/4000)
-  assert.equal(b, 900);           // 2000 × (1800/4000)
-  assert.equal(a / b, 1.3);       // = 1300/1000
-});
-
-test('末尾批血量：拿不到 DPS 时退回基础血量（不会 0 血 / NaN）', () => {
-  assert.equal(climaxEliteHp(1000, 1000, NaN, ELITE_TUNING), 2000);
-  assert.equal(climaxEliteHp(1000, 1000, 0, ELITE_TUNING), 2000);
+test('末尾批血量：拿不到 DPS 时只算本体 ×1.5（不会 0 血 / NaN）', () => {
+  assert.equal(climaxEliteHp(1000, 2, NaN, ELITE_TUNING), 1500);
+  assert.equal(climaxEliteHp(1000, 2, 0, ELITE_TUNING), 1500);
   assert.equal(climaxEliteHp(undefined, 0, 0, ELITE_TUNING), 1);
 });
 
-test('强化参数表：末尾精英体型放大 / 出生更远 / 血量上限为正且下限更小', () => {
+test('强化参数表：末尾精英体型放大 / 出生更远 / 本体 ×1.5 / DPS 6 秒均分 / 速度减半', () => {
   assert.ok(ELITE_TUNING.SIZE_MUL > 1, '末尾精英要真的放大');
   assert.ok(ELITE_TUNING.SPAWN_DIST > 15, '要比普通精英的 15m 更远');
   assert.ok(ELITE_TUNING.SPAWN_SPREAD > 6);
-  assert.ok(ELITE_TUNING.HP_MUL > 1, '血量基准要比原生更厚');
-  assert.ok(ELITE_TUNING.HP_MAX_SECONDS > 0, '必须有可击杀上限');
-  assert.ok(ELITE_TUNING.HP_MIN_SECONDS > 0 && ELITE_TUNING.HP_MIN_SECONDS < ELITE_TUNING.HP_MAX_SECONDS);
+  assert.equal(ELITE_TUNING.BODY_MUL, 1.5, '每只本体 ×1.5');
+  assert.equal(ELITE_TUNING.DPS_SECONDS, 6, '整批共享 DPS × 6');
+  assert.equal(ELITE_TUNING.SPEED_MUL, 0.5, '移动速度减半');
 });
 
-test('末尾精英速度：10 秒正好走出生距离的 2/3（剩下的 1/3 再走 5 秒）', () => {
+test('末尾精英速度：基准 10 秒走 2/3，再 ×0.5（实际 20 秒）', () => {
   const v = eliteTravelSpeed(ELITE_TUNING);
-  assert.equal(v * ELITE_TUNING.TRAVEL_SECONDS, ELITE_TUNING.SPAWN_DIST * ELITE_TUNING.TRAVEL_FRACTION);
+  assert.equal(v * ELITE_TUNING.TRAVEL_SECONDS,
+    ELITE_TUNING.SPAWN_DIST * ELITE_TUNING.TRAVEL_FRACTION * ELITE_TUNING.SPEED_MUL);
   assert.ok(Math.abs(ELITE_TUNING.TRAVEL_FRACTION - 2 / 3) < 1e-9);
 });
 

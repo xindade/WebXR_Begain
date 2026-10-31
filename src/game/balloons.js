@@ -52,27 +52,43 @@ const _bombM4    = new THREE.Matrix4();    // 「爆」标记：实例矩阵
 //   提示「撞到飞毯边缘会自爆」。用**单个 InstancedMesh**（无论多少只都只有 1 个 draw call）；
 //   所有实例朝向相同（正面朝相机）⇒ 共用一个旋转矩阵，逐帧只改位置/缩放。
 // ============================================================
-let _bombTex = null;
-function _bombLabelTexture() {
-  if (_bombTex) return _bombTex;
+const _bombTexCache = new Map();
+
+function _drawBombText(x, mid, text, y, size, S, outlineW) {
+  x.font = `bold ${Math.max(8, Math.round(size))}px sans-serif`;
+  x.lineJoin = 'round';
+  x.lineWidth = outlineW;
+  x.strokeStyle = S.OUTLINE;
+  x.shadowColor = S.GLOW ? (S.GLYPH || '#ffffff') : 'transparent';
+  x.shadowBlur = S.GLOW || 0;
+  x.strokeText(text, mid, y);               // 先描边（暗红）
+  x.fillStyle = S.GLYPH || '#ffffff';
+  x.fillText(text, mid, y);                 // 后填充（白 + 白发光，颜色交给实例色）
+}
+
+// 第八十一修：基础怪头顶同时显示「Lv.N」与「爆」。同一关所有基础怪等级相同，
+// 所以按关卡缓存纹理 —— 无论同屏多少只，仍然只有一个 InstancedMesh / 一份贴图。
+function _bombLabelTexture(level = 0) {
+  const lv = Math.max(0, Math.round(Number(level) || 0));
+  const hit = _bombTexCache.get(lv);
+  if (hit) return hit;
   const S = BOMB_LABEL;
   const c = document.createElement('canvas');
   c.width = S.CANVAS; c.height = S.CANVAS;
   const x = c.getContext('2d');
   const mid = S.CANVAS / 2;
   x.textAlign = 'center'; x.textBaseline = 'middle';
-  x.font = `bold ${Math.round(S.CANVAS * 0.72)}px sans-serif`;
-  x.lineJoin = 'round';
-  x.lineWidth = S.OUTLINE_W;
-  x.strokeStyle = S.OUTLINE;
-  x.strokeText(S.TEXT, mid, mid);          // 先描边（暗红）
-  // 第五十七修：字与发光都画**纯白** —— 真色由实例色决定（常态暖黄 / 内圈闪烁红），见 bombMarkColor
-  x.shadowColor = S.GLOW ? (S.GLYPH || '#ffffff') : 'transparent';
-  x.shadowBlur = S.GLOW || 0;
-  x.fillStyle = S.GLYPH || '#ffffff';
-  x.fillText(S.TEXT, mid, mid);            // 后填充（白 + 白发光，颜色交给实例色）
-  _bombTex = new THREE.CanvasTexture(c);
-  return _bombTex;
+  if (lv > 0) {
+    // 上：Lv.N（小号）；下：爆（大号）
+    _drawBombText(x, mid, `Lv.${lv}`, S.CANVAS * 0.24, S.CANVAS * 0.20, S, Math.max(4, S.OUTLINE_W * 0.45));
+    _drawBombText(x, mid, S.TEXT, S.CANVAS * 0.64, S.CANVAS * 0.52, S, S.OUTLINE_W);
+  } else {
+    // 没有等级（Boss 关召唤物 / 单测无关卡）：保持旧的单字「爆」
+    _drawBombText(x, mid, S.TEXT, mid, S.CANVAS * 0.72, S, S.OUTLINE_W);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  _bombTexCache.set(lv, tex);
+  return tex;
 }
 
 const _bombCol = new THREE.Color();                       // 「爆」标记：实例色临时量
@@ -110,6 +126,10 @@ export class Balloon {
     // 精英怪：允许外部覆盖血量（由 waves._fireElitePhase 按敌种计算 = ELITE_BASE_HP[型] + DPS×秒，叠加式）并标记
     if (opts && opts.hp != null) { this.maxHp = opts.hp; this.hp = opts.hp; }
     this.isElite = !!(opts && opts.isElite);
+    // 第八十一修：Boss 本体标记（Boss 只显示「Boss」，不显示等级）
+    this.isBoss = !!(opts && opts.isBoss);
+    // 等级（基础怪 = 关卡数；精英 = 关卡数 + 偏移；Boss / 召唤物 = 0 → 不显示）
+    this.level = (opts && opts.level != null) ? (Number(opts.level) || 0) : 0;
     // 第四十九修：末尾精英（Boss 档）= 关卡收尾那一批（waves._eliteOpts 判定，判据是事件带 goldReturn）
     //   climax → 名牌用 BOSS_LABEL 并加「 Boss」后缀；batchId → 供 waves._updateEliteWatch 按批判定
     this.isClimax = !!(opts && opts.climax);
@@ -187,7 +207,12 @@ export class Balloon {
     //   查不到中文名时退回 ENEMY_TYPES 的 name（eliteLabelText 只负责加后缀）。
     const labelStyle = this.isClimax ? BOSS_LABEL : ELITE_LABEL;
     if (this.isElite && labelStyle.ENABLED && t.model) {
-      this._makeNameLabel(eliteLabelText(ELITE_DISPLAY_NAME[t.id] || t.name, this.isClimax), labelStyle);
+      this._makeNameLabel(eliteLabelText(ELITE_DISPLAY_NAME[t.id] || t.name, this.isClimax, this.level), labelStyle);
+    }
+    // Boss 本体：统一只显示「Boss」，不显示等级、不剧透名字。
+    //   bossProxy（魔术师命中代理）是 noPlaceholder + mesh 隐藏，跳过；它的头顶血条由 bossHealthBar 负责。
+    if (this.isBoss && !this.label && !t.noPlaceholder && BOSS_LABEL.ENABLED) {
+      this._makeNameLabel('Boss', BOSS_LABEL);
     }
 
     // 盾兵怪：在骑士模型基础上附加「会旋转的盾牌」（绕骑士旋转，挡子弹）
@@ -345,9 +370,21 @@ export class Balloon {
 
     // ⑥ 文字（先描边再压字，远看也认得出；Boss 档带外发光）
     const by = H * 0.54;                       // 基线略低一点，视觉居中（描边会比字高一点）
-    x.font = S.FONT || 'bold 38px sans-serif';
+    const baseFont = S.FONT || 'bold 38px sans-serif';
+    x.font = baseFont;
     x.textAlign = 'center';
     x.textBaseline = 'middle';
+    // 第八十一修：名字前多了「Lv.N」，长名字（如「Lv.22 章鱼将军 Boss」）要自动缩小，
+    //   否则会超出画布被裁掉。只缩字号，不改画布/世界尺寸。
+    const fitPx = /(\d+)px/.exec(baseFont);
+    if (fitPx) {
+      const maxW = W - (S.TEXT_PAD_X != null ? S.TEXT_PAD_X : 36);
+      const textW = x.measureText(text).width;
+      if (textW > maxW && textW > 0) {
+        const size = Math.max(18, Math.floor(Number(fitPx[1]) * maxW / textW));
+        x.font = baseFont.replace(/(\d+)px/, `${size}px`);
+      }
+    }
     if (S.GLOW) { x.shadowColor = S.EDGE || S.COLOR || '#ffffff'; x.shadowBlur = S.GLOW; }
     if (S.OUTLINE) {
       x.lineWidth = S.OUTLINE_W || 6;
@@ -762,6 +799,9 @@ export class BalloonManager {
     this.projectiles = null; // 远程投射物管理器（由 game.js 注入）；非空时忍者/幽灵/章鱼才会投掷
     this._playerPos = null;  // 每帧玩家位置（update 注入），供「最近发射者」判定
     this._bombMarks = null;  // 「爆」标记 InstancedMesh（惰性创建，见 _updateBombMarks）
+    // 第八十一修：当前关等级（由 waves.startLevel 写入）。基础怪头顶「爆」标记按它显示 Lv.N；
+    //   Boss 关写 0（Boss 召唤的基础怪不套等级血量，也不显示等级）。
+    this.stageLevel = 0;
     // 第六十八修：延迟释放队列。融合吸收 / 切关清场时把「从场景摘下来」和「释放 GPU 资源」分开：
     //   同一帧 dispose 十几只怪会触发大量材质/贴图删除，且可能把共用 shader program 的引用计数打到 0，
     //   下一帧新怪又要同步重编译 —— 这正是末尾精英出现时「转头黑一下」的根因之一。
@@ -938,7 +978,7 @@ export class BalloonManager {
     if (!this._bombMarks) {
       const geo = new THREE.PlaneGeometry(1, 1);
       const mat = new THREE.MeshBasicMaterial({
-        map: _bombLabelTexture(), transparent: true,
+        map: _bombLabelTexture(this.stageLevel || 0), transparent: true,
         // 第五十七修（现场）：depthTest=true → 被**前面的怪**挡住。旧口径 false 会「糊在它前方的怪身上」。
         depthTest: !!S.DEPTH_TEST, depthWrite: false,
         side: THREE.DoubleSide, toneMapped: false, fog: false,
@@ -957,6 +997,12 @@ export class BalloonManager {
     }
     this._bombT = (this._bombT || 0) + dt;   // 第五十七修：闪烁用的内部时钟（秒）
     const inst = this._bombMarks;
+    // 切关后换纹理（按关卡缓存，同一关只换一次；仍然只有一个 InstancedMesh / 一次 draw call）
+    const bombTex = _bombLabelTexture(this.stageLevel || 0);
+    if (inst.material.map !== bombTex) {
+      inst.material.map = bombTex;
+      inst.material.needsUpdate = true;
+    }
     inst.visible = true;
     if (!camera) { inst.count = 0; return; }
     camera.getWorldQuaternion(_bombQuat);

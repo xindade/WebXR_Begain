@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('castCfg', {
   //   判定与落盘全在 main.js（渲染进程改不了门禁，也不会拿到密钥）。
   aimGet: () => ipcRenderer.invoke('aim:get'),
   aimSet: (patch) => ipcRenderer.invoke('aim:set', patch || {}),
+  // 爆炮手火箭筒：位置/旋转/缩放（第八十七修）
+  weaponGet: () => ipcRenderer.invoke('weapon:get'),
+  weaponSet: (patch) => ipcRenderer.invoke('weapon:set', patch || {}),
   // 本局放行（第十八修）：PC 大屏上的「开始本局 / 结束本局」= 平台「开始游戏 / 结束游戏」信号。
   // 头显页面（src/main.js 的主控门禁）每 2 秒问一次 /api/master/allow，只有 armed=true 才给
   // 「进入 VR」按钮 —— 故这个按钮就是现场唯一可靠的开局信号源（平台对我们零「开始」下行）。

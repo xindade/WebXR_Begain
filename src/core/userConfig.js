@@ -13,6 +13,11 @@ export const USER_CONFIG = {
     15: { pos: [0, 7.4, -10], scaleHeight: 5.0 },   // 第15关 · 九宫格翻转
     SHOW_SECONDS: 10,   // 循环播放时长（秒）；也是语音联动的兜底上限
     FOLLOW_VOICE: true, // 机制关开场语音播完，魔术师同步消失（动画与语音对齐）
+    SHOP_VOICE_ENABLED: true,               // 商店关开场语音开关（第八十三修）
+    SHOP_VOICE_URL: 'music/商店语音.wav',    // 等云雾 + 关卡横幅结束后播放
+    SHOP_VOICE_VOLUME: 1.0,                 // 语音音量
+    SHATTER_COLOR: 0xc9a7ff,                // 语音结束 → 魔术师碎片颜色
+    SHATTER_MUL: 2,                         // 碎片数量倍率
   },
 
   // ==================== 左手腕信息提示框（战斗信息）位置 / 旋转 / 大小 ====================
@@ -77,6 +82,8 @@ export const USER_CONFIG = {
     FLASH_OFF: 0.12,
     FLASH_BORDER: '#ff3b30',
     READY_BORDER: '#ffd24a',
+    PALM_BORDER: '#ffd24a',
+    PALM_TEXT: '#fff3c4',
     COOLDOWN_BORDER: '#ff7a00',
     COOLDOWN_BAR_COLOR: '#ff9d2e',
     COOLDOWN_BG: 'rgba(255,255,255,0.15)',
@@ -127,6 +134,7 @@ export const USER_CONFIG = {
     SPAWN_ENEMIES: true,   // 召唤总开关：false → 三阶段都不召唤（排查卡顿/伤害用）
     HP_BASE: 20000,        // Boss 基础血量
     HP_DPS_SEC: 30,        // 血量 = HP_BASE + 玩家DPS × 此值
+    HP_MULT: 5,            // 最终血量倍率（第八十二修：×5，基础与 DPS 加成一起放大）
     PHASE: {
       INTRO: 8,            // 开场演出兜底上限（秒）：正常由开场语音播完触发，秒数对不上先看这条
       LASER: 10,           // 第一阶段·激光（秒）：召唤时间点按此时长均分
@@ -345,6 +353,29 @@ export const USER_CONFIG = {
     },
   },
 
+  // ==================== 爆炮手火箭筒（第八十七修） ====================
+  // 只在选择「轰山 / 爆炮手」时显示；AK 的 GUN 配置不受影响。
+  // PC 端 EXE 的「武器参数」栏会直接覆盖这里的数值并下发到头显。
+  BOMBARD_WEAPON: {
+    MODEL_URL: 'Model/火箭筒.glb',
+    POSITION: { x: 0, y: -0.25, z: 0 },
+    ROTATION: { x: -60, y: 90, z: 0 },
+    SCALE: 0.5,
+  },
+
+  // ==================== 瘟疫医生毒枪（第九十四修） ====================
+  // 只在选择「瘟疫医生」时显示。毒枪原始轴向与 AK 不同，Y 轴为 180°；
+  // 上机如发现枪口/枪身高低不合适，只改这里的位置和旋转，不动射击逻辑。
+  PLAGUE_WEAPON: {
+    MODEL_URL: 'Model/毒枪械.glb',
+    POSITION: { x: 0, y: -0.28, z: 0 },
+    ROTATION: { x: -60, y: 180, z: 0 },
+    SCALE: 0.5,
+    MODEL_COLOR_MUL: 1.15,
+    MODEL_EMISSIVE: 0.25,
+    MODEL_MAX_METALNESS: 0.65,
+  },
+
   // ==================== 左手柄激光剑（近战技能） ====================
   // 选卡装备后常驻左手柄；按左手柄 grip 激活「5秒伤害状态」；位置/旋转/缩放/伤害均可热调。
   LASER_SWORD: {
@@ -480,7 +511,9 @@ export const USER_CONFIG = {
 
   // ==================== 龙 Boss 减伤 & 击杀基础怪扣血（热调） ====================
   DRAGON: {
+    HP_MULT: 2.0,                 // 龙 Boss 整体血量倍率（第八十二修：×2）
     DAMAGE_REDUCTION: 0.95,       // 龙身/龙爪气球减伤比例（受击只吃 5%）
+    BOMBARD_AOE_TAKE_MUL: 0.30,   // 爆炮手爆炸打龙部件：在 95% 减伤后再 ×0.30 ⇒ 实际 1.5%（等效 98.5%）
     BASIC_KILLS_PER_PERCENT: 5,   // 每消灭多少个基础怪扣 Boss 1% 总血量
     BASIC_KILL_PERCENT: 0.01,     // 每次扣 Boss 总血量比例（1%）
   },
@@ -511,6 +544,24 @@ export const USER_CONFIG = {
   // 伤害仅「变化(grow)/运动(move)」阶段结算：掌图作横扫墙，只命中命中盒内的敌人（不再全屏秒杀）。
   // 视觉：贴图 Palm 在 START_POS 出现 → GROW_TIME 内放大到 END_SCALE（分两段）→ MOVE_TIME 内沿 +Z 移到 END_POS → 停顿 PAUSE_TIME → 淡出消失。
   BUDDHA: {
+    COOLDOWN: 12,                // 第八十四修：5 秒掌风弹窗口 + 7 秒空档
+    DAMAGE: 350,                 // 初始横扫基础伤害
+    DAMAGE_MUL_CAP: 3,           // 初始横扫的技能倍率上限
+    ELITE_MUL: 0.5,              // 初始横扫对精英的倍率
+    BOSS_MUL: 0.25,              // 初始横扫对 Boss / 龙部件的倍率
+    PALM_WIND: {
+      ENABLED: true,
+      DURATION: 5,               // 收掌后 5 秒
+      DAMAGE_MUL: 1.5,           // 掌风弹伤害 = 攻击力 ×1.5
+      PIERCE: 1,                 // 穿透 1 个敌人
+      TRAIL_MUL: 1.2,
+      TINT: 0xffd76a,
+      TEX_W: 128,
+      TEX_H: 192,
+      BULLET_W: 0.16,
+      BULLET_H: 0.24,
+      ALPHA_TEST: 0.35,
+    },
     TEXTURE_URL: 'assets/buddha-palm.jpg', // 贴图路径（相对 index.html）
     COLOR_KEY_THRESHOLD: 0.99,   // 白底剔除阈值（0~1）：越低剔除范围越大
     PLANE_WIDTH: 4.0,            // 平面宽度（米）
@@ -519,10 +570,10 @@ export const USER_CONFIG = {
     END_POS:   { x: 0, y: 0, z:  30 }, // 移动终点（世界坐标，米）
     START_SCALE: 1.0,            // 初始缩放倍数
     END_SCALE: 15.0,             // 最终缩放倍数（10 倍）
-    GROW_TIME: 1.5,              // 原地放大总时长（秒）
-    MOVE_TIME: 1.0,              // 沿 +Z 移动时长（秒）
-    PAUSE_TIME: 1.0,             // 到达终点后停顿（秒）
-    FADE_TIME: 0.3,              // 淡出消失时长（秒）
+    GROW_TIME: 0.8,              // 原地放大总时长（秒）：第八十四修压缩起手
+    MOVE_TIME: 0.6,              // 沿 +Z 移动时长（秒）
+    PAUSE_TIME: 0.4,             // 到达终点后停顿（秒）
+    FADE_TIME: 0.25,             // 淡出消失时长（秒）
     LATCH_FACING: true,          // 第四十五修：掌面固定朝向（法线=飞行轴、上方向⊥地面）；false=旧行为（每帧朝相机，会倾斜/翻面）
     HIT_MARGIN_XY: 1.3,          // 命中盒 XY 放大系数（1=完全贴合掌面）
     HIT_Z_BAND: 8,               // 命中盒 Z 半厚（米）：仅命中掌图当前 Z 前后 ±该值的敌人

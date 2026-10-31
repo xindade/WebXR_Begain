@@ -74,6 +74,19 @@ export function levelTitleDelay(lv, cfg, cover) {
   return cover ? cfg.INTRO_DELAY : cfg.DELAY;
 }
 
+/**
+ * 第八十三修 · 商店关开场语音起播闸门（纯函数，便于单测）。
+ *   现场口径：「等云雾和横幅过去后播放」。
+ *   ① 云雾结束；② 关卡名还没排 / 还没弹完；③ 当前横幅已经收掉 —— 三者都满足才起播。
+ * @param {{introActive:boolean,titleAt:number,titleText:string|null,bannerShowing:boolean}} s
+ */
+export function shopVoiceReady(s = {}) {
+  return !s.introActive
+    && !(Number(s.titleAt) > 0)
+    && !s.titleText
+    && !s.bannerShowing;
+}
+
 // 是否危机关：精英比例提升、四周奖励气球
 export function isCrisis(lv) { return lv.kind === 'crisis'; }
 export function isBoss(lv) { return lv.kind === 'boss'; }

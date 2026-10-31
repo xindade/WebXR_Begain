@@ -3,7 +3,7 @@
 //   现场口径：
 //     · 每打死一个 Boss → 先在准星前方弹 2 秒「宝箱出现，快攻击」，再在选项卡位置立宝箱；
 //     · 第 6 关脸谱宝箱：玩家**子弹命中**宝箱会把数值从 0.1 推到 2.0（每次 +0.1），持续 4 秒；
-//       结算时 <0.5 → 0 条，0.5~<2.0 → 1 条，满 2.0 → 2 条额外弹道；
+//       结算时 <0.5 → 0 档，0.5~<2.0 → 1 档，满 2.0 → 2 档攻速（每档 = 角色基线的 50%）；
 //     · 第 12 关龙族宝箱：口径保持不变（5 秒内打出的弹数线性换攻击力，≥30 发 +150 封顶）。
 //
 //   为什么数值/名字用场景内 Sprite：头显沉浸态里 DOM HUD 不可见（同 winBanner / 中场预警的结论）。
@@ -54,9 +54,9 @@ export function bulletChestBonus(value, cfg = MASK_CHEST) {
 }
 
 /** 纯函数：脸谱箱上方那一行的文案（保留 0.1 精度，让玩家看到实时变化）。 */
-export function bulletChestValueText(value) {
+export function bulletChestValueText(value, cfg = MASK_CHEST) {
   const v = Math.max(0, Number(value) || 0);
-  return '+' + v.toFixed(1) + ' 子弹';
+  return '+' + v.toFixed(1) + ' ' + (cfg.VALUE_SUFFIX || '攻速');
 }
 
 /** 一张自管理 canvas 的 Sprite：draw(text) 里自带去重，文案没变不重绘/不重传。 */
@@ -207,12 +207,12 @@ export class DragonChest {
     this.t = Math.max(0.1, Number(this.cfg.WINDOW) || 5);
     this.bullets = 0;
     this.hits = 0;
-    this.value = this.cfg.KIND === 'bullets' ? bulletChestValue(0, this.cfg) : 0;
+    this.value = this.cfg.KIND === 'fireRate' ? bulletChestValue(0, this.cfg) : 0;
     this.bonus = 0;
     this._holdLeft = null;
     this.group.visible = true;
-    this._value.draw(this.cfg.KIND === 'bullets'
-      ? bulletChestValueText(this.value)
+    this._value.draw(this.cfg.KIND === 'fireRate'
+      ? bulletChestValueText(this.value, this.cfg)
       : chestValueText(0));
     return this;
   }
@@ -226,10 +226,10 @@ export class DragonChest {
 
   /** 子弹真正命中宝箱：只有脸谱箱用得到（每次 +0.1） */
   addHit() {
-    if (this.phase !== 'counting' || this.cfg.KIND !== 'bullets') return;
+    if (this.phase !== 'counting' || this.cfg.KIND !== 'fireRate') return;
     this.hits += 1;
     this.value = bulletChestValue(this.hits, this.cfg);
-    this._value.draw(bulletChestValueText(this.value));
+    this._value.draw(bulletChestValueText(this.value, this.cfg));
   }
 
   /**
@@ -247,14 +247,14 @@ export class DragonChest {
         this.body.scale.set(s, 1 / s, s);
         if (this._punch === 0) this.body.scale.set(1, 1, 1);
       }
-      if (this.cfg.KIND === 'bullets') {
+      if (this.cfg.KIND === 'fireRate') {
         this.value = bulletChestValue(this.hits, this.cfg);
-        this._value.draw(bulletChestValueText(this.value));
+        this._value.draw(bulletChestValueText(this.value, this.cfg));
       } else {
         this._value.draw(chestValueText(chestBonus(this.bullets, this.cfg)));
       }
       if (this.t > 0) return 'counting';
-      this.bonus = this.cfg.KIND === 'bullets'
+      this.bonus = this.cfg.KIND === 'fireRate'
         ? bulletChestBonus(this.value, this.cfg)
         : chestBonus(this.bullets, this.cfg);
       this._startFlying(camera);

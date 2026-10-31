@@ -67,10 +67,13 @@ export const CLIMAX_SUFFIX = ' Boss';
  *   退回 ENEMY_TYPES 的 t.name，本函数只负责「加不加后缀」这一件事。
  * @param {string} baseName 基础显示名（如「铁甲兵」）
  * @param {boolean} climax  是否末尾精英（Boss 档）
- * @returns {string} 普通精英 = 本名；末尾精英 = 本名 + CLIMAX_SUFFIX（「铁甲兵 Boss」）
+ * @param {number} level    等级（0 / 缺省 = 不显示等级）
+ * @returns {string} 例：`Lv.12 忍者队长` / `Lv.22 章鱼将军 Boss`
  */
-export function eliteLabelText(baseName, climax) {
-  return climax ? String(baseName) + CLIMAX_SUFFIX : String(baseName);
+export function eliteLabelText(baseName, climax, level = 0) {
+  const name = climax ? String(baseName) + CLIMAX_SUFFIX : String(baseName);
+  const lv = Number(level);
+  return Number.isFinite(lv) && lv > 0 ? `Lv.${Math.round(lv)} ${name}` : name;
 }
 
 // 方位 → 横幅文案（横幅本身固定在准星正前方，只用文案表达方位）
@@ -346,17 +349,14 @@ export function eliteEvents(n) {
 //
 // ★ 第四十八修：**只有「末尾精英」才强化**。末尾批 = 关卡脚本里带 goldReturn 的那一批
 //   （弹「…精英来袭」横幅 → 清场融合 → 金点飞向选项卡 → 抽卡），也就是每关的收尾高潮。
-//   前面零星出现的精英（L2/L5 每 10s 一只的铁甲兵、L4 的 2 只直出）走**原生**口径：
-//   原生体型（1 倍，连敌种自带的 scale 也压回去）+ 固定血量 ELITE_BASE_HP[型] + 原生速度。
+//   前面零星出现的精英（L2/L5 每 10s 一只的铁甲兵、L4 的 2 只直出）走**普通精英**口径：
+//   原生体型（1 倍，连敌种自带的 scale 也压回去）+ 等级血量（第八十一/八十二修）+ 原生速度。
 //   起因（现场实测）：第四十七修让**全员** ×3 体型 + 全员 DPS 血量 → 中段精英也变成打不动的墙，
 //   玩家连「先清杂鱼」都做不到；末尾精英更是必定走完路程撞进玩家区域。
 //
-// 末尾批血量 = clamp(本批基础血量 × HP_MUL, DPS × HP_MIN_SECONDS, DPS × HP_MAX_SECONDS)
-//   —— 把「纯输出秒数」夹在 [MIN, MAX]：
-//     · 上限 HP_MAX_SECONDS 就是**可击杀保证**（再弱的构筑也不会撞上打不死的墙）；
-//     · 下限 HP_MIN_SECONDS 是**仪式感保证**（DPS 再高也不是一秒蒸发）；
-//     · 同批按各型基础血量**按比例**摊（L4 的 盾甲兵 仍比 铁甲兵 厚）。
-//   速度 = 出生距离 × TRAVEL_FRACTION / TRAVEL_SECONDS（10 秒走 2/3 路程）。
+// 末尾批血量（第八十二修）= 本体 × BODY_MUL(1.5) + DPS × DPS_SECONDS(6) ÷ 本批只数
+//   —— 本体各自变厚；DPS 池整批共享、按只数均分（每只都吃到同样的输出压力）。
+//   速度 = 出生距离 × TRAVEL_FRACTION / TRAVEL_SECONDS × SPEED_MUL(0.5)。
 // ============================================================
 
 /** 末尾精英事件判定（唯一定义）：带 goldReturn 的那一批 = 本关收尾。 */
@@ -414,28 +414,31 @@ export function pickFuseAbsorb(list, count, opts = {}) {
 
 /**
  * 末尾批里「某一只」的血量。
- * @param {number} base           该只的基础血量（ELITE_BASE_HP[型]）
- * @param {number} batchBaseTotal 本批全部成员的基础血量之和（按型 × 只数）
- * @param {number} dps            玩家当前 DPS（<=0 / 非法 → 退化为固定血量）
- * @param {object} tune           ELITE_TUNING
+ * 第八十二修口径：
+ *   该只本体 = 本体 × BODY_MUL(1.5)
+ *   该只分摊 = DPS × DPS_SECONDS(6) ÷ 本批只数
+ *   最终血量 = 该只本体 + 该只分摊
+ *
+ * @param {number} base       该只的本体血量（enemyLevels.bodyHp）
+ * @param {number} batchCount 本批总只数（DPS 池均分的分母）
+ * @param {number} dps        进入本关时快照的 DPS（<=0 / 非法 → 只算本体）
+ * @param {object} tune       ELITE_TUNING
  */
-export function climaxEliteHp(base, batchBaseTotal, dps, tune = {}) {
-  const mul = numOr(tune.HP_MUL, 2);
-  const raw = numOr(base, 0) * mul;
-  const rawTotal = numOr(batchBaseTotal, raw) * mul;
+export function climaxEliteHp(base, batchCount, dps, tune = {}) {
+  const raw = Math.max(0, numOr(base, 0));
+  const count = Math.max(1, Math.floor(numOr(batchCount, 1)));
   const d = (Number.isFinite(dps) && dps > 0) ? dps : 0;
-  if (d <= 0 || rawTotal <= 0) return Math.max(1, Math.round(raw));
-  const lo = d * numOr(tune.HP_MIN_SECONDS, 2.5);
-  const hi = d * numOr(tune.HP_MAX_SECONDS, 6);
-  const target = Math.min(Math.max(rawTotal, lo), hi);   // clamp(rawTotal, lo, hi)
-  return Math.max(1, Math.round(raw * (target / rawTotal)));
+  const body = raw * numOr(tune.BODY_MUL, 1.5);
+  if (d <= 0) return Math.max(1, Math.round(body));
+  const share = d * numOr(tune.DPS_SECONDS, 6) / count;
+  return Math.max(1, Math.round(body + share));
 }
 
 export function eliteTravelSpeed(tune = {}) {
   const dist = numOr(tune.SPAWN_DIST, 24);
   const frac = numOr(tune.TRAVEL_FRACTION, 2 / 3);
   const secs = Math.max(0.1, numOr(tune.TRAVEL_SECONDS, 10));
-  return dist * frac / secs;
+  return dist * frac / secs * numOr(tune.SPEED_MUL, 0.5);
 }
 
 function numOr(v, def) { return Number.isFinite(v) ? v : def; }

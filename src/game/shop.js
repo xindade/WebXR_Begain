@@ -64,6 +64,7 @@ export class ShopDraft {
     this._state = null;
     this._upgradesBought = new Set();  // 本次进店已购买的强化项 id（每项限购 1）
     this._itemDisplay = [];            // 道具区当前展示的 3 个道具 id
+    this._role = null;                 // 本店所属角色（蜂群专属道具过滤）
     this._resolve = null;              // { t, after } 购买动画（期间不接受新购买）
 
     this._playerPos = new THREE.Vector3();
@@ -88,7 +89,8 @@ export class ShopDraft {
     this.refreshCost = SHOP.REFRESH_BASE;
     this._freeItem = true;   // 第五十七修（用户口径）：本店**第一个买到的道具**免费
     this._upgradesBought = new Set();
-    this._itemDisplay = pickShopItems(3);
+    this._role = (state && typeof state.getRole === 'function') ? state.getRole() : null;
+    this._itemDisplay = pickShopItems(3, Math.random, this._role, this._levels());
     this._resolve = null;
     this._forceItemRebuild = false;   // 第八十修：刷新时整排重建（旧卡飞走 / 新卡升起）
     this._clearLightFx();
@@ -251,20 +253,29 @@ export class ShopDraft {
    *   - 这个函数会**就地改写** `_itemDisplay`，所以补位、刷新、日志拿到的都是同一份干净数据。
    */
   _sanitizeItemDisplay() {
+    const levels = this._levels();
     const seen = new Set();
     const clean = [];
     for (const id of this._itemDisplay || []) {
-      if (!SHOP_ITEMS.some((x) => x.id === id) || seen.has(id)) continue;
+      const def = SHOP_ITEMS.find((x) => x.id === id);
+      if (!def || seen.has(id)) continue;
+      if (def.roles && !def.roles.includes(this._role)) continue;
+      if (def.maxLevel && (levels[id] || 0) >= def.maxLevel) continue;
       seen.add(id);
       clean.push(id);
     }
     while (clean.length < 3) {
-      const next = pickShopItemExcluding(clean);
+      const next = pickShopItemExcluding(clean, Math.random, this._role, levels);
       if (!next) break;
       clean.push(next);
     }
     this._itemDisplay = clean.slice(0, 3);
     return this._itemDisplay;
+  }
+
+  /** 当前道具等级表（抽签/补位时用来排除已满级道具） */
+  _levels() {
+    return (this._state && this._state.getItemLevels && this._state.getItemLevels()) || {};
   }
 
   // 右手边：精英预告（只读卡 —— 不绑气球、不进 entries，所以打不到也买不了）
@@ -545,7 +556,7 @@ export class ShopDraft {
         this._resolve = {
           t: 0,
           after: () => {
-            this._itemDisplay = pickShopItems(3);
+            this._itemDisplay = pickShopItems(3, Math.random, this._role, this._levels());
             this._forceItemRebuild = true;
             this._riseOnBuild = true;
             this._build();
@@ -575,7 +586,7 @@ export class ShopDraft {
         this._resolve = {
           t: 0,
           after: () => {                          // 补位：从其余道具里随机补一个，不重抽全排
-            const next = pickShopItemExcluding(this._itemDisplay);
+            const next = pickShopItemExcluding(this._itemDisplay, Math.random, this._role, this._levels());
             if (next && slot >= 0 && slot < this._itemDisplay.length) this._itemDisplay[slot] = next;
             this._riseOnBuild = true;             // 第八十修：补位的新道具从下方升起
             this._build();

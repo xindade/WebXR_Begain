@@ -60,7 +60,8 @@ export class DamageNumbers {
     this.group.add(sprite);
     return {
       sprite, canvas, ctx: canvas.getContext('2d'), tex,
-      key: null, alive: false, kill: false, elite: false, _texDirty: true,
+      key: null, alive: false, kill: false, elite: false, poison: false,
+      prefix: '', suffix: '', _texDirty: true,
       t: 0, life: DAMAGE_NUMBER.LIFE, rise: DAMAGE_NUMBER.RISE,
       pos: new THREE.Vector3(), value: 0, scale: DAMAGE_NUMBER.SIZE,
     };
@@ -105,6 +106,9 @@ export class DamageNumbers {
       e.t = 0;
       e.kill = e.kill || kill;
       e.elite = e.elite || !!opts.elite;   // 第四十六修：精英数字保持金色
+      e.poison = e.poison || !!opts.poison; // 毒素跳伤固定绿色
+      e.prefix = opts.prefix != null ? String(opts.prefix) : '';
+      e.suffix = opts.suffix != null ? String(opts.suffix) : '';
       e.pos.copy(worldPos);
       this._draw(e);
       return e;
@@ -121,6 +125,9 @@ export class DamageNumbers {
     e.rise = DAMAGE_NUMBER.RISE * (kill ? 1.2 : 1);
     e.value = value;
     e.elite = !!opts.elite;   // 第四十六修：精英伤害数字转金
+    e.poison = !!opts.poison;
+    e.prefix = opts.prefix != null ? String(opts.prefix) : '';
+    e.suffix = opts.suffix != null ? String(opts.suffix) : '';
     e.pos.copy(worldPos);
     e.sprite.position.copy(e.pos);
     e.sprite.visible = true;
@@ -148,11 +155,14 @@ export class DamageNumbers {
     // 高档位改金色描边：暴击级伤害更醒目
     //   第四十六修：精英伤害数字**整条转金**（不再按数值分档判色），让「打精英」一眼可辨
     const elite = !!e.elite;
-    ctx.strokeStyle = elite ? ELITE_FEEDBACK.GOLD_STROKE
+    const poison = !!e.poison;
+    ctx.strokeStyle = poison ? DAMAGE_NUMBER.POISON_STROKE
+      : elite ? ELITE_FEEDBACK.GOLD_STROKE
       : (tier >= DAMAGE_NUMBER.BIG_TIER ? DAMAGE_NUMBER.BIG_STROKE : DAMAGE_NUMBER.STROKE);
-    const text = String(amount);
+    const text = (e.prefix || '') + String(amount) + (e.suffix || '');
     ctx.strokeText(text, W / 2, H / 2);
-    ctx.fillStyle = elite ? ELITE_FEEDBACK.GOLD : hexColor(damageColorOf(amount));
+    ctx.fillStyle = poison ? DAMAGE_NUMBER.POISON
+      : elite ? ELITE_FEEDBACK.GOLD : hexColor(damageColorOf(amount));
     ctx.fillText(text, W / 2, H / 2);
     // 纹理上传（节流，见 _flushUploads）：先补上一帧欠的账，再传自己
     this._flushUploads(e);   // 补上一帧欠的账（不含自己）

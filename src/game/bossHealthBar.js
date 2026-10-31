@@ -1,4 +1,4 @@
-// 第18关魔术师 Boss · 头顶 3D 血量条
+// Boss 通用 · 头顶 3D 血量条
 // 用 THREE.Sprite（始终自动面向相机）承载 Canvas2D 血条，置于 Boss 头顶上方。
 // VR 头显里 DOM HUD 不可见，故 Boss 血量必须走场景内 3D 方案；Sprite 无需手动 billboard。
 import * as THREE from 'three';
@@ -19,8 +19,14 @@ function _roundRect(ctx, x, y, w, h, r) {
 }
 
 export class BossHealthBar3D {
-  constructor(scene) {
+  /**
+   * @param {THREE.Scene} scene
+   * @param {{title?:string, worldW?:number, worldH?:number}} opts
+   *   title 统一用「Boss」——Boss 本体不显示等级 / 不剧透名字。
+   */
+  constructor(scene, opts = {}) {
     this.scene = scene;
+    this.title = opts.title || 'Boss';
     this.cv = document.createElement('canvas');
     this.cv.width = CANVAS_W; this.cv.height = CANVAS_H;
     this.ctx = this.cv.getContext('2d');
@@ -30,7 +36,7 @@ export class BossHealthBar3D {
       map: this.tex, transparent: true, depthTest: false, depthWrite: false,
     });
     this.sprite = new THREE.Sprite(this.mat);
-    this.sprite.scale.set(WORLD_W, WORLD_H, 1);
+    this.sprite.scale.set(opts.worldW || WORLD_W, opts.worldH || WORLD_H, 1);
     this.sprite.renderOrder = 999; // 始终画在最前，不被 Boss 模型遮挡
     this.sprite.visible = false;   // 待首次 update 有血量后再显示
     this.scene.add(this.sprite);
@@ -57,7 +63,7 @@ export class BossHealthBar3D {
     c.fillStyle = '#ffcf5a';
     c.font = 'bold 26px sans-serif';
     c.textBaseline = 'top';
-    c.fillText('🎩 魔术师 Boss', 14, 10);
+    c.fillText(this.title, 14, 10);
 
     // 血条（绿→红）
     const ratio = Math.max(0, Math.min(1, cur / max));
@@ -78,6 +84,11 @@ export class BossHealthBar3D {
   // 每帧置于 Boss 头顶上方（worldPos = 代理位置 + 抬高偏移）
   setPosition(vec3) {
     this.sprite.position.copy(vec3);
+  }
+
+  // 死亡演出 / 切关时先隐藏，避免残留一条空血条
+  hide() {
+    if (this.sprite) this.sprite.visible = false;
   }
 
   dispose() {

@@ -143,6 +143,21 @@ foreach ($rel in @('index.html', 'mirror.html')) {
     Copy-Item $fromFile (Join-Path $assetsGame $rel) -Force
     Write-Host ("== 已同步根级页面 {0}（{1} 字节）" -f $rel, (Get-Item $fromFile).Length)
 }
+
+# ── 2.57) 同步新增/更新的武器模型 → assets/game/Model ────────────
+# 第八十七修：爆炮手火箭筒是新文件，APK 的 assets 是独立副本；不拷会导致头显 404 后
+# 回退成 AK（看起来「改了没效果」）。这里只同步列出的模型，避免每次构建复制整目录的几十 MB。
+$modelOut = Join-Path $assetsGame 'Model'
+if (-not (Test-Path $modelOut)) { New-Item -ItemType Directory -Path $modelOut -Force | Out-Null }
+foreach ($rel in @('Model/火箭筒.glb', 'Model/毒枪械.glb')) {
+    $fromFile = Join-Path $projRoot $rel
+    if (-not (Test-Path $fromFile)) { Write-Error "缺少模型文件：$fromFile"; exit 1 }
+    $dstFile = Join-Path $assetsGame $rel
+    $dstDir = Split-Path -Parent $dstFile
+    if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
+    Copy-Item $fromFile $dstFile -Force
+    Write-Host ("== 已同步模型 {0}（{1} 字节）" -f $rel, (Get-Item $fromFile).Length)
+}
 # ── 2.6) 授权公钥必须已注入（占位符绝不能进包）────────────────────
 # 为什么必须拦：LICENSE_PUBKEY_B64 若还是占位符，头显侧**所有** license 校验都会失败，
 # 现象是「直播端明明是正版却永远验不过」—— 与「两端签名算法没对齐」完全一样，极难定位。

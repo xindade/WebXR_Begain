@@ -14,7 +14,7 @@ import { prewarmIntroVideo } from './game/introVideo.js';
 import { LEVELS } from './content/levels.js';
 import { preloadDragonAssets } from './game/dragonLevel.js';
 import { preloadGLB } from './game/glbCache.js';
-import { SKY_PANORAMA, MASTER_GATE, RELEASE_UI, LOADOUTS } from './core/constants.js';
+import { SKY_PANORAMA, MASTER_GATE, RELEASE_UI, CHARACTERS, CHARACTER_ORDER } from './core/constants.js';
 import { parseGunDebug } from './core/gunDebug.js';   // 第五十四修：?gun=12x20 调试用「构筑拉满」
 import { MODEL_URL as PORTAL_MODEL_URL } from './game/portal.js';
 import { MODEL_URL as OPENING_MODEL_URL } from './game/openingModel.js';
@@ -305,30 +305,49 @@ if (!RELEASE) hud.onStart((idx = 0) => { audio.unlock(); startGame(idx, gunMode(
 // ── 自定义 PICO 兼容 VR 进入按钮（参考 vr-controller-kit skill）──
 // 不使用 three 自带 VRButton：改用 requiredFeatures:['local-floor'] + 无参回退，
 // PICO 的 Chrome/105 不支持某些特性参数时才能顺利进入。
-// ★ 第二十二修：「进入 VR」由单个按钮改为**二选一**开局加成（蓝=射速加倍/攻击减半，红=攻击加倍/射速减半）。
-//   enterVrBtns[0] ↔ LOADOUTS.rapid（蓝）、enterVrBtns[1] ↔ LOADOUTS.power（红）；
-//   点哪个都会进游戏，并把 loadout 键名一路传到 game.start → Player.reset 改初始属性。
+// ★ 第八十五修：「进入 VR」= 角色卡（疾风 / 蜂群 / 爆炮手 / 瘟疫医生）。
+//   点哪张都会进游戏，并把角色键名一路传到 game.start → Player.reset 应用初始属性。
 const enterVRBox = document.getElementById('enter-vr-box');
-const enterVrBtns = [
-  document.getElementById('enter-vr-rapid'),
-  document.getElementById('enter-vr-power'),
-].filter(Boolean);
+const ROLE_BTN_IDS = {
+  rapid: 'enter-vr-rapid', swarm: 'enter-vr-swarm', bombard: 'enter-vr-bombard', plague: 'enter-vr-plague',
+};
+const enterVrBtns = CHARACTER_ORDER.map((k) => document.getElementById(ROLE_BTN_IDS[k])).filter(Boolean);
+function roleCardHtml(c) {
+  const stats = (c.cardStats || []).map((s) => `<span class="role-stat">${s}</span>`).join('');
+  return `<div class="role-top"><span class="role-icon">${c.icon}</span>`
+    + `<span class="role-name">${c.name}</span><span class="role-title">${c.title}</span></div>`
+    + `<div class="role-desc">${c.desc}</div>`
+    + `<div class="role-stats">${stats}</div>`
+    + `<div class="role-passive">被动：${c.passive}</div>`;
+}
+function renderRoleCards() {
+  for (let i = 0; i < enterVrBtns.length; i++) {
+    const c = CHARACTERS[CHARACTER_ORDER[i]];
+    if (!c) continue;
+    enterVrBtns[i].innerHTML = roleCardHtml(c);
+    enterVrBtns[i].style.background = `linear-gradient(160deg, ${c.color}, #10151f)`;
+  }
+}
 /** 兼容旧引用点（只关心「有没有按钮 / 是否忙碌」），取第一个按钮即可 */
 const enterVRBtn = enterVrBtns[0] || null;
-let pendingLoadout = null;      // 本局开局加成（'rapid' / 'power' / null），由 sessionstart 消费
+let pendingLoadout = null;      // 本局角色（'rapid' / 'swarm' / 'bombard' / null），由 sessionstart 消费
 const enterVrDisabled = () => enterVrBtns.some((b) => b.disabled);
 const setEnterVrDisabled = (v) => { for (const b of enterVrBtns) b.disabled = v; };
-/** 进 VR 期间：两个按钮都禁用，只有被点那个显示「启动中」 */
+/** 进 VR 期间：三张卡都禁用，只有被点那张显示「启动中」 */
 function setEnterVrBusy(loadoutKey) {
   setEnterVrDisabled(true);
-  const idx = loadoutKey === 'power' ? 1 : (loadoutKey === 'rapid' ? 0 : -1);
-  if (idx >= 0 && enterVrBtns[idx]) enterVrBtns[idx].textContent = '⏳ 启动中...';
+  const idx = CHARACTER_ORDER.indexOf(loadoutKey);
+  if (idx >= 0 && enterVrBtns[idx]) {
+    const c = CHARACTERS[loadoutKey];
+    enterVrBtns[idx].innerHTML = `<div class="role-top"><span class="role-icon">⏳</span>`
+      + `<span class="role-name">启动中…</span><span class="role-title">${c ? c.name : ''}</span></div>`;
+  }
 }
-/** 复位两个按钮文案（进不去 / 退出 VR 后） */
+/** 复位三张角色卡（进不去 / 退出 VR 后） */
 function resetEnterVrLabels() {
-  if (enterVrBtns[0]) enterVrBtns[0].textContent = LOADOUTS.rapid.label;
-  if (enterVrBtns[1]) enterVrBtns[1].textContent = LOADOUTS.power.label;
+  renderRoleCards();
 }
+renderRoleCards();
 const statusMsg = document.getElementById('status-msg');
 let vrStarting = false;
 const mirrorBtn = document.getElementById('mirror-btn');
@@ -818,7 +837,7 @@ gateQueryMaster().finally(scheduleMasterPoll);
 async function enterVR(loadoutKey = null) {
   if (vrStarting || world.xr.getSession() || enterVrDisabled()) return;
   vrStarting = true;
-  pendingLoadout = (loadoutKey && LOADOUTS[loadoutKey]) ? loadoutKey : null;
+  pendingLoadout = (loadoutKey && CHARACTERS[loadoutKey]) ? loadoutKey : null;
   vrAvailability.invalidate();
   setEnterVrBusy(pendingLoadout);
   let session;
@@ -931,7 +950,7 @@ const vrAvailability = watchXRAvailability({
 //   · page 模式（默认）：open() 只显示页内 canvas，不调用 window.open、不抢激活 → 首次点击即可同时进 VR+出镜像，无「二次点击」问题。
 //   · popup 模式：open() 用 window.open 需激活，若被先调用的 requestSession 占用会失败并注册「下次手势重试」，点「🖥 镜像」按钮也可开。
 //   镜像只在桌面 PC（isDesktopPage）生效；独立头显无论哪种模式都不开启（避免拖垮 Adreno XR2）。
-// 二选一：点哪个都直接进游戏，并把对应加成带到本局（键名见 core/constants.js 的 LOADOUTS）
+// 角色卡：点哪张都直接进游戏，并把角色键名带到本局（见 core/constants.js 的 CHARACTERS）
 function onEnterVrClick(loadoutKey) {
   audio.unlock();
   pendingStartIndex = 0;
@@ -940,8 +959,9 @@ function onEnterVrClick(loadoutKey) {
   enterVR(loadoutKey);
   if (MIRROR.AUTO_OPEN && isDesktopPage()) mirror.open();
 }
-if (enterVrBtns[0]) enterVrBtns[0].onclick = () => onEnterVrClick('rapid');
-if (enterVrBtns[1]) enterVrBtns[1].onclick = () => onEnterVrClick('power');
+for (let i = 0; i < enterVrBtns.length; i++) {
+  enterVrBtns[i].onclick = () => onEnterVrClick(CHARACTER_ORDER[i]);
+}
 
 // 预开镜像窗（仅 popup 模式需要）：在「进入 VR」之外的首次用户点击(手势)里先把镜像窗建好，
 // 这样用户点「进入VR」时该窗口已存在 → mirror.open() 只 focus、不消耗激活 → VR 与镜像同一点击都能成。

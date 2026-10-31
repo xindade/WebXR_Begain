@@ -15,7 +15,7 @@
 //   先入队，等上一块自己收掉再弹，避免「横幅2 把横幅1 顶掉」。
 // ============================================================
 
-import { TUTORIAL, TUT_DIR_DEG, tutorialSpawnPlan, tutorialTimeout, tutorialWaitsKill, eliteHoldOver } from '../content/tutorial.js';
+import { TUTORIAL, TUT_DIR_DEG, tutorialSpawnPlan, tutorialTimeout, tutorialWaitsKill, eliteHoldOver, tutorialEliteHp, tutorialEliteLevel, tutorialSeedBanner } from '../content/tutorial.js';
 import { ENEMY_TYPES } from '../content/enemies.js';
 
 export class TutorialRunner {
@@ -130,7 +130,7 @@ export class TutorialRunner {
       case 'seed':
         this._seedStreak();
         this._spawn('seed');
-        this._queueBanner(TUTORIAL.BANNER.RAPID);
+        this._queueBanner(tutorialSeedBanner(this.g.player?.characterKey));
         break;
       case 'elite':
         // 「精英出现后散射技能无消耗、无冷却，直到精英被杀死」→ 进段即生效（稿子第 5 条）
@@ -164,15 +164,17 @@ export class TutorialRunner {
     this.g.log && this.g.log('[教学] ' + stage + ' 段：' + plan.map((p) => p.type + '@' + p.dir).join(' + '));
   }
 
-  /** 内圈精英（铁甲兵 Boss 档）：血量/速度/体型全部走 TUTORIAL.ELITE，不套末尾精英的 DPS 公式 */
+  /** 内圈精英（铁甲兵 Boss 档）：血量走第八十一修统一等级公式（L1 → LV2 = 1200），不再固定 4000。 */
   _spawnElite() {
     const E = TUTORIAL.ELITE;
     const t = ENEMY_TYPES[E.TYPE];
     const radius = (t && t.radius) || 0.5;
     const wave = ++this.wave;
+    const stageDps = (this.g.waves && this.g.waves._stageDps) ? this.g.waves._stageDps() : 0;
+    const hp = tutorialEliteHp(stageDps);
     const pos = this.g.waves._spawnPos(radius * E.SIZE_MUL, { dist: E.DIST, spread: E.SPREAD, centerDeg: 0 });
     this.g.waves._queueSpawn(E.TYPE, pos, {
-      balloon: { isElite: true, hp: E.HP, sizeMul: E.SIZE_MUL, speed: E.SPEED, climax: true },
+      balloon: { isElite: true, hp, level: tutorialEliteLevel(), sizeMul: E.SIZE_MUL, speed: E.SPEED, climax: true },
       onSpawn: (b) => {
         b.tutorialWave = wave;
         b.selfDamage = E.SELF_DAMAGE;
@@ -183,12 +185,18 @@ export class TutorialRunner {
         this._castsAtHold = this.g._skillCasts || 0;
       },
     });
-    this.g.log && this.g.log('[教学] 精英段：' + E.TYPE + ' hp=' + E.HP + ' 内圈 ' + E.DIST + 'm');
+    this.g.log && this.g.log('[教学] 精英段：' + E.TYPE + ' hp=' + hp + ' 内圈 ' + E.DIST + 'm');
   }
 
   /** 把连杀数种到 8：再杀 2 只（RAPID_FIRE.KILLS=10）就触发一次射速加倍 */
   _seedStreak() {
     const g = this.g;
+    // 第八十九修：连杀加速是疾风专属；蜂群/爆炮手只出「快试试效果」那批怪，不种连杀。
+    const role = g.player?.characterKey;
+    if (role && role !== 'rapid') {
+      g.log && g.log('[教学] ' + role + ' 不使用连杀加速 → 跳过种连杀');
+      return;
+    }
     g._bulletStreak = TUTORIAL.SEED.STREAK;
     g._bulletStreakAt = g._gameTime;   // 时间戳必须刷新：否则 _tickRapidFire 会按断连清零
     g._rapidUntil = 0;

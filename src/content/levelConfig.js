@@ -49,7 +49,7 @@ export const BOSSES = {
     clawType: 'dragonBody',
     bodyCount: 10,        // dragon-anim.json config.bodyCount
     clawNodes: [7, 14],   // DRAGON.CLAW_NODES → 4 爪
-    hpMult: 1.0,          // DRAGON.HP_MULT → 血量池 = (10+4)*100*1.0 = 1400
+    hpMult: 2.0,          // DRAGON.HP_MULT（第八十二修 ×2）→ 血量池整体翻倍
     scale: 0.08,          // DRAGON.SCALE
     home: { x:0, y:0, z:0 },
     yaw: 90, pitch: 0, roll: 0,

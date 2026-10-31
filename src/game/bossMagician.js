@@ -123,7 +123,9 @@ export class MagicianBoss {
     this.spawn('bossProxy', pos, {
       effect: false,                            // Boss 代理不走光点，直接落地
       onSpawn: (b) => {
-        const hp = MAGICIAN_BOSS.HP_BASE + (this.getPlayerDPS ? this.getPlayerDPS() : 0) * MAGICIAN_BOSS.HP_DPS_SEC;
+        const hp = (MAGICIAN_BOSS.HP_BASE
+          + (this.getPlayerDPS ? this.getPlayerDPS() : 0) * MAGICIAN_BOSS.HP_DPS_SEC)
+          * (MAGICIAN_BOSS.HP_MULT || 1);   // 第八十二修：魔术师 Boss 最终血量 ×5
         b.maxHp = hp; b.hp = hp;
         b.isBoss = true;
         b.controlled = true;     // 由本控制器逐帧接管位置

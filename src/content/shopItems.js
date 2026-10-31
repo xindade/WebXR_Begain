@@ -4,7 +4,7 @@
 //   ① 技能本体（第3关正前方三个气球，各 SHOP.SKILL_PRICE）—— 玩家还没有三选一技能时出现；
 //   ② 技能强化（技能威力+ / 技能消耗- / 技能冷却-，各 SHOP.UPGRADE_PRICE）——
 //      玩家一旦拥有三选一技能，正前方就换成这三张；**每次进店每项限购 1 个**；
-//   ③ 道具（左手边三个气球，6 选 3 不重复）—— 可重复购买升级，费用 = ITEM_BASE_PRICE × 目标等级。
+//   ③ 道具（左手边三个气球，按角色从池中选 3 个不重复）—— 可重复购买升级，费用 = ITEM_BASE_PRICE × 目标等级。
 //
 // 数值口径全部落在 constants.SHOP（userConfig.SHOP 可覆盖），卡面文案与效果同源，避免「写一套跑一套」。
 
@@ -36,6 +36,18 @@ export const SHOP_ITEMS = [
   {
     id: 'strongHunter', label: '专打强者', icon: 'strongHunter', color: '#d63031',
     desc: '对精英/Boss加伤',
+  },
+  {
+    id: 'focusFire', label: '集中火力', icon: 'focusFire', color: '#ff7043',
+    desc: '浮游炮攻击+10%', roles: ['swarm'], maxLevel: 6,
+  },
+  {
+    id: 'blastPlus', label: '再大一点', icon: 'blastPlus', color: '#ff8c1a',
+    desc: '爆炸范围翻倍', roles: ['bombard'], maxLevel: 1,
+  },
+  {
+    id: 'dosage', label: '加大剂量', icon: 'dosage', color: '#2ed573',
+    desc: '上限+3，之后+2', roles: ['plague'], maxLevel: 2,
   },
 ];
 
@@ -82,9 +94,15 @@ export function mibCooldown(level) {
   return Math.max(SHOP.MIB_DURATION, cd);
 }
 
-/** 6 选 count 不重复（洗牌取前 count 个）；rand 可注入便于单测 */
-export function pickShopItems(count = 3, rand = Math.random) {
-  const pool = SHOP_ITEMS.map((i) => i.id);
+function itemAllowed(item, role, levels) {
+  if (item?.roles && (!role || !item.roles.includes(role))) return false;
+  const lv = (levels && levels[item?.id]) || 0;
+  return !(item?.maxLevel && lv >= item.maxLevel);
+}
+
+/** 按角色从道具池选 count 个不重复；rand 可注入便于单测 */
+export function pickShopItems(count = 3, rand = Math.random, role = null, levels = null) {
+  const pool = SHOP_ITEMS.filter((i) => itemAllowed(i, role, levels)).map((i) => i.id);
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -92,9 +110,10 @@ export function pickShopItems(count = 3, rand = Math.random) {
   return pool.slice(0, Math.min(count, pool.length));
 }
 
-/** 补位：从「不在 exclude 里」的道具中随机取一个（买走一个就补一个同类） */
-export function pickShopItemExcluding(exclude, rand = Math.random) {
-  const pool = SHOP_ITEMS.map((i) => i.id).filter((id) => !(exclude || []).includes(id));
+/** 补位：从「不在 exclude 里」且符合角色限制的道具中随机取一个 */
+export function pickShopItemExcluding(exclude, rand = Math.random, role = null, levels = null) {
+  const pool = SHOP_ITEMS.filter((i) => itemAllowed(i, role, levels)).map((i) => i.id)
+    .filter((id) => !(exclude || []).includes(id));
   if (!pool.length) return null;
   return pool[Math.floor(rand() * pool.length)];
 }

@@ -37,6 +37,7 @@ const os = require('os');
 const https = require('https');
 const { listenWithFallback } = require('./lib/net-listen.cjs');   // ★ 第三十七修：端口 fallback（见 lib/net-listen.cjs）
 const AIMCFG = require('./lib/aim-config.cjs');                  // ★ 第四十五修：瞄准补偿角（PC 界面直接改，见下）
+const WEAPONCFG = require('./lib/weapon-config.cjs');            // ★ 第八十七修：爆炮手武器位置/旋转/缩放
 
 // —— WebRTC：关掉 mDNS 候选混淆 ——
 // Chrome 默认把 host candidate 的真实 IP 换成 xxx.local，跨设备解析失败就连不上。
@@ -164,6 +165,7 @@ function saveConfig(cfg) {
 //   ③ 保存时顺带 best-effort 写盘（游戏目录那份 = 可提交 / 可上传服务器的那份）。
 // 现场流程：本窗口填 pico / quest 的角度 → 保存 → 平台重新点「启动游戏」→ 头显拿到新角。
 let AIM_OVERRIDE = AIMCFG.sanitize(loadConfig().aim);
+let WEAPON_OVERRIDE = WEAPONCFG.sanitize(loadConfig().weapon);
 
 function saveAimOverride(next) {
   AIM_OVERRIDE = AIMCFG.sanitize(next);
@@ -186,6 +188,28 @@ function applyAimOverride(rel, text) {
   }
 }
 
+function saveWeaponOverride(next) {
+  WEAPON_OVERRIDE = WEAPONCFG.sanitize(next);
+  const cfg = loadConfig();
+  cfg.weapon = WEAPON_OVERRIDE;
+  saveConfig(cfg);
+  return WEAPON_OVERRIDE;
+}
+
+/** 瞄准角 + 武器参数统一在 userConfig.js 出盘前套用。 */
+function applyConfigOverrides(rel, text) {
+  let out = applyAimOverride(rel, text);
+  const r = String(rel || '').split(path.sep).join('/');
+  if (r !== WEAPONCFG.WEAPON_REL || !Object.keys(WEAPON_OVERRIDE).length) return out;
+  try {
+    const patched = WEAPONCFG.applyPatch(out, WEAPON_OVERRIDE).text;
+    return typeof patched === 'string' ? patched : out;
+  } catch (e) {
+    console.warn('[cast-pc] 套用武器参数覆盖失败（按原样下发）：' + e.message);
+    return out;
+  }
+}
+
 /** 目标文件候选（顺序 = 优先级）：清单缓存（头显真正拿到的） > 游戏目录（可提交/可上传的那份） */
 function aimFiles() {
   const out = [];
@@ -199,7 +223,7 @@ function aimCurrent() {
   for (const f of aimFiles()) {
     try {
       if (!fs.existsSync(f)) continue;
-      const text = applyAimOverride(AIMCFG.AIM_REL, fs.readFileSync(f, 'utf8'));
+      const text = applyConfigOverrides(AIMCFG.AIM_REL, fs.readFileSync(f, 'utf8'));
       return {
         source: f.startsWith(MANIFEST_DIR) ? 'manifest' : 'local', file: f,
         slots: AIMCFG.readSlots(text), override: AIM_OVERRIDE,
@@ -207,6 +231,21 @@ function aimCurrent() {
     } catch (e) { /* 试下一个 */ }
   }
   return { source: null, file: null, slots: AIMCFG.readSlots(''), override: AIM_OVERRIDE };
+}
+
+/** 头显此刻会拿到的火箭筒参数（含覆盖）+ 来源 */
+function weaponCurrent() {
+  for (const f of aimFiles()) {
+    try {
+      if (!fs.existsSync(f)) continue;
+      const text = applyConfigOverrides(WEAPONCFG.WEAPON_REL, fs.readFileSync(f, 'utf8'));
+      return {
+        source: f.startsWith(MANIFEST_DIR) ? 'manifest' : 'local', file: f,
+        weapon: WEAPONCFG.readWeapon(text), override: WEAPON_OVERRIDE,
+      };
+    } catch (e) { /* 试下一个 */ }
+  }
+  return { source: null, file: null, weapon: WEAPONCFG.readWeapon(''), override: WEAPON_OVERRIDE };
 }
 // ⚠ 第二十二修：不再要求外部目录含 index.html（那是路径②时代「整站托管」的判据）。
 //   现在外部目录只用来**覆盖配置**，判据与内置目录一致 = 有配置树即可（hasConfigTree，见下）。
@@ -727,6 +766,32 @@ app.whenReady().then(() => {
       console.log("[cast-pc] 瞄准补偿角已保存：" + JSON.stringify(clean) + "；落盘 " + written.length + " 处"
         + (written.length ? ("（" + written.join(" | ") + "）") : "（无 —— 只在本机覆盖表里，仍会随下发生效）"));
       return { ok: true, written, ...aimCurrent() };
+    });
+
+    // ——— IPC：爆炮手火箭筒位置/旋转/缩放（第八十七修）———
+    // 与瞄准角同样的三层：本机覆盖表 → 下发前套用 → best-effort 写回 userConfig.js。
+    ipcMain.handle('weapon:get', () => weaponCurrent());
+    ipcMain.handle('weapon:set', (_e, patch) => {
+      const clean = WEAPONCFG.sanitize(patch);
+      if (!Object.keys(clean).length) return { ok: false, msg: '没有要改的武器参数' };
+      const next = { ...WEAPON_OVERRIDE };
+      for (const key of ['POSITION', 'ROTATION']) {
+        if (clean[key]) next[key] = { ...(next[key] || {}), ...clean[key] };
+      }
+      if (Number.isFinite(clean.SCALE)) next.SCALE = clean.SCALE;
+      saveWeaponOverride(next);
+      const written = [];
+      for (const f of aimFiles()) {
+        try {
+          if (!fs.existsSync(f)) continue;
+          const before = fs.readFileSync(f, 'utf8');
+          const after = WEAPONCFG.applyPatch(before, clean).text;
+          if (after !== before) { fs.writeFileSync(f, after, 'utf8'); written.push(f); }
+        } catch (e) { console.warn('[cast-pc] 武器参数落盘失败（' + f + '）：' + e.message); }
+      }
+      rotateSession('EXE 界面改了爆炮手武器参数');
+      console.log('[cast-pc] 爆炮手武器参数已保存：' + JSON.stringify(clean) + '；落盘 ' + written.length + ' 处');
+      return { ok: true, written, ...weaponCurrent() };
     });
     // ——— IPC：启动授权（白名单 / 自动登记 / 配对窗口） ———
     ipcMain.handle('guard:get', () => ({
@@ -1741,7 +1806,7 @@ function handleManifestStatic(req, res, pathname) {
   //   覆盖表让「现场调的角度」立刻生效，且不惧清单重拉。
   if (rel === AIMCFG.AIM_REL && Object.keys(AIM_OVERRIDE).length) {
     const _raw = fs.readFileSync(file, 'utf8');
-    const _patched = applyAimOverride(rel, _raw);
+    const _patched = applyConfigOverrides(rel, _raw);
     if (_patched !== _raw) return sendText(res, file, _patched);
   }
   sendFile(res, file);
@@ -1775,7 +1840,7 @@ function buildConfigDump() {
     if (st.size > CONFIG_MAX_FILE) return;                   // 大文件跳过（重资源不走下发）
     // ★ 第四十五修：出盘前套用「瞄准补偿角」覆盖（PC 界面填的）。sha256/size 都按**套用后**的
     //   内容算 —— 否则头显侧自校验与收到的内容对不上。
-    const content = applyAimOverride(relPosix, fs.readFileSync(abs, 'utf8'));
+    const content = applyConfigOverrides(relPosix, fs.readFileSync(abs, 'utf8'));
     const buf = Buffer.from(content, 'utf8');
     out.push({
       path: relPosix,

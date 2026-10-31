@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { SKILL_HINT } from '../core/constants.js';
+import { SKILL_HINT, BUDDHA, CHARACTERS } from '../core/constants.js';
 import { modelBoxInParentSpace, barrelMount } from './streakCounter.js';   // 第六十一修：面板按枪模型自动定位
+import { swarmState, bombardState } from '../game/characters/rules.js';
 
 const D2R = THREE.MathUtils.degToRad;
 
@@ -133,6 +134,8 @@ export class SkillHintPanel {
     const skillCost = game.player ? game.player.skillCost : 0;
     const cd = game.skillCooldown || 0;            // 剩余冷却（秒），>0 表示刚释放后冷却中
     const cdTotal = (typeof game._skillCdTotal === 'function') ? game._skillCdTotal() : 0;
+    const palmLeft = Math.max(0, (game._palmWindUntil || 0) - (game._gameTime || 0));
+    const palmTotal = Math.max(0.001, game._palmWindTotal || (BUDDHA.PALM_WIND && BUDDHA.PALM_WIND.DURATION) || 5);
     // 第六十修：教学关精英段 —— 散射技能免费（game._tutorialFreeSkill）→ 不看能量，只看冷却
     const free = !!game._tutorialFreeSkill;
     const ready = free ? (cd <= 0) : (skillCost > 0 && game.score >= skillCost && cd <= 0);  // 两条件同时满足才"就绪"
@@ -153,6 +156,8 @@ export class SkillHintPanel {
     }
     // —— 第四十四修 · 连杀计数（子弹击杀；技能/神掌杀的不计入，见 game._bulletKill）——
     const S = cfg.STREAK || {};
+    // 第八十九修：连杀加速是疾风专属；其它角色不显示充能/方块/加速行。
+    const showStreak = !game.player?.characterKey || game.player.characterKey === 'rapid';
     const streak = Math.max(0, game._bulletStreak | 0);
     const until = game._rapidUntil || 0;
     const now = game._gameTime || 0;
@@ -164,11 +169,11 @@ export class SkillHintPanel {
     }
     const flashing = this._streakFlashT < (S.FLASH_TIME > 0 ? S.FLASH_TIME : 0.35);
     if (flashing) this._streakFlashT += dt;
-    this._streakFill = Math.min(streak, this._streakNeed);
-    this._streakBoost = boost;
-    this._streakFlashing = flashing;
+    this._streakFill = showStreak ? Math.min(streak, this._streakNeed) : 0;
+    this._streakBoost = showStreak && boost;
+    this._streakFlashing = showStreak && flashing;
 
-    this._draw({ red, ready, cd, cdTotal, skillCost, game, free, flashing, boost, boostLeft: Math.max(0, until - now) });
+    this._draw({ red, ready, cd, cdTotal, skillCost, game, free, flashing, boost, showStreak, boostLeft: Math.max(0, until - now), palmLeft, palmTotal });
   }
 
   // 调试：读取左手柄摇杆(前后左右)与 X/Y键(上下)，按 DEBUG_STEP 平移本面板（实时调位）。
@@ -206,7 +211,8 @@ export class SkillHintPanel {
 
     // 边框按状态取色
     let border = cfg.IDLE_BORDER, borderW = 6;
-    if (red)                       { border = cfg.FLASH_BORDER;      borderW = 12; }
+    if (s.palmLeft > 0)            { border = cfg.PALM_BORDER || cfg.READY_BORDER; borderW = 8; }
+    else if (red)                  { border = cfg.FLASH_BORDER;      borderW = 12; }
     else if (ready)                { border = cfg.READY_BORDER;      borderW = 6;  }
     else if (cd > 0)               { border = cfg.COOLDOWN_BORDER;   borderW = 6;  }
     else                          { border = cfg.INSUFFICIENT_BORDER; borderW = 6; }
@@ -234,7 +240,11 @@ export class SkillHintPanel {
 
     // ===== 第二行：冷却条（状态文字 + 进度条）=====
     let barCol = cfg.COOLDOWN_BAR_COLOR, frac = 0, label, labelCol;
-    if (cd > 0) {
+    if (s.palmLeft > 0) {
+      label = '掌风弹 ' + s.palmLeft.toFixed(1) + 's'; labelCol = cfg.PALM_TEXT || cfg.READY_BORDER;
+      frac = Math.max(0, Math.min(1, s.palmLeft / s.palmTotal));
+      barCol = cfg.PALM_BORDER || cfg.READY_BORDER;
+    } else if (cd > 0) {
       label = '冷却 ' + cd.toFixed(1) + 's'; labelCol = cfg.COOLDOWN_BORDER;
       frac = cdTotal > 0 ? Math.max(0, Math.min(1, 1 - cd / cdTotal)) : 0;   // 0→刚释放，1→就绪
     } else if (ready) {
@@ -256,19 +266,31 @@ export class SkillHintPanel {
 
     // ===== 第三行：攻击力 / 弹道（第六十一修：标签灰蓝、数值各自亮色 + 冒号）=====
     const p = game.player || {};
-    const shots = (p.shotCount > 1) ? (p.shotCount + ' 发/枪') : '单发';
+    let shotLabel = '弹道';
+    let shots = (p.shotCount > 1) ? (p.shotCount + ' 发/枪') : '单发';
+    if (p.fireMode === 'satellite') {
+      const st = swarmState(p.shotCount || 1, p.bonusShotCount || 0, CHARACTERS.swarm.satellite);
+      shotLabel = '浮游炮';
+      shots = st.count + ' 支 · ×' + Math.round(st.dmgMul * 100) + '%';
+    } else if (p.fireMode === 'bombard') {
+      const st = bombardState(p.shotCount || 1, p.bonusShotCount || 0, CHARACTERS.bombard.bombard);
+      shotLabel = '微型火箭';
+      shots = st.count + ' 枚 · ×' + Math.round(st.dmgMul * 100) + '%';
+    }
     this._kv(c, '攻击力' + COLON, String(p.atk != null ? p.atk : '-'), PAD, cfg.ROW3_Y, 'left',
       cfg.LABEL_TEXT, cfg.VALUE_ATK, '28px sans-serif', 'bold 32px sans-serif');
-    this._kv(c, '弹道' + COLON, shots, W - PAD, cfg.ROW3_Y, 'right',
+    this._kv(c, shotLabel + COLON, shots, W - PAD, cfg.ROW3_Y, 'right',
       cfg.LABEL_TEXT, cfg.VALUE_SHOT, '28px sans-serif', 'bold 30px sans-serif');
 
     // ===== 第四行：射速 / 击杀充能（充能 = 连杀计数，与边框方块同源）=====
     const _rate = (p.fireRate != null ? p.fireRate : '-') + ' 发/秒';
     this._kv(c, '射速' + COLON, _rate, PAD, cfg.ROW4_Y, 'left',
       cfg.LABEL_TEXT, cfg.VALUE_RATE, '28px sans-serif', 'bold 30px sans-serif');
-    this._kv(c, (cfg.CHARGE_LABEL || '充能') + COLON, this._streakFill + '/' + this._streakNeed, W - PAD, cfg.ROW4_Y, 'right',
-      cfg.LABEL_TEXT, s.boost ? (S.BOOST_COLOR || '#ffd24a') : '#ffffff', '28px sans-serif', 'bold 30px sans-serif');
-    if (s.boost) {
+    if (s.showStreak) {
+      this._kv(c, (cfg.CHARGE_LABEL || '充能') + COLON, this._streakFill + '/' + this._streakNeed, W - PAD, cfg.ROW4_Y, 'right',
+        cfg.LABEL_TEXT, s.boost ? (S.BOOST_COLOR || '#ffd24a') : '#ffffff', '28px sans-serif', 'bold 30px sans-serif');
+    }
+    if (s.showStreak && s.boost) {
       this._kv(c, (S.BOOST_LABEL || '加速') + COLON, (s.boostLeft || 0).toFixed(1) + 's', W - PAD, cfg.ROW5_BOOST_Y, 'right',
         S.BOOST_COLOR || '#ffd24a', '#fff3c4', 'bold 26px sans-serif', 'bold 30px sans-serif');
     }
@@ -281,7 +303,7 @@ export class SkillHintPanel {
       c.fillText('调试 x:' + this.mesh.position.x.toFixed(3) + ' y:' + this.mesh.position.y.toFixed(3) + ' z:' + this.mesh.position.z.toFixed(3), PAD, 176);
     }
 
-    this._drawStreak(c, s);
+    if (s.showStreak) this._drawStreak(c, s);
     this.tex.needsUpdate = true;
   }
 
@@ -315,6 +337,7 @@ export class SkillHintPanel {
   //   · 集齐（= 触发加速）那一瞬整圈闪一下（放大 + 变白）；
   //   · 方块贴着边框线画 → 不占正文区，不挡准星（正文四行的 PAD_X 已避开方块）。
   _drawStreak(c, s) {
+    if (!s.showStreak) return;
     const S = SKILL_HINT.STREAK || {};
     if (S.ENABLED === false) return;
     const need = this._streakNeed;

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { loadGLB, cloneGLBScene } from '../game/glbCache.js';
-import { GUN, GUN_MODES, INPUT, SKILL_HINT, SHOP_COIN } from '../core/constants.js';
+import { GUN, BOMBARD_WEAPON, PLAGUE_WEAPON, GUN_MODES, INPUT, SKILL_HINT, SHOP_COIN } from '../core/constants.js';
 import { SkillHintPanel } from './skillHint.js';
 import { StreakCounter } from './streakCounter.js';   // 第四十二修：枪管连杀计数
 import { ShopCoinBadge } from './shopCoinBadge.js';   // 第六十四修：枪上「商店币」小信息框（只在商店关显示）
@@ -17,6 +17,9 @@ export class RightGun {
     this.scene = scene;
     this.root = new THREE.Group();   // 持有层：GUN 变换作用在此层（模型作为子节点）
     this.model = null;               // 加载完成的 gltf.scene
+    this.models = { ak: null, bombard: null, plague: null };  // AK / 火箭筒 / 毒枪
+    this._weapon = null;             // 当前显示的武器：'ak' | 'bombard' | 'plague'
+    this._wantWeapon = 'ak';         // 当前角色希望显示的武器
     this._attached = false;          // 是否已挂到右手柄（幂等）
     this._recoilZ = 0;               // 当前后坐力：沿本地 +Z 后退位移（米）
     this._recoilPitch = 0;           // 当前后坐力：绕本地 X 上抬角（弧度，枪口跳）
@@ -24,35 +27,86 @@ export class RightGun {
     this.skillHint = new SkillHintPanel();  // 技能就绪提示面板（右手枪中央，红框闪3下）
     this.coinBadge = SHOP_COIN.ENABLED ? new ShopCoinBadge() : null;  // 第六十四修：枪上商店币小框
     this.streak = new StreakCounter();      // 枪管连杀计数（第四十二修，纯视觉）
-    this._load();
+    this._load('ak', GUN.MODEL_URL);
+    this._load('bombard', BOMBARD_WEAPON.MODEL_URL);
+    this._load('plague', PLAGUE_WEAPON.MODEL_URL);
   }
 
-  // 异步加载模型（GLTFLoader 回调式）；Ak枪.glb 用了 KHR_draco_mesh_compression，
-  // 故挂上本地离线 DRACOLoader（解码器文件在 vendor/draco/）。失败放红色线框占位。
-  _load() {
-    loadGLB(GUN.MODEL_URL).then(
+  // 异步加载武器模型（GLTFLoader 回调式）。两把枪都从同一个 GLB 缓存取；
+  // 火箭筒加载失败时保留 AK 作为可见兜底，不影响射击逻辑。
+  _load(key, url) {
+    loadGLB(url).then(
       (gltf) => {
-        this.model = cloneGLBScene(gltf);
-        this.root.add(this.model);
-        this.streak.attach(this.root);       // 连杀计数：挂到枪的持有层
-        this.streak.place(this.model);       // 按模型包围盒自动标定到枪管上（第四十二修）
-        window.__pageLog?.info('[RightGun] AK 枪模型加载完成');
+        const model = cloneGLBScene(gltf);
+        if (key === 'plague') this._brightenModel(model, PLAGUE_WEAPON);
+        this.models[key] = model;
+        if (key === this._wantWeapon || !this.model) this._activateModel(key);
+        const label = key === 'ak' ? 'AK 枪' : key === 'bombard' ? '火箭筒' : '毒枪';
+        window.__pageLog?.info(`[RightGun] ${label}模型加载完成`);
       },
       (err) => {
-        console.error('[RightGun] 模型加载失败:', err);
+        console.error(`[RightGun] ${key} 模型加载失败:`, err);
         this.streak.attach(this.root);       // 模型挂了也把计数挂上（place 会走固定枪管位兜底）
-        window.__pageLog?.error('[RightGun] AK 枪加载失败：' + (err?.message || err));
-        const box = new THREE.Mesh(
-          new THREE.BoxGeometry(0.1, 0.1, 0.4),
-          new THREE.MeshBasicMaterial({ color: 0xff3333, wireframe: true })
-        );
-        this.root.add(box);
+        window.__pageLog?.error(`[RightGun] ${key} 模型加载失败：` + (err?.message || err));
+        if (key === 'ak') {
+          const box = new THREE.Mesh(
+            new THREE.BoxGeometry(0.1, 0.1, 0.4),
+            new THREE.MeshBasicMaterial({ color: 0xff3333, wireframe: true })
+          );
+          this.models.ak = box;
+          this._activateModel('ak');
+        }
       }
     );
   }
 
+  /** 毒枪专用提亮：不碰 AK/火箭筒，仅调整这一份模型材质。 */
+  _brightenModel(model, cfg = PLAGUE_WEAPON) {
+    if (!model) return;
+    const colorMul = Math.max(1, Number(cfg.MODEL_COLOR_MUL) || 1);
+    const emissive = Math.max(0, Number(cfg.MODEL_EMISSIVE) || 0);
+    const maxMetal = Math.max(0, Math.min(1, Number(cfg.MODEL_MAX_METALNESS) || 1));
+    model.traverse((o) => {
+      if (!o.isMesh || !o.material) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const mat of mats) {
+        if (!mat) continue;
+        if (mat.color) mat.color.multiplyScalar(colorMul);
+        if (mat.metalness != null) mat.metalness = Math.min(mat.metalness, maxMetal);
+        if (emissive > 0 && mat.emissive) {
+          if (mat.map) mat.emissiveMap = mat.map;
+          mat.emissive.setHex(0xffffff);
+          mat.emissiveIntensity = emissive;
+        }
+        mat.needsUpdate = true;
+      }
+    });
+  }
+
+  /** 切换到指定武器；同一模型只改挂载父节点，不重复克隆/加载。 */
+  _activateModel(key) {
+    const model = this.models[key];
+    if (!model || this.model === model) return;
+    if (this.model && this.model.parent) this.model.parent.remove(this.model);
+    this.model = model;
+    this._weapon = key;
+    this.root.add(model);
+    this.streak.attach(this.root);
+    this.streak.place(model);
+  }
+
+  /** 角色 → 武器：爆炮手 = 火箭筒，瘟疫医生 = 毒枪，其余 = AK。 */
+  _syncWeapon(game) {
+    const role = game?.player?.characterKey;
+    this._wantWeapon = role === 'plague' ? 'plague'
+      : game?.player?.fireMode === 'bombard' ? 'bombard' : 'ak';
+    const model = this.models[this._wantWeapon];
+    if (model && this.model !== model) this._activateModel(this._wantWeapon);
+  }
+
   // 每帧调用：幂等挂到右手柄，并从 GUN 配置实时应用变换（便于控制台/刷新即时调参）
   update(dt, input, game) {
+    this._syncWeapon(game);
     this._applyTransform();
     this._applyRecoil(dt, input);
     const hand = input?.shootingHand || 'right';
@@ -143,8 +197,10 @@ export class RightGun {
   coinBadgeWorldPos(out) { return this.coinBadge ? this.coinBadge.worldPosition(out) : null; }
 
   _applyTransform() {
-    this.root.position.set(GUN.POSITION.x, GUN.POSITION.y, GUN.POSITION.z);
-    this.root.rotation.set(D2R(GUN.ROTATION.x), D2R(GUN.ROTATION.y), D2R(GUN.ROTATION.z));
-    this.root.scale.setScalar(GUN.SCALE);
+    const cfg = this._weapon === 'bombard' ? BOMBARD_WEAPON
+      : this._weapon === 'plague' ? PLAGUE_WEAPON : GUN;
+    this.root.position.set(cfg.POSITION.x, cfg.POSITION.y, cfg.POSITION.z);
+    this.root.rotation.set(D2R(cfg.ROTATION.x), D2R(cfg.ROTATION.y), D2R(cfg.ROTATION.z));
+    this.root.scale.setScalar(cfg.SCALE);
   }
 }

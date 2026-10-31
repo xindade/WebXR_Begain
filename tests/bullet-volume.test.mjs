@@ -70,6 +70,16 @@ test('第五十四修 · 卡牌 apply 真的封顶（连点 30 次不越界）�
   assert.equal(calls.length, 30, '每点一次射速卡都要下发一次');
 });
 
+test('第八十六修 · 射速卡按角色基线的 50% 成长（爆炮手 0.8→1.2→1.6）', () => {
+  const calls = [];
+  const p = { fireRate: 0.8, baseFireRate: 0.8, input: { setFireRate: (r) => calls.push(r) } };
+  card('fireRate').apply(p);
+  assert.equal(p.fireRate, 1.2);
+  card('fireRate').apply(p);
+  assert.equal(p.fireRate, 1.6);
+  assert.deepEqual(calls, [1.2, 1.6]);
+});
+
 // ---------- ② 扇形几何 ----------
 
 test('第五十四修 · 单发=1 条弹道，且方向就是瞄准方向（不走扇形分支）', () => {

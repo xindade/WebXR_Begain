@@ -17,6 +17,7 @@ import {
   chestBonus, chestValueText, bulletChestValue, bulletChestBonus, bulletChestValueText, DragonChest,
 } from '../src/game/dragonChest.js';
 import { DRAGON_CHEST, MASK_CHEST, CHEST_BANNER, HEAL_BANNER, HEAL_ON_DEATH, CARD } from '../src/core/constants.js';
+import { applyFireRateSteps } from '../src/content/cards.js';
 import { ENEMY_TYPES } from '../src/content/enemies.js';
 import { styleConfig } from '../src/game/warningBanner.js';
 
@@ -91,7 +92,7 @@ test('第七十修 · 开箱判据：第 6/12 关各一种宝箱，第 18 关直
   assert.equal(g._chestDue(), false, '本关已开过 → 不再开第二次');
 });
 
-test('第七十修 · 脸谱箱：命中数 → 0.1~2.0，结算 <0.5→0 / 0.5~<2→1 / 满2→2', () => {
+test('第八十九修 · 脸谱箱：命中数 → 0.1~2.0，结算为 0/1/2 档攻速', () => {
   assert.equal(bulletChestValue(0, MASK_CHEST), 0.1);
   assert.equal(bulletChestValue(4, MASK_CHEST), 0.5);
   assert.equal(bulletChestValue(10, MASK_CHEST), 1.1);
@@ -101,7 +102,14 @@ test('第七十修 · 脸谱箱：命中数 → 0.1~2.0，结算 <0.5→0 / 0.5~
   assert.equal(bulletChestBonus(0.5, MASK_CHEST), 1);
   assert.equal(bulletChestBonus(1.9, MASK_CHEST), 1);
   assert.equal(bulletChestBonus(2.0, MASK_CHEST), 2);
-  assert.equal(bulletChestValueText(0.7), '+0.7 子弹');
+  assert.equal(bulletChestValueText(0.7), '+0.7 攻速');
+  assert.equal(MASK_CHEST.KIND, 'fireRate');
+
+  // 每档 = 角色基线的 50%：爆炮手 0.8 → 1.2 → 1.6；疾风 4 → 6 → 8。
+  const bombard = { baseFireRate: 0.8, fireRate: 0.8 };
+  assert.equal(applyFireRateSteps(bombard, 2), 1.6);
+  const rapid = { baseFireRate: 4, fireRate: 4 };
+  assert.equal(applyFireRateSteps(rapid, 2), 8);
 });
 
 test('第七十修 · 宝箱横幅：2 秒、复用同一块 Sprite 的 chest 样式', () => {

@@ -27,7 +27,7 @@ export class Player {
     const g = GUN_MODES[gunMode] || GUN_MODES.preview;
     this.atk = 100;
     this.shootCooldown = g.cooldown;   // 射击冷却 ms（实际节流在 input.js，player 仅用于存档快照）
-    this.fireRate = 2;                 // 射速基线（发/秒）：笔记 2 发/秒，卡 +2/次，上限 20（见 cards.ATTRIBUTE_STATS；真实节流在 input）
+    this.fireRate = 2;                 // 射速（发/秒）：卡牌按角色基线的 +50%/次成长，上限 20（真实节流在 input）
     this.shotCount = g.shotCount;      // 每发子弹的弹道数（fire 确定性扇形）
     this.skillCost = 500;              // 技能消耗能量（笔记默认 500，卡 -100/次，下限 100）
     this.skillDamageMul = 1;           // 技能伤害倍率（笔记默认 ×1，卡 +1/次，上限 ×5）
@@ -51,9 +51,18 @@ export class Player {
       this.atk = Math.max(1, Math.round(this.atk * lo.atkMul));
       this.fireRate = Math.max(0.5, Math.round(this.fireRate * lo.fireRateMul * 100) / 100);
       this.loadoutKey = lo.key;
+      this.characterKey = lo.key;
+      this.character = lo;
+      this.fireMode = lo.fireMode || 'fan';
+      this.atkGainMul = Number(lo.atkGainMul) > 0 ? Number(lo.atkGainMul) : 1;
     } else {
       this.loadoutKey = null;
+      this.characterKey = null;
+      this.character = null;
+      this.fireMode = 'fan';
+      this.atkGainMul = 1;
     }
+    this.baseFireRate = this.fireRate;  // 本局射速卡的成长基准（角色倍率已计入）
   }
 
   get alive() { return this.hp > 0; }
@@ -76,11 +85,12 @@ export class Player {
   // 发射：按 shotCount 确定性扇形铺开（1=单发，>1=多弹道）。
   //   返回**这一枪实际打出的弹数**（第五十修：龙族宝箱按打出的发数给加成；旧注释写的「返回是否开火」从来没实现过）
   // boost（第四十九修）：连杀加速期打出的子弹 —— 交给 BulletManager 用实例色染蓝、曳光加长
-  fire(shot, bullets, audio, boost = false) {
+  // one=true：仅本枪强制单发（蜂群主枪 / 爆炮手主炮），不改外部 forceSingleShot 状态。
+  fire(shot, bullets, audio, boost = false, opts = null, one = false) {
     // 第五十五修：商店道具「多才是王道」在基础弹道数上叠加临时弹道（抽卡/商店关强制单发时不叠加）
-    const n = this.forceSingleShot ? 1 : (this.shotCount || 1) + (this.bonusShotCount || 0);
+    const n = (this.forceSingleShot || one) ? 1 : (this.shotCount || 1) + (this.bonusShotCount || 0);
     if (n <= 1) {
-      bullets.spawn(shot.position, shot.direction, this.atk, boost);
+      bullets.spawn(shot.position, shot.direction, this.atk, boost, opts);
     } else {
       // 第五十四修：半角随弹道数增长 —— 每多一条弹道，扇形外沿再多展开一个步进
       //   （步进 = SPREAD_ANGLE/(SPREAD_FULL_N-1)），到 SPREAD_FULL_N 条时用满 SPREAD_ANGLE。
@@ -108,7 +118,7 @@ export class Player {
       for (let k = 0; k < n; k++) {
         const t = _spreadTs[k] / maxT;
         const d = dir.clone().addScaledVector(_right, t * spread);
-        bullets.spawn(shot.position, d, this.atk, boost);
+        bullets.spawn(shot.position, d, this.atk, boost, opts);
       }
     }
     audio.playShoot();
